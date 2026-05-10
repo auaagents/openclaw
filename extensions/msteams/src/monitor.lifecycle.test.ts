@@ -378,7 +378,11 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       oauthDefaultConnectionName: "graph",
     });
 
-    const sdkResult = await loadMSTeamsSdkWithAuth.mock.results[0]!.value;
+    const sdkResultPromise = loadMSTeamsSdkWithAuth.mock.results[0]?.value;
+    if (!sdkResultPromise) {
+      throw new Error("expected loadMSTeamsSdkWithAuth result");
+    }
+    const sdkResult = await sdkResultPromise;
     const app = sdkResult.app;
     expect(app.on).not.toHaveBeenCalledWith("signin.token-exchange", expect.any(Function));
     expect(app.on).not.toHaveBeenCalledWith("signin.verify-state", expect.any(Function));
