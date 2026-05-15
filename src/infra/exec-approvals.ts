@@ -16,7 +16,7 @@ import {
   resolveAllowAlwaysPatternEntriesFromPlanAsync,
 } from "./exec-approvals-allowlist.js";
 import type { ExecSegmentSatisfiedBy } from "./exec-approvals-allowlist.js";
-import type { ExecCommandSegment } from "./exec-approvals-analysis.js";
+import { isWindowsPlatform, type ExecCommandSegment } from "./exec-approvals-analysis.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 import { assertNoSymlinkParentsSync } from "./fs-safe-advanced.js";
 import { expandHomePrefix, resolveRequiredHomeDir } from "./home-dir.js";
@@ -1212,7 +1212,7 @@ export async function canPersistExactCommandAllowAlways(params: {
   if (!commandText || params.analysisOk === false) {
     return false;
   }
-  if (params.platform === "win32") {
+  if (isWindowsPlatform(params.platform)) {
     return true;
   }
   // POSIX exact command hashes do not bind the resolved executable identity. Use
@@ -1234,7 +1234,7 @@ export async function persistAllowAlwaysPatterns(params: {
 }): Promise<ReturnType<typeof resolveAllowAlwaysPatternEntries>> {
   const commandText = params.commandText?.trim();
   const usePlanner =
-    params.analysisOk !== false && Boolean(commandText) && params.platform !== "win32";
+    params.analysisOk !== false && Boolean(commandText) && !isWindowsPlatform(params.platform);
   const plan = usePlanner
     ? await planCommandForAuthorization(
         { dialect: "posix-shell", command: commandText ?? "" },

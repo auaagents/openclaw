@@ -15,6 +15,7 @@ import {
 } from "./exec-approvals-test-helpers.js";
 import {
   analyzeArgvCommand,
+  canPersistExactCommandAllowAlways,
   evaluateExecAllowlist,
   evaluateShellAllowlist,
   requiresExecApproval,
@@ -223,6 +224,16 @@ describe("resolveAllowAlwaysPatterns", () => {
       ],
     });
     expect(patterns).toEqual([exe]);
+  });
+
+  it("allows exact command persistence for Windows platform aliases", async () => {
+    await expect(
+      canPersistExactCommandAllowAlways({
+        analysisOk: true,
+        commandText: "cmd /c dir",
+        platform: "windows",
+      }),
+    ).resolves.toBe(true);
   });
 
   it("does not persist interpreter-like executables for allow-always", async () => {

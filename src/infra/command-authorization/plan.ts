@@ -1279,20 +1279,46 @@ function promptOnlyReasonsFromCommentBoundaries(
 }
 
 function hasMixedWrapperPayloadGroupingRisk(explanation: CommandExplanation): boolean {
-  if (explanation.topLevelCommands.length < 2) {
-    return false;
-  }
   return explanation.topLevelCommands.some((step) => {
     const wrapperPayloadSteps = explanation.nestedCommands.filter(
       (nestedStep) =>
         nestedStep.context === "wrapper-payload" &&
         stepContainsSpan(step, nestedStep.span.startIndex, nestedStep.span.endIndex),
     );
-    return (
-      wrapperPayloadSteps.length > 1 &&
-      shouldPlanWrapperPayload(step, wrapperPayloadSteps, explanation.risks)
-    );
+    if (
+      wrapperPayloadSteps.length <= 1 ||
+      !shouldPlanWrapperPayload(step, wrapperPayloadSteps, explanation.risks)
+    ) {
+      return false;
+    }
+    if (explanation.topLevelCommands.length > 1) {
+      return true;
+    }
+    return hasMixedConditionalSeparators(explanation.source, wrapperPayloadSteps);
   });
+}
+
+function hasMixedConditionalSeparators(source: string, steps: readonly CommandStep[]): boolean {
+  const sorted = steps.toSorted((left, right) => left.span.startIndex - right.span.startIndex);
+  let sawAnd = false;
+  let sawOr = false;
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const left = sorted[index];
+    const right = sorted[index + 1];
+    if (!left || !right) {
+      continue;
+    }
+    const separator = separatorBetweenSteps(source, left, right);
+    if (separator === "&&") {
+      sawAnd = true;
+    } else if (separator === "||") {
+      sawOr = true;
+    }
+    if (sawAnd && sawOr) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function spansOverlap(startIndex: number, endIndex: number, risk: CommandRisk): boolean {

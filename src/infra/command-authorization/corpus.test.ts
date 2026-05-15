@@ -641,7 +641,8 @@ describe("command authorization planner corpus", () => {
     "false && sh -c 'echo inner || touch marker' && echo outer",
     "true || sh -c 'echo inner && touch marker'",
     "printf x | sh -c 'cmd1 || cmd2' && cmd3",
-  ])("makes mixed outer chains with inner wrapper chains prompt-only: %s", async (command) => {
+    `sh -c 'false && sh -c "echo inner || touch marker" && echo outer'`,
+  ])("makes mixed wrapper chain regrouping prompt-only: %s", async (command) => {
     const plan = await planCommandForAuthorization({
       dialect: "posix-shell",
       command,
