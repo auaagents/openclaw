@@ -34,6 +34,7 @@ const state = vi.hoisted(() => ({
   trajectoryRecordEventMock: vi.fn(),
   trajectoryFlushMock: vi.fn(async () => undefined),
   clearSessionAuthProfileOverrideMock: vi.fn(),
+  applyModelOverrideToSessionEntryMock: vi.fn(),
   isThinkingLevelSupportedMock: vi.fn((_args: unknown) => true),
   resolveThinkingDefaultMock: vi.fn((_args: unknown) => "low"),
   loadManifestModelCatalogMock: vi.fn(() => []),
@@ -46,6 +47,7 @@ const state = vi.hoisted(() => ({
   authProfileStoreMock: { profiles: {} } as { profiles: Record<string, unknown> },
   sessionEntryMock: undefined as unknown,
   sessionStoreMock: undefined as unknown,
+  hasSessionAutoModelFallbackProvenanceMock: vi.fn((_entry: unknown) => false),
 }));
 
 vi.mock("./model-fallback.js", () => ({
@@ -240,7 +242,11 @@ vi.mock("../sessions/level-overrides.js", () => ({
 }));
 
 vi.mock("../sessions/model-overrides.js", () => ({
-  applyModelOverrideToSessionEntry: () => ({ updated: false }),
+  applyModelOverrideToSessionEntry: (params: {
+    entry: Record<string, unknown>;
+    selection: { provider: string; model: string; isDefault?: boolean };
+    preserveAuthProfileOverride?: boolean;
+  }) => state.applyModelOverrideToSessionEntryMock(params),
   repairProviderWrappedModelOverride: () => ({ updated: false }),
 }));
 
@@ -266,7 +272,8 @@ vi.mock("../utils/message-channel.js", () => ({
 }));
 
 vi.mock("./agent-scope.js", () => ({
-  hasSessionAutoModelFallbackProvenance: () => false,
+  hasSessionAutoModelFallbackProvenance: (entry: unknown) =>
+    state.hasSessionAutoModelFallbackProvenanceMock(entry),
   listAgentEntries: () => [],
   listAgentIds: () => ["default"],
   resolveAgentConfig: () => undefined,
@@ -744,6 +751,32 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     state.deliverAgentCommandResultMock.mockResolvedValue(undefined);
     state.updateSessionStoreAfterAgentRunMock.mockResolvedValue(undefined);
     state.trajectoryFlushMock.mockResolvedValue(undefined);
+    state.applyModelOverrideToSessionEntryMock.mockImplementation(
+      (params: {
+        entry: Record<string, unknown>;
+        selection: { provider: string; model: string; isDefault?: boolean };
+        preserveAuthProfileOverride?: boolean;
+      }) => {
+        const before = JSON.stringify(params.entry);
+        if (params.selection.isDefault) {
+          delete params.entry.providerOverride;
+          delete params.entry.modelOverride;
+          delete params.entry.modelOverrideSource;
+          delete params.entry.modelOverrideFallbackOriginProvider;
+          delete params.entry.modelOverrideFallbackOriginModel;
+        } else {
+          params.entry.providerOverride = params.selection.provider;
+          params.entry.modelOverride = params.selection.model;
+        }
+        if (!params.preserveAuthProfileOverride) {
+          delete params.entry.authProfileOverride;
+          delete params.entry.authProfileOverrideSource;
+          delete params.entry.authProfileOverrideCompactionCount;
+        }
+        return { updated: JSON.stringify(params.entry) !== before };
+      },
+    );
+    state.hasSessionAutoModelFallbackProvenanceMock.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -1031,6 +1064,45 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
 
     expect(capturedAuthProfileProvider).toBe("openai");
     expect(state.runWithModelFallbackMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears direct auto-fallback session overrides before direct agent runs", async () => {
+    const sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "openai",
+      modelOverride: "gpt-5.4",
+      modelOverrideSource: "auto",
+      modelOverrideFallbackOriginProvider: "anthropic",
+      modelOverrideFallbackOriginModel: "claude",
+      skillsSnapshot: { prompt: "", skills: [], version: 0 },
+    };
+    state.sessionEntryMock = sessionEntry;
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      const result = await params.run(params.provider, params.model);
+      return {
+        result,
+        provider: params.provider,
+        model: params.model,
+        attempts: [],
+      };
+    });
+    state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("anthropic", "claude"));
+
+    await runBasicAgentCommand();
+
+    expect(state.runWithModelFallbackMock).toHaveBeenCalledTimes(1);
+    const fallbackCall = mockCallArg(state.runWithModelFallbackMock) as FallbackRunnerParams;
+    expect(fallbackCall.provider).toBe("anthropic");
+    expect(fallbackCall.model).toBe("claude");
+    expect(state.resolveEffectiveModelFallbacksMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasSessionModelOverride: false,
+        modelOverrideSource: undefined,
+        hasAutoFallbackProvenance: false,
+      }),
+    );
+    expect(state.applyModelOverrideToSessionEntryMock).not.toHaveBeenCalled();
   });
 
   it("keeps aliased session auth profiles for codex-cli runs", async () => {

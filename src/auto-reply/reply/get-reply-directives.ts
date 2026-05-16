@@ -133,6 +133,9 @@ export type ReplyDirectiveContinuation = {
   modelState: Awaited<ReturnType<typeof createModelSelectionState>>;
   contextTokens: number;
   inlineStatusRequested: boolean;
+  deferredAutoFallbackClear: boolean;
+  refreshModelDefaultThinkingLevel: boolean;
+  refreshModelDefaultReasoningLevel: boolean;
   directiveAck?: ReplyPayload;
   perMessageQueueMode?: InlineDirectives["queueMode"];
   perMessageQueueOptions?: {
@@ -514,6 +517,11 @@ export async function resolveReplyDirectives(params: {
         aliasIndex: params.aliasIndex,
       }));
 
+  const deferredAutoFallbackClear =
+    hasInlineStatus ||
+    (allowTextCommands &&
+      command.isAuthorizedSender &&
+      command.commandBodyNormalized.startsWith("/"));
   const modelState = useFastModelSelection
     ? createFastTestModelSelectionState({
         agentCfg,
@@ -540,6 +548,7 @@ export async function resolveReplyDirectives(params: {
         hasOneTurnModelOverride,
         hasResolvedHeartbeatModelOverride,
         isHeartbeat: opts?.isHeartbeat === true,
+        clearDirectAutoFallbackOverride: !deferredAutoFallbackClear,
       });
   provider = modelState.provider;
   model = modelState.model;
@@ -673,6 +682,10 @@ export async function resolveReplyDirectives(params: {
       modelState,
       contextTokens,
       inlineStatusRequested,
+      deferredAutoFallbackClear,
+      refreshModelDefaultThinkingLevel:
+        resolvedThinkLevel === undefined && agentCfg?.thinkingDefault === undefined,
+      refreshModelDefaultReasoningLevel: !reasoningExplicitlySet && !thinkingExplicitlySet,
       directiveAck,
       perMessageQueueMode,
       perMessageQueueOptions,

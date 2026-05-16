@@ -44,7 +44,11 @@ import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import { hasInboundMedia } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
-import { createFastTestModelSelectionState } from "./model-selection.js";
+import {
+  createFastTestModelSelectionState,
+  createModelSelectionState,
+  resolveContextTokens,
+} from "./model-selection.js";
 import { sanitizePendingFinalDeliveryText } from "./pending-final-delivery.js";
 import { initSessionState } from "./session.js";
 import {
@@ -730,6 +734,9 @@ export async function getReplyFromConfig(
     modelState,
     contextTokens,
     inlineStatusRequested,
+    deferredAutoFallbackClear,
+    refreshModelDefaultThinkingLevel,
+    refreshModelDefaultReasoningLevel,
     directiveAck,
     perMessageQueueMode,
     perMessageQueueOptions,
@@ -809,6 +816,52 @@ export async function getReplyFromConfig(
   directives = inlineActionResult.directives;
   cleanedBody = inlineActionResult.cleanedBody;
   abortedLastRun = inlineActionResult.abortedLastRun ?? abortedLastRun;
+  if (deferredAutoFallbackClear) {
+    const refreshedSessionEntry = sessionStore[sessionKey] ?? sessionEntry;
+    modelState = await createModelSelectionState({
+      cfg,
+      agentId,
+      agentCfg,
+      sessionEntry: refreshedSessionEntry,
+      sessionStore,
+      sessionKey,
+      parentSessionKey:
+        refreshedSessionEntry.parentSessionKey ??
+        sessionCtx.ModelParentSessionKey ??
+        sessionCtx.ParentSessionKey,
+      storePath,
+      defaultProvider,
+      defaultModel,
+      primaryProvider,
+      primaryModel,
+      provider,
+      model,
+      hasModelDirective: directives.hasModelDirective,
+      hasOneTurnModelOverride: hasAppliedImageModelOverride,
+      hasResolvedHeartbeatModelOverride,
+      isHeartbeat: resolvedOpts?.isHeartbeat === true,
+      clearDirectAutoFallbackOverride: true,
+    });
+    provider = modelState.provider;
+    model = modelState.model;
+    if (refreshModelDefaultThinkingLevel) {
+      resolvedThinkLevel =
+        (await modelState.resolveDefaultThinkingLevel()) ??
+        (agentCfg?.thinkingDefault as typeof resolvedThinkLevel);
+    }
+    if (refreshModelDefaultReasoningLevel) {
+      resolvedReasoningLevel =
+        resolvedThinkLevel && resolvedThinkLevel !== "off"
+          ? "off"
+          : await modelState.resolveDefaultReasoningLevel();
+    }
+    contextTokens = resolveContextTokens({
+      cfg,
+      agentCfg,
+      provider,
+      model,
+    });
+  }
 
   // Allow plugins to intercept and return a synthetic reply before the LLM runs.
   if (!useFastTestBootstrap) {

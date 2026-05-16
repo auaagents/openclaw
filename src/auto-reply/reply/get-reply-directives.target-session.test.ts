@@ -34,6 +34,33 @@ function makeTypingController() {
 
 function parseInlineDirectivesForTest(body: string) {
   const normalized = body.trim();
+  if (normalized === "status hello") {
+    return {
+      cleaned: "hello",
+      hasThinkDirective: false,
+      hasVerboseDirective: false,
+      hasTraceDirective: false,
+      traceLevel: undefined,
+      rawTraceLevel: undefined,
+      hasFastDirective: false,
+      hasReasoningDirective: false,
+      reasoningLevel: undefined,
+      rawReasoningLevel: undefined,
+      hasElevatedDirective: false,
+      hasExecDirective: false,
+      hasModelDirective: false,
+      hasQueueDirective: false,
+      hasStatusDirective: true,
+      queueReset: false,
+      thinkLevel: undefined,
+      verboseLevel: undefined,
+      fastMode: undefined,
+      elevatedLevel: undefined,
+      rawElevatedLevel: undefined,
+      rawModelDirective: undefined,
+      execSecurity: undefined,
+    };
+  }
   if (normalized === "/reasoning stream") {
     return {
       cleaned: "",
@@ -487,6 +514,24 @@ describe("resolveReplyDirectives", () => {
       resolvedReasoningLevel: "on",
     });
     expect(resolveDefaultReasoningLevel).toHaveBeenCalledOnce();
+  });
+
+  it("marks deferred status turns to refresh model reasoning defaults after auto-fallback clear", async () => {
+    const { result } = await resolveHelloWithModelDefaults({
+      body: "status hello",
+      commandAuthorized: true,
+      defaultThinking: "off",
+      defaultReasoning: "on",
+    });
+
+    expectContinueResult(result, {
+      deferredAutoFallbackClear: true,
+      refreshModelDefaultReasoningLevel: true,
+      resolvedReasoningLevel: "on",
+    });
+    expect(mockCallInput(mocks.createModelSelectionState).clearDirectAutoFallbackOverride).toBe(
+      false,
+    );
   });
 
   it("does not re-enable model reasoning when thinking was explicitly disabled", async () => {

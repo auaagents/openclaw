@@ -1,4 +1,7 @@
-import { resolveAgentConfig } from "../../agents/agent-scope.js";
+import {
+  hasSessionAutoModelFallbackProvenance,
+  resolveAgentConfig,
+} from "../../agents/agent-scope.js";
 import { clearSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
@@ -108,6 +111,7 @@ export async function createModelSelectionState(params: {
    *  In that case, skip session-stored overrides so the heartbeat selection wins. */
   hasResolvedHeartbeatModelOverride?: boolean;
   isHeartbeat?: boolean;
+  clearDirectAutoFallbackOverride?: boolean;
 }): Promise<ModelSelectionState> {
   const timingEnabled = shouldLogModelSelectionTiming();
   const startMs = timingEnabled ? Date.now() : 0;
@@ -171,6 +175,17 @@ export async function createModelSelectionState(params: {
   const directStoredModelOverride = directStoredOverride
     ? { ...directStoredOverride, source: "session" as const }
     : null;
+  const hasDirectAutoFallbackOverride = Boolean(
+    directStoredOverride &&
+    sessionEntry &&
+    (sessionEntry.modelOverrideSource === "auto" ||
+      (sessionEntry.modelOverrideSource === undefined &&
+        hasSessionAutoModelFallbackProvenance(sessionEntry))),
+  );
+  const shouldClearDirectAutoFallbackOverride =
+    hasDirectAutoFallbackOverride &&
+    params.clearDirectAutoFallbackOverride === true &&
+    !hasOneTurnModelOverride;
   const staleHeartbeatAutoFallbackOverride = isStaleHeartbeatAutoFallbackOverride({
     isHeartbeat: params.isHeartbeat,
     hasResolvedHeartbeatModelOverride: params.hasResolvedHeartbeatModelOverride,
@@ -216,11 +231,45 @@ export async function createModelSelectionState(params: {
     logStage("configured-catalog-ready", `entries=${configuredModelCatalog.length}`);
   }
 
+  if (shouldClearDirectAutoFallbackOverride && sessionEntry && sessionStore && sessionKey) {
+    const clearedSelectionProvider =
+      params.hasResolvedHeartbeatModelOverride === true ? provider : primaryProvider;
+    const clearedSelectionModel =
+      params.hasResolvedHeartbeatModelOverride === true ? model : primaryModel;
+    const { updated } = applyModelOverrideToSessionEntry({
+      entry: sessionEntry,
+      selection: {
+        provider: clearedSelectionProvider,
+        model: clearedSelectionModel,
+        isDefault: true,
+      },
+      preserveAuthProfileOverride: sessionEntry.authProfileOverrideSource === "user",
+    });
+    if (updated) {
+      sessionStore[sessionKey] = sessionEntry;
+      if (storePath) {
+        await (
+          await loadSessionStoreRuntime()
+        ).updateSessionStore(storePath, (store) => {
+          store[sessionKey] = sessionEntry;
+        });
+      }
+      provider = clearedSelectionProvider;
+      model = clearedSelectionModel;
+    }
+  } else if (shouldClearDirectAutoFallbackOverride) {
+    if (params.hasResolvedHeartbeatModelOverride !== true) {
+      provider = primaryProvider;
+      model = primaryModel;
+    }
+  }
+
   if (
     sessionEntry &&
     sessionStore &&
     sessionKey &&
     directStoredOverride &&
+    !hasDirectAutoFallbackOverride &&
     !hasOneTurnModelOverride
   ) {
     const normalizedOverride = normalizeModelRef(
@@ -250,7 +299,7 @@ export async function createModelSelectionState(params: {
       }
     }
   }
-  if (staleHeartbeatAutoFallbackOverride) {
+  if (staleHeartbeatAutoFallbackOverride && !hasDirectAutoFallbackOverride) {
     const normalizedCurrentSelection = normalizeModelRef(provider, model);
     const currentSelectionKey = modelKey(
       normalizedCurrentSelection.provider,
@@ -282,7 +331,10 @@ export async function createModelSelectionState(params: {
   const skipStoredOverride =
     hasOneTurnModelOverride ||
     params.hasResolvedHeartbeatModelOverride === true ||
-    (staleHeartbeatAutoFallbackOverride && storedOverride?.source === "session");
+    (shouldClearDirectAutoFallbackOverride && storedOverride?.source === "session") ||
+    (staleHeartbeatAutoFallbackOverride &&
+      !hasDirectAutoFallbackOverride &&
+      storedOverride?.source === "session");
 
   if (storedOverride?.model && !skipStoredOverride) {
     const normalizedStoredOverride = normalizeModelRef(

@@ -17,6 +17,7 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Agents/model fallback: clear auto-persisted fallback session overrides before the next turn so recovered primaries are retried instead of leaving sessions pinned to fallback models indefinitely. Fixes #82544.
 - TUI: update the displayed model in real time when an auto-fallback resolution swaps in a different model mid-turn, so the status line reflects the actual model handling the run. Fixes #82296. Thanks @giodl73-repo.
 - Agents/sessions: preserve fresh post-compaction token snapshots across stale usage updates, preventing repeated auto-compaction after every message. Fixes #82576. (#82578) Thanks @njuboy11.
 - Agents/OpenAI Responses: log redacted diagnostics for detail-less `response.failed` events while preserving failed response ids, so operators can correlate provider-side failures. Fixes #82558.
