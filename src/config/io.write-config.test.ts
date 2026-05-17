@@ -1284,6 +1284,88 @@ describe("config io write", () => {
     });
   });
 
+  it("allows explicit parent channel edits to activate channel scopes", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          telegram: {
+            enabled: true,
+            accounts: {},
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(
+        io.writeConfigFile(
+          {
+            ...original,
+            channels: {
+              ...original.channels,
+              whatsapp: {},
+            },
+          },
+          { baseSnapshot, explicitSetPaths: [["channels"]] },
+        ),
+      ).resolves.toMatchObject({
+        persistedConfig: {
+          channels: expect.objectContaining({ whatsapp: {} }),
+        },
+      });
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      await expect(
+        io.writeConfigFile(
+          {
+            ...original,
+            channels: {
+              telegram: {
+                enabled: true,
+                accounts: {
+                  default: {},
+                },
+              },
+            },
+          },
+          { baseSnapshot, explicitSetPaths: [["channels", "telegram", "accounts"]] },
+        ),
+      ).resolves.toMatchObject({
+        persistedConfig: {
+          channels: {
+            telegram: {
+              accounts: { default: {} },
+              enabled: true,
+            },
+          },
+        },
+      });
+    });
+  });
+
   it("rejects stale runtime writes that stage broad allowlists on disabled channel scopes", async () => {
     await withSuiteHome(async (home) => {
       mockChannelPluginManifestRegistry("whatsapp");

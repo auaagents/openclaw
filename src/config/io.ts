@@ -461,7 +461,9 @@ function isExplicitChannelActivationPath(
   const enabledPath = [...channelPath, "enabled"];
   return explicitSetPaths.some(
     (explicitPath) =>
-      isSameConfigPath(explicitPath, channelPath) || isSameConfigPath(explicitPath, enabledPath),
+      isSameConfigPath(explicitPath, enabledPath) ||
+      (explicitPath.length <= channelPath.length &&
+        explicitPath.every((segment, index) => segment === channelPath[index])),
   );
 }
 
