@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { ResolvedSlackAccount } from "../accounts.js";
+import { recordSlackQaTrace, traceSlackQaPhase } from "../qa-trace.js";
 import type { SlackMessageEvent } from "../types.js";
 import { stripSlackMentionsForCommandDetection } from "./commands.js";
 import type { SlackMonitorContext } from "./context.js";
@@ -77,6 +78,10 @@ export function createSlackMessageHandler(params: {
       if (!last) {
         return;
       }
+      recordSlackQaTrace("inbound.flush", {
+        entries: entries.length,
+        source: last.opts.source,
+      });
       const flushedKey = buildSlackDebounceKey(last.message, ctx.accountId);
       const topLevelConversationKey = buildTopLevelSlackConversationKey(
         last.message,
@@ -107,16 +112,28 @@ export function createSlackMessageHandler(params: {
       try {
         const { prepareSlackMessage, dispatchPreparedSlackMessage } =
           await loadSlackMessagePipeline();
-        const prepared = await prepareSlackMessage({
-          ctx,
-          account,
-          message: syntheticMessage,
-          opts: {
-            ...last.opts,
-            wasMentioned: combinedMentioned || last.opts.wasMentioned,
+        const prepared = await traceSlackQaPhase(
+          "inbound.prepare",
+          () =>
+            prepareSlackMessage({
+              ctx,
+              account,
+              message: syntheticMessage,
+              opts: {
+                ...last.opts,
+                wasMentioned: combinedMentioned || last.opts.wasMentioned,
+              },
+            }),
+          {
+            entries: entries.length,
+            source: last.opts.source,
           },
-        });
+        );
         if (!prepared) {
+          recordSlackQaTrace("inbound.prepare.drop", {
+            entries: entries.length,
+            source: last.opts.source,
+          });
           return;
         }
         if (seenMessageKey) {
@@ -143,7 +160,13 @@ export function createSlackMessageHandler(params: {
           }
         }
         try {
-          await dispatchPreparedSlackMessage(prepared);
+          await traceSlackQaPhase(
+            "inbound.dispatch",
+            () => dispatchPreparedSlackMessage(prepared),
+            {
+              source: last.opts.source,
+            },
+          );
           await recordSlackInboundMessageDeliveries({
             accountId: ctx.accountId,
             messages: entries.map((entry) => entry.message),
@@ -206,6 +229,12 @@ export function createSlackMessageHandler(params: {
   };
 
   return async (message, opts) => {
+    recordSlackQaTrace("inbound.event", {
+      hasFiles: Boolean(message.files && message.files.length > 0),
+      hasThread: Boolean(message.thread_ts),
+      source: opts.source,
+      subtype: message.subtype ?? "",
+    });
     if (opts.source === "message" && message.type !== "message") {
       return;
     }
@@ -243,7 +272,14 @@ export function createSlackMessageHandler(params: {
       }
     }
     trackEvent?.();
-    const resolvedMessage = await threadTsResolver.resolve({ message, source: opts.source });
+    const resolvedMessage = await traceSlackQaPhase(
+      "inbound.thread_resolve",
+      () => threadTsResolver.resolve({ message, source: opts.source }),
+      {
+        hasThread: Boolean(message.thread_ts),
+        source: opts.source,
+      },
+    );
     const debounceKey = buildSlackDebounceKey(resolvedMessage, ctx.accountId);
     const conversationKey = buildTopLevelSlackConversationKey(resolvedMessage, ctx.accountId);
     const canDebounce = debounceMs > 0 && shouldDebounceSlackMessage(resolvedMessage, ctx.cfg);
@@ -261,6 +297,13 @@ export function createSlackMessageHandler(params: {
       pendingKeys.add(debounceKey);
       pendingTopLevelDebounceKeys.set(conversationKey, pendingKeys);
     }
-    await debouncer.enqueue({ message: resolvedMessage, opts });
+    await traceSlackQaPhase(
+      "inbound.enqueue",
+      () => debouncer.enqueue({ message: resolvedMessage, opts }),
+      {
+        debounced: canDebounce,
+        source: opts.source,
+      },
+    );
   };
 }

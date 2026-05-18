@@ -59,6 +59,7 @@ import {
 } from "../../interactive-replies.js";
 import { SLACK_TEXT_LIMIT } from "../../limits.js";
 import { buildSlackProgressDraftBlocks } from "../../progress-blocks.js";
+import { recordSlackQaTrace, traceSlackQaPhase } from "../../qa-trace.js";
 import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
 import { applyAppendOnlyStreamUpdate, resolveSlackStreamingConfig } from "../../stream-mode.js";
 import type { SlackStreamSession } from "../../streaming.js";
@@ -349,6 +350,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const { ctx, account, message, route } = prepared;
   const cfg = ctx.cfg;
   const runtime = ctx.runtime;
+  recordSlackQaTrace("dispatch.start", {
+    isDirectMessage: prepared.isDirectMessage,
+    replyToMode: prepared.replyToMode,
+  });
 
   // Resolve agent identity for Slack chat:write.customize overrides.
   const outboundIdentity = resolveAgentOutboundIdentity(cfg, route.agentId);
@@ -674,19 +679,27 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       logVerbose("slack: suppressed duplicate normal delivery within the same turn");
       return;
     }
-    await deliverReplies({
-      cfg: ctx.cfg,
-      replies: [params.payload],
-      target: prepared.replyTarget,
-      token: ctx.botToken,
-      accountId: account.accountId,
-      runtime,
-      textLimit: ctx.textLimit,
-      replyThreadTs,
-      replyToMode: replyDeliveryMode,
-      ...(slackIdentity ? { identity: slackIdentity } : {}),
-      ...(slackMessageMetadata ? { metadata: slackMessageMetadata } : {}),
-    });
+    await traceSlackQaPhase(
+      "dispatch.deliver_replies",
+      () =>
+        deliverReplies({
+          cfg: ctx.cfg,
+          replies: [params.payload],
+          target: prepared.replyTarget,
+          token: ctx.botToken,
+          accountId: account.accountId,
+          runtime,
+          textLimit: ctx.textLimit,
+          replyThreadTs,
+          replyToMode: replyDeliveryMode,
+          ...(slackIdentity ? { identity: slackIdentity } : {}),
+          ...(slackMessageMetadata ? { metadata: slackMessageMetadata } : {}),
+        }),
+      {
+        hasThread: Boolean(replyThreadTs),
+        kind: params.kind,
+      },
+    );
     observedReplyDelivery = true;
     const deliveredThreadTs = resolveDeliveredSlackReplyThreadTs({
       replyToMode: replyDeliveryMode,
@@ -1260,150 +1273,166 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   let counts: { final?: number; block?: number } = {};
   let dispatchSettledBeforeStart = false;
   try {
-    const turnResult = await runPreparedInboundReplyTurn({
-      channel: "slack",
-      accountId: route.accountId,
-      routeSessionKey: route.sessionKey,
-      storePath: prepared.turn.storePath,
-      ctxPayload: prepared.ctxPayload,
-      recordInboundSession,
-      record: prepared.turn.record as ChannelTurnRecordOptions,
-      history: prepared.turn.history,
-      botLoopProtection: resolveSlackBotLoopProtection(prepared),
-      onPreDispatchFailure: async () => {
-        dispatchSettledBeforeStart = true;
-        await settleReplyDispatcher({
-          dispatcher,
-          onSettled: () => markDispatchIdle(),
-        });
-      },
-      runDispatch: () =>
-        dispatchInboundMessage({
-          ctx: prepared.ctxPayload,
-          cfg,
-          dispatcher,
-          replyOptions: {
-            ...replyOptions,
-            skillFilter: prepared.channelConfig?.skills,
-            sourceReplyDeliveryMode,
-            hasRepliedRef,
-            disableBlockStreaming,
-            onModelSelected,
-            suppressDefaultToolProgressMessages: suppressDefaultToolProgressMessages
-              ? true
-              : undefined,
-            onPartialReply: useStreaming
-              ? undefined
-              : !previewStreamingEnabled
-                ? undefined
-                : async (payload) => {
-                    updateDraftFromPartial(payload.text);
-                  },
-            onAssistantMessageStart: onDraftBoundary,
-            onReasoningEnd: onDraftBoundary,
-            onReasoningStream: statusReactionsEnabled
-              ? async () => {
-                  await statusReactions.setThinking();
-                }
-              : undefined,
-            onToolStart: async (payload) => {
-              if (statusReactionsEnabled) {
-                await statusReactions.setTool(payload.name);
-              }
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLineForEntry(
-                  account.config,
-                  {
-                    event: "tool",
-                    name: payload.name,
-                    phase: payload.phase,
-                    args: payload.args,
-                  },
-                  payload.detailMode ? { detailMode: payload.detailMode } : undefined,
-                ),
-                { toolName: payload.name },
-              );
-            },
-            onItemEvent: async (payload) => {
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLineForEntry(account.config, {
-                  event: "item",
-                  itemId: payload.itemId,
-                  itemKind: payload.kind,
-                  title: payload.title,
-                  name: payload.name,
-                  phase: payload.phase,
-                  status: payload.status,
-                  summary: payload.summary,
-                  progressText: payload.progressText,
-                  meta: payload.meta,
-                }),
-              );
-            },
-            onPlanUpdate: async (payload) => {
-              if (payload.phase !== "update") {
-                return;
-              }
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLine({
-                  event: "plan",
-                  phase: payload.phase,
-                  title: payload.title,
-                  explanation: payload.explanation,
-                  steps: payload.steps,
-                }),
-              );
-            },
-            onApprovalEvent: async (payload) => {
-              if (payload.phase !== "requested") {
-                return;
-              }
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLine({
-                  event: "approval",
-                  phase: payload.phase,
-                  title: payload.title,
-                  command: payload.command,
-                  reason: payload.reason,
-                  message: payload.message,
-                }),
-              );
-            },
-            onCommandOutput: async (payload) => {
-              if (payload.phase !== "end") {
-                return;
-              }
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLine({
-                  event: "command-output",
-                  phase: payload.phase,
-                  title: payload.title,
-                  name: payload.name,
-                  status: payload.status,
-                  exitCode: payload.exitCode,
-                }),
-              );
-            },
-            onPatchSummary: async (payload) => {
-              if (payload.phase !== "end") {
-                return;
-              }
-              await pushPreviewToolProgress(
-                buildChannelProgressDraftLine({
-                  event: "patch",
-                  phase: payload.phase,
-                  title: payload.title,
-                  name: payload.name,
-                  added: payload.added,
-                  modified: payload.modified,
-                  deleted: payload.deleted,
-                  summary: payload.summary,
-                }),
-              );
-            },
+    const turnResult = await traceSlackQaPhase(
+      "dispatch.turn",
+      () =>
+        runPreparedInboundReplyTurn({
+          channel: "slack",
+          accountId: route.accountId,
+          routeSessionKey: route.sessionKey,
+          storePath: prepared.turn.storePath,
+          ctxPayload: prepared.ctxPayload,
+          recordInboundSession,
+          record: prepared.turn.record as ChannelTurnRecordOptions,
+          history: prepared.turn.history,
+          botLoopProtection: resolveSlackBotLoopProtection(prepared),
+          onPreDispatchFailure: async () => {
+            dispatchSettledBeforeStart = true;
+            await settleReplyDispatcher({
+              dispatcher,
+              onSettled: () => markDispatchIdle(),
+            });
           },
+          runDispatch: () =>
+            traceSlackQaPhase(
+              "dispatch.model",
+              () =>
+                dispatchInboundMessage({
+                  ctx: prepared.ctxPayload,
+                  cfg,
+                  dispatcher,
+                  replyOptions: {
+                    ...replyOptions,
+                    skillFilter: prepared.channelConfig?.skills,
+                    sourceReplyDeliveryMode,
+                    hasRepliedRef,
+                    disableBlockStreaming,
+                    onModelSelected,
+                    suppressDefaultToolProgressMessages: suppressDefaultToolProgressMessages
+                      ? true
+                      : undefined,
+                    onPartialReply: useStreaming
+                      ? undefined
+                      : !previewStreamingEnabled
+                        ? undefined
+                        : async (payload) => {
+                            updateDraftFromPartial(payload.text);
+                          },
+                    onAssistantMessageStart: onDraftBoundary,
+                    onReasoningEnd: onDraftBoundary,
+                    onReasoningStream: statusReactionsEnabled
+                      ? async () => {
+                          await statusReactions.setThinking();
+                        }
+                      : undefined,
+                    onToolStart: async (payload) => {
+                      if (statusReactionsEnabled) {
+                        await statusReactions.setTool(payload.name);
+                      }
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLineForEntry(
+                          account.config,
+                          {
+                            event: "tool",
+                            name: payload.name,
+                            phase: payload.phase,
+                            args: payload.args,
+                          },
+                          payload.detailMode ? { detailMode: payload.detailMode } : undefined,
+                        ),
+                        { toolName: payload.name },
+                      );
+                    },
+                    onItemEvent: async (payload) => {
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLineForEntry(account.config, {
+                          event: "item",
+                          itemId: payload.itemId,
+                          itemKind: payload.kind,
+                          title: payload.title,
+                          name: payload.name,
+                          phase: payload.phase,
+                          status: payload.status,
+                          summary: payload.summary,
+                          progressText: payload.progressText,
+                          meta: payload.meta,
+                        }),
+                      );
+                    },
+                    onPlanUpdate: async (payload) => {
+                      if (payload.phase !== "update") {
+                        return;
+                      }
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLine({
+                          event: "plan",
+                          phase: payload.phase,
+                          title: payload.title,
+                          explanation: payload.explanation,
+                          steps: payload.steps,
+                        }),
+                      );
+                    },
+                    onApprovalEvent: async (payload) => {
+                      if (payload.phase !== "requested") {
+                        return;
+                      }
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLine({
+                          event: "approval",
+                          phase: payload.phase,
+                          title: payload.title,
+                          command: payload.command,
+                          reason: payload.reason,
+                          message: payload.message,
+                        }),
+                      );
+                    },
+                    onCommandOutput: async (payload) => {
+                      if (payload.phase !== "end") {
+                        return;
+                      }
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLine({
+                          event: "command-output",
+                          phase: payload.phase,
+                          title: payload.title,
+                          name: payload.name,
+                          status: payload.status,
+                          exitCode: payload.exitCode,
+                        }),
+                      );
+                    },
+                    onPatchSummary: async (payload) => {
+                      if (payload.phase !== "end") {
+                        return;
+                      }
+                      await pushPreviewToolProgress(
+                        buildChannelProgressDraftLine({
+                          event: "patch",
+                          phase: payload.phase,
+                          title: payload.title,
+                          name: payload.name,
+                          added: payload.added,
+                          modified: payload.modified,
+                          deleted: payload.deleted,
+                          summary: payload.summary,
+                        }),
+                      );
+                    },
+                  },
+                }),
+              {
+                draftStream: Boolean(draftStream),
+                streaming: useStreaming,
+              },
+            ),
         }),
-    });
+      {
+        draftStream: Boolean(draftStream),
+        streaming: useStreaming,
+      },
+    );
     if (turnResult.dispatched) {
       const result = turnResult.dispatchResult;
       queuedFinal = result.queuedFinal;

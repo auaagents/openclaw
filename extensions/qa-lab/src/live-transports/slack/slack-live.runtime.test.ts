@@ -118,6 +118,25 @@ describe("Slack live QA runtime helpers", () => {
     expect(next.channels?.slack?.accounts?.sut?.channels?.C123456789?.requireMention).toBe(false);
   });
 
+  it("parses gateway phase trace lines from sanitized logs", () => {
+    expect(
+      __testing.parseSlackQaGatewayPhaseTrace(
+        [
+          "noise",
+          'openclaw:slack-qa-trace {"at":"2026-05-18T00:00:00.000Z","phase":"dispatch.model.end","durationMs":1234,"streaming":false}',
+          "openclaw:slack-qa-trace not-json",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      {
+        at: "2026-05-18T00:00:00.000Z",
+        durationMs: 1234,
+        phase: "dispatch.model.end",
+        streaming: false,
+      },
+    ]);
+  });
+
   it("records Slack accepted timestamps without thread polling for top-level replies", async () => {
     let historyCalls = 0;
     let threadCalls = 0;

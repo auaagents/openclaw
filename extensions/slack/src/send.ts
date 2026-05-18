@@ -30,6 +30,7 @@ import { validateSlackBlocksArray } from "./blocks-input.js";
 import { createSlackTokenCacheKey, getSlackWriteClient } from "./client.js";
 import { markdownToSlackMrkdwnChunks } from "./format.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
+import { traceSlackQaPhase } from "./qa-trace.js";
 import { loadOutboundMediaFromUrl } from "./runtime-api.js";
 import { recordSlackThreadParticipation } from "./sent-thread-cache.js";
 import { parseSlackTarget } from "./targets.js";
@@ -324,41 +325,48 @@ async function postSlackMessageBestEffort(params: {
 }) {
   const basePayload = buildSlackPostMessagePayload(params);
   const postChatMessage = params.client.chat.postMessage.bind(params.client.chat);
-  try {
-    // Slack Web API types model icon_url and icon_emoji as mutually exclusive.
-    // Build payloads in explicit branches so TS and runtime stay aligned.
-    const identity = params.identity;
-    if (identity?.iconUrl) {
+  const post = async () => {
+    try {
+      // Slack Web API types model icon_url and icon_emoji as mutually exclusive.
+      // Build payloads in explicit branches so TS and runtime stay aligned.
+      const identity = params.identity;
+      if (identity?.iconUrl) {
+        return await withSlackDnsRequestRetry("chat.postMessage", () =>
+          postChatMessage({
+            ...basePayload,
+            ...(identity.username ? { username: identity.username } : {}),
+            icon_url: identity.iconUrl,
+          }),
+        );
+      }
+      if (identity?.iconEmoji) {
+        return await withSlackDnsRequestRetry("chat.postMessage", () =>
+          postChatMessage({
+            ...basePayload,
+            ...(identity.username ? { username: identity.username } : {}),
+            icon_emoji: identity.iconEmoji,
+          }),
+        );
+      }
       return await withSlackDnsRequestRetry("chat.postMessage", () =>
         postChatMessage({
           ...basePayload,
-          ...(identity.username ? { username: identity.username } : {}),
-          icon_url: identity.iconUrl,
+          ...(identity?.username ? { username: identity.username } : {}),
         }),
       );
+    } catch (err) {
+      if (!hasCustomIdentity(params.identity) || !isSlackCustomizeScopeError(err)) {
+        throw err;
+      }
+      logVerbose("slack send: missing chat:write.customize, retrying without custom identity");
+      return withSlackDnsRequestRetry("chat.postMessage", () => postChatMessage(basePayload));
     }
-    if (identity?.iconEmoji) {
-      return await withSlackDnsRequestRetry("chat.postMessage", () =>
-        postChatMessage({
-          ...basePayload,
-          ...(identity.username ? { username: identity.username } : {}),
-          icon_emoji: identity.iconEmoji,
-        }),
-      );
-    }
-    return await withSlackDnsRequestRetry("chat.postMessage", () =>
-      postChatMessage({
-        ...basePayload,
-        ...(identity?.username ? { username: identity.username } : {}),
-      }),
-    );
-  } catch (err) {
-    if (!hasCustomIdentity(params.identity) || !isSlackCustomizeScopeError(err)) {
-      throw err;
-    }
-    logVerbose("slack send: missing chat:write.customize, retrying without custom identity");
-    return withSlackDnsRequestRetry("chat.postMessage", () => postChatMessage(basePayload));
-  }
+  };
+  return await traceSlackQaPhase("slack.api.chat_post_message", post, {
+    hasBlocks: Boolean(params.blocks?.length),
+    hasIdentity: hasCustomIdentity(params.identity),
+    hasThread: Boolean(params.threadTs),
+  });
 }
 
 export type SlackSendResult = {

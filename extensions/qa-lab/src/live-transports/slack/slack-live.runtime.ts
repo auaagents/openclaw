@@ -201,6 +201,7 @@ type SlackQaReplyObservation = {
 
 type SlackQaScenarioTrace = {
   channelHistoryCalls: number;
+  gatewayPhases?: SlackQaGatewayPhaseTrace[];
   observerLagMs?: number;
   observedRttMs: number;
   polls: number;
@@ -208,6 +209,14 @@ type SlackQaScenarioTrace = {
   responseWaitMs: number;
   threadHistoryCalls: number;
   transportRttMs?: number;
+};
+
+type SlackQaGatewayPhaseTrace = {
+  at?: string;
+  durationMs?: number;
+  error?: string;
+  phase: string;
+  [key: string]: boolean | number | string | undefined;
 };
 
 type SlackQaGatewayRssSample = {
@@ -225,6 +234,8 @@ type SlackQaGatewayHeapSnapshot = {
 
 const SLACK_QA_CAPTURE_CONTENT_ENV = "OPENCLAW_QA_SLACK_CAPTURE_CONTENT";
 const QA_REDACT_PUBLIC_METADATA_ENV = "OPENCLAW_QA_REDACT_PUBLIC_METADATA";
+const SLACK_QA_RTT_TRACE_ENV = "OPENCLAW_QA_SLACK_RTT_TRACE";
+const SLACK_QA_RTT_TRACE_PREFIX = "openclaw:slack-qa-trace ";
 const SLACK_QA_WEB_API_TIMEOUT_MS = 45_000;
 const SLACK_QA_ENV_KEYS = [
   "OPENCLAW_QA_SLACK_CHANNEL_ID",
@@ -474,6 +485,52 @@ function parseSlackTimestampMs(value: string | undefined) {
 
 function toIsoString(ms: number | undefined) {
   return ms === undefined ? undefined : new Date(ms).toISOString();
+}
+
+function parseSlackQaGatewayPhaseTrace(logs: string): SlackQaGatewayPhaseTrace[] {
+  const phases: SlackQaGatewayPhaseTrace[] = [];
+  for (const line of logs.split(/\r?\n/u)) {
+    const index = line.indexOf(SLACK_QA_RTT_TRACE_PREFIX);
+    if (index < 0) {
+      continue;
+    }
+    const raw = line.slice(index + SLACK_QA_RTT_TRACE_PREFIX.length).trim();
+    if (!raw) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        continue;
+      }
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.phase !== "string" || !record.phase.trim()) {
+        continue;
+      }
+      const phase: SlackQaGatewayPhaseTrace = { phase: record.phase.trim() };
+      for (const [key, value] of Object.entries(record)) {
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          phase[key] = value;
+        }
+      }
+      phases.push(phase);
+    } catch {
+      // Ignore unrelated or truncated gateway log lines.
+    }
+  }
+  return phases;
+}
+
+function formatSlackQaGatewayPhaseTrace(phases: readonly SlackQaGatewayPhaseTrace[]) {
+  return phases
+    .filter((phase) => phase.phase.endsWith(".end") || phase.phase.endsWith(".error"))
+    .map((phase) => {
+      const duration =
+        typeof phase.durationMs === "number" ? `${Math.round(phase.durationMs)}ms` : "n/a";
+      return `${phase.phase.replace(/\.(?:end|error)$/u, "")} ${duration}`;
+    })
+    .slice(0, 8)
+    .join(", ");
 }
 
 function sanitizeSlackQaArtifactLabel(label: string) {
@@ -1054,6 +1111,12 @@ function renderSlackQaMarkdown(params: {
       lines.push(
         `- Polls: ${scenario.trace.polls} (${scenario.trace.channelHistoryCalls} channel, ${scenario.trace.threadHistoryCalls} thread)`,
       );
+      const gatewayPhases = scenario.trace.gatewayPhases
+        ? formatSlackQaGatewayPhaseTrace(scenario.trace.gatewayPhases)
+        : "";
+      if (gatewayPhases) {
+        lines.push(`- Gateway phases: ${gatewayPhases}`);
+      }
     }
     lines.push("");
   }
@@ -1092,6 +1155,8 @@ export async function runSlackQaLive(params: {
   const gatewayHeapCheckpointsEnabled = isTruthyOptIn(
     process.env.OPENCLAW_QA_GATEWAY_HEAP_CHECKPOINTS,
   );
+  const gatewayRttTraceEnabled =
+    gatewayHeapCheckpointsEnabled || isTruthyOptIn(process.env[SLACK_QA_RTT_TRACE_ENV]);
   const startedAt = new Date().toISOString();
   const observedMessages: SlackObservedMessage[] = [];
   const scenarioResults: SlackQaScenarioResult[] = [];
@@ -1175,6 +1240,7 @@ export async function runSlackQaLive(params: {
             alternateModel,
             fastMode: params.fastMode,
             controlUiEnabled: false,
+            runtimeEnvPatch: gatewayRttTraceEnabled ? { [SLACK_QA_RTT_TRACE_ENV]: "1" } : undefined,
             mutateConfig: (cfg) =>
               buildSlackQaConfig(cfg, {
                 channelId: activeRuntimeEnv.channelId,
@@ -1210,6 +1276,7 @@ export async function runSlackQaLive(params: {
           const beforeRunResult = await scenarioRun.beforeRun?.(baseScenarioContext);
           const beforeRunDetails =
             typeof beforeRunResult === "string" ? beforeRunResult : beforeRunResult?.details;
+          const gatewayTraceLogOffset = activeGatewayHarness.gateway.logs().length;
           const requestStartedAt = new Date();
           sampleGatewayProcessRss(`${scenario.id}:before-send`);
           const sent = await sendSlackChannelMessage({
@@ -1241,6 +1308,11 @@ export async function runSlackQaLive(params: {
             });
             sampleGatewayProcessRss(`${scenario.id}:reply-observed`);
             await captureGatewayHeapCheckpoint(`${scenario.id}:reply-observed`);
+            const gatewayPhases = gatewayRttTraceEnabled
+              ? parseSlackQaGatewayPhaseTrace(
+                  activeGatewayHarness.gateway.logs().slice(gatewayTraceLogOffset),
+                )
+              : [];
             scenarioRun.verify?.(reply.message, { requestThreadTs, sentTs: sent.ts });
             const responseObservedAt = new Date(reply.observedAt);
             const observedRttMs = responseObservedAt.getTime() - requestStartedAt.getTime();
@@ -1285,6 +1357,7 @@ export async function runSlackQaLive(params: {
                 polls: reply.polls,
                 channelHistoryCalls: reply.channelHistoryCalls,
                 threadHistoryCalls: reply.threadHistoryCalls,
+                ...(gatewayPhases.length > 0 ? { gatewayPhases } : {}),
               },
               transportRttMs,
               ...(gatewayProcessRssSamples.length > 0 ? { gatewayProcessRssSamples } : {}),
@@ -1328,10 +1401,12 @@ export async function runSlackQaLive(params: {
                 ? `${formatErrorMessage(error)}; retried ${scenarioAttempt - 1}x`
                 : formatErrorMessage(error),
           });
-          preservedGatewayDebugArtifacts = true;
           if (gatewayHarness) {
             await gatewayHarness
-              .stop({ keepTemp: true, preserveToDir: gatewayDebugDirPath })
+              .stop({ preserveToDir: gatewayDebugDirPath })
+              .then(() => {
+                preservedGatewayDebugArtifacts = true;
+              })
               .catch((stopError) => {
                 appendLiveLaneIssue(cleanupIssues, "gateway debug preservation failed", stopError);
               });
@@ -1339,9 +1414,16 @@ export async function runSlackQaLive(params: {
           break;
         } finally {
           if (!preservedGatewayDebugArtifacts && gatewayHarness) {
-            await gatewayHarness.stop().catch((error) => {
-              appendLiveLaneIssue(cleanupIssues, "gateway stop failed", error);
-            });
+            await gatewayHarness
+              .stop(gatewayRttTraceEnabled ? { preserveToDir: gatewayDebugDirPath } : undefined)
+              .then(() => {
+                if (gatewayRttTraceEnabled) {
+                  preservedGatewayDebugArtifacts = true;
+                }
+              })
+              .catch((error) => {
+                appendLiveLaneIssue(cleanupIssues, "gateway stop failed", error);
+              });
             await new Promise((resolve) => setTimeout(resolve, SLACK_QA_GATEWAY_STOP_SETTLE_MS));
           }
         }
@@ -1464,6 +1546,7 @@ export const testing = {
   findScenario,
   parseSlackTimestampMs,
   parseSlackQaCredentialPayload,
+  parseSlackQaGatewayPhaseTrace,
   resolveSlackQaRuntimeEnv,
   SLACK_QA_STANDARD_SCENARIO_IDS,
   waitForSlackScenarioReply,
