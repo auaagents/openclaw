@@ -18,6 +18,7 @@ import {
   saveExecApprovals,
   type ExecApprovalsFile,
   type ExecAsk,
+  type ExecMode,
   type ExecSecurity,
   type ExecTarget,
 } from "../infra/exec-approvals.js";
@@ -31,12 +32,15 @@ type ExecPolicyPresetName = "yolo" | "cautious" | "deny-all";
 
 type ExecPolicyResolved = {
   host?: ExecTarget;
+  mode?: ExecMode;
   security?: ExecSecurity;
   ask?: ExecAsk;
   askFallback?: ExecSecurity;
 };
 
-const EXEC_POLICY_PRESETS: Record<ExecPolicyPresetName, Required<ExecPolicyResolved>> = {
+type ExecPolicyPreset = Required<Omit<ExecPolicyResolved, "mode">>;
+
+const EXEC_POLICY_PRESETS: Record<ExecPolicyPresetName, ExecPolicyPreset> = {
   yolo: {
     host: "gateway",
     security: "full",
@@ -143,6 +147,7 @@ function hashExecApprovalsFile(file: ExecApprovalsFile): string {
 
 function resolveExecPolicyInput(params: {
   host?: string;
+  mode?: string;
   security?: string;
   ask?: string;
   askFallback?: string;
@@ -154,6 +159,13 @@ function resolveExecPolicyInput(params: {
       failExecPolicy(`Invalid exec host: ${sanitizeExecPolicyMessage(params.host)}`);
     }
     resolved.host = host;
+  }
+  if (params.mode !== undefined) {
+    const mode = normalizeExecMode(params.mode);
+    if (!mode) {
+      failExecPolicy(`Invalid exec mode: ${sanitizeExecPolicyMessage(params.mode)}`);
+    }
+    resolved.mode = mode;
   }
   if (params.security !== undefined) {
     const security = normalizeExecSecurity(params.security);
@@ -168,6 +180,12 @@ function resolveExecPolicyInput(params: {
       failExecPolicy(`Invalid exec ask mode: ${sanitizeExecPolicyMessage(params.ask)}`);
     }
     resolved.ask = ask;
+  }
+  if (
+    resolved.mode !== undefined &&
+    (resolved.security !== undefined || resolved.ask !== undefined)
+  ) {
+    failExecPolicy("Use either --mode or legacy --security/--ask, not both.");
   }
   if (params.askFallback !== undefined) {
     const askFallback = normalizeExecSecurity(params.askFallback);
@@ -195,7 +213,11 @@ function applyConfigExecPolicy(draft: Record<string, unknown>, policy: ExecPolic
   if (policy.host !== undefined) {
     root.tools.exec.host = policy.host;
   }
-  if (policy.security !== undefined || policy.ask !== undefined) {
+  if (policy.mode !== undefined) {
+    root.tools.exec.mode = policy.mode;
+    delete root.tools.exec.security;
+    delete root.tools.exec.ask;
+  } else if (policy.security !== undefined || policy.ask !== undefined) {
     const existingMode = normalizeExecMode(
       typeof root.tools.exec.mode === "string" ? root.tools.exec.mode : undefined,
     );
@@ -223,13 +245,16 @@ function applyApprovalsDefaults(
   policy: ExecPolicyResolved,
 ): ExecApprovalsFile {
   const next: ExecApprovalsFile = structuredClone(file ?? { version: 1 });
+  const modePolicy = policy.mode !== undefined ? resolveExecPolicyForMode(policy.mode) : undefined;
   next.version = 1;
   next.defaults ??= {};
-  if (policy.security !== undefined) {
-    next.defaults.security = policy.security;
+  const security = policy.security ?? modePolicy?.security;
+  const ask = policy.ask ?? modePolicy?.ask;
+  if (security !== undefined) {
+    next.defaults.security = security;
   }
-  if (policy.ask !== undefined) {
-    next.defaults.ask = policy.ask;
+  if (ask !== undefined) {
+    next.defaults.ask = ask;
   }
   if (policy.askFallback !== undefined) {
     next.defaults.askFallback = policy.askFallback;
@@ -444,6 +469,7 @@ export function registerExecPolicyCli(program: Command) {
     .command("set")
     .description("Synchronize local config and host approvals using explicit values")
     .option("--host <host>", "Exec host target: auto|sandbox|gateway|node")
+    .option("--mode <mode>", "Exec mode: deny|allowlist|ask|auto|full")
     .option("--security <mode>", "Exec security: deny|allowlist|full")
     .option("--ask <mode>", "Exec ask mode: off|on-miss|always")
     .option("--ask-fallback <mode>", "Host approvals fallback: deny|allowlist|full")
@@ -451,6 +477,7 @@ export function registerExecPolicyCli(program: Command) {
     .action(
       async (opts: {
         host?: string;
+        mode?: string;
         security?: string;
         ask?: string;
         askFallback?: string;
@@ -459,7 +486,9 @@ export function registerExecPolicyCli(program: Command) {
         await runExecPolicyAction(async () => {
           const policy = resolveExecPolicyInput(opts);
           if (Object.keys(policy).length === 0) {
-            failExecPolicy("Provide at least one of --host, --security, --ask, or --ask-fallback.");
+            failExecPolicy(
+              "Provide at least one of --host, --mode, --security, --ask, or --ask-fallback.",
+            );
           }
           const payload = await applyLocalExecPolicy(policy);
           if (opts.json) {

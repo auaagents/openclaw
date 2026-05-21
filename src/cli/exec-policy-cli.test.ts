@@ -388,6 +388,36 @@ describe("exec-policy CLI", () => {
     });
   });
 
+  it("sets normalized mode and matching approvals defaults", async () => {
+    await runExecPolicyCommand([
+      "exec-policy",
+      "set",
+      "--host",
+      "gateway",
+      "--mode",
+      "auto",
+      "--ask-fallback",
+      "allowlist",
+      "--json",
+    ]);
+
+    expect(mocks.getConfig().tools?.exec).toEqual({
+      host: "gateway",
+      mode: "auto",
+    });
+    expect(mocks.getApprovals().defaults).toEqual({
+      security: "allowlist",
+      ask: "on-miss",
+      askFallback: "allowlist",
+    });
+    const payload = readLastJsonWrite();
+    expectFields(payload.applied, {
+      host: "gateway",
+      mode: "auto",
+      askFallback: "allowlist",
+    });
+  });
+
   it("clears normalized mode when setting legacy security or ask values", async () => {
     mocks.setConfig({
       tools: {
@@ -486,6 +516,18 @@ describe("exec-policy CLI", () => {
 
     expect(mocks.defaultRuntime.error).toHaveBeenCalledTimes(1);
     expect(mocks.runtimeErrors).toEqual(["Invalid exec security: nope"]);
+    expect(mocks.defaultRuntime.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects mixing normalized mode with legacy security or ask values", async () => {
+    await expect(
+      runExecPolicyCommand(["exec-policy", "set", "--mode", "auto", "--ask", "on-miss"]),
+    ).rejects.toThrow("__exit__:1");
+
+    expect(mocks.defaultRuntime.error).toHaveBeenCalledTimes(1);
+    expect(mocks.runtimeErrors).toEqual([
+      "Use either --mode or legacy --security/--ask, not both.",
+    ]);
     expect(mocks.defaultRuntime.exit).toHaveBeenCalledTimes(1);
   });
 

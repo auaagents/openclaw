@@ -38,6 +38,7 @@ openclaw exec-policy show --json
 openclaw exec-policy preset yolo
 openclaw exec-policy preset cautious --json
 
+openclaw exec-policy set --host gateway --mode auto --ask-fallback deny
 openclaw exec-policy set --host gateway --security full --ask off --ask-fallback full
 ```
 

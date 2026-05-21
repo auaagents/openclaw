@@ -261,11 +261,12 @@ If you want a more conservative setup, tighten either layer back to
 
 ```bash
 openclaw exec-policy preset yolo
+openclaw exec-policy set --host gateway --mode auto
 ```
 
 That local shortcut updates both:
 
-- Local `tools.exec.host/security/ask`.
+- Local `tools.exec.host/mode` or `tools.exec.host/security/ask`.
 - Local `~/.openclaw/exec-approvals.json` defaults.
 
 It is intentionally local-only. To change gateway-host or node-host
