@@ -112,6 +112,7 @@ type SystemRunParsePhase = {
 type SystemRunPolicyPhase = SystemRunParsePhase & {
   approvals: ResolvedExecApprovals;
   security: ExecSecurity;
+  ask: ExecAsk;
   policy: ReturnType<typeof evaluateSystemRunPolicy>;
   durableApprovalSatisfied: boolean;
   strictInlineEval: boolean;
@@ -679,6 +680,7 @@ async function evaluateSystemRunPolicyPhase(
     cwd: hardenedPaths.cwd,
     approvals,
     security,
+    ask,
     policy,
     durableApprovalSatisfied,
     strictInlineEval,
@@ -714,8 +716,16 @@ async function executeSystemRunPhase(
     });
     return;
   }
+  const requiresUnplannedMutableFileApproval =
+    phase.shellPayload === null &&
+    phase.inlineEvalHit === null &&
+    !phase.policy.approvedByAsk &&
+    !phase.durableApprovalSatisfied &&
+    !(phase.security === "full" && phase.ask === "off");
   const expectedMutableFileOperand =
-    phase.approvalPlan || phase.approvalDecision === "allow-once"
+    phase.approvalPlan ||
+    phase.approvalDecision === "allow-once" ||
+    requiresUnplannedMutableFileApproval
       ? resolveMutableFileOperandSnapshotSync({
           argv: phase.argv,
           cwd: phase.cwd,

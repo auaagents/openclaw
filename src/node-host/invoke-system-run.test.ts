@@ -957,6 +957,42 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     }
   });
 
+  it("requires mutable script binding for allowlisted direct system.run commands", async () => {
+    const tmp = createFixtureDir("openclaw-system-run-allowlisted-script-binding-");
+    const scriptPath = path.join(tmp, "read-info.js");
+    fs.writeFileSync(scriptPath, 'console.log("allowlisted");\n');
+
+    await withTempApprovalsHome({
+      approvals: createAllowlistOnMissApprovals({
+        agents: {
+          main: {
+            allowlist: [
+              { pattern: fs.realpathSync(process.execPath) },
+              { pattern: fs.realpathSync(scriptPath) },
+            ],
+          },
+        },
+      }),
+      run: async () => {
+        const runCommand = vi.fn(async () => createLocalRunResult("should-not-run"));
+        const invoke = await runSystemInvoke({
+          preferMacAppExecHost: false,
+          command: [process.execPath, scriptPath],
+          cwd: tmp,
+          runCommand,
+          security: "allowlist",
+          ask: "on-miss",
+        });
+
+        expect(runCommand).not.toHaveBeenCalled();
+        expectInvokeErrorMessage(invoke.sendInvokeResult, {
+          message: "SYSTEM_RUN_DENIED: approval missing script operand binding",
+          exact: true,
+        });
+      },
+    });
+  });
+
   it("shows auto reviewer rationale when system.run auto mode defers", async () => {
     const tmp = createFixtureDir("openclaw-system-run-auto-defer-");
     const scriptPath = path.join(tmp, "unclear.js");
