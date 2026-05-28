@@ -3430,7 +3430,12 @@ function getReasoningContentReplayModelIdCandidates(modelId: unknown): string[] 
   if (colonParts.length > 1) {
     candidates.push(colonParts[0] ?? "", colonParts[colonParts.length - 1] ?? "");
   }
-  for (const candidate of [...candidates]) {
+  const baseCount = candidates.length;
+  for (let index = 0; index < baseCount; index += 1) {
+    const candidate = candidates[index];
+    if (typeof candidate !== "string") {
+      continue;
+    }
     const stripped = stripReasoningContentReplayTierSuffix(candidate);
     if (stripped !== candidate) {
       candidates.push(stripped);
