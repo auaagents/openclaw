@@ -323,6 +323,8 @@ function wrapPlainTextToolCallStream(
   void (async () => {
     const bufferedTextEvents: unknown[] = [];
     let bufferedText = "";
+    let flushedTextEvents = false;
+    let replacementSupersedesFlushedText = false;
     let ended = false;
     const endStream = () => {
       if (!ended) {
@@ -331,10 +333,23 @@ function wrapPlainTextToolCallStream(
       }
     };
     const flushBufferedTextEvents = () => {
-      for (const event of bufferedTextEvents.splice(0)) {
+      const events = bufferedTextEvents.splice(0);
+      if (events.length > 0) {
+        flushedTextEvents = true;
+      }
+      for (const event of events) {
         stream.push(event);
       }
       bufferedText = "";
+    };
+    const emitTextReplacementClear = (message: Record<string, unknown>) => {
+      stream.push({
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "",
+        replace: true,
+        partial: { ...message, content: [] },
+      });
     };
 
     try {
@@ -343,11 +358,23 @@ function wrapPlainTextToolCallStream(
         const type = typeof record?.type === "string" ? record.type : "";
 
         if (type === "text_start" || type === "text_delta" || type === "text_end") {
+          const replacesBufferedText = type === "text_delta" && record?.replace === true;
+          if (replacesBufferedText) {
+            bufferedTextEvents.splice(0);
+            if (flushedTextEvents) {
+              replacementSupersedesFlushedText = true;
+            }
+          }
           bufferedTextEvents.push(event);
           if (typeof record?.delta === "string") {
-            bufferedText += record.delta;
-          } else if (typeof record?.content === "string" && !bufferedText) {
+            bufferedText = replacesBufferedText ? record.delta : bufferedText + record.delta;
+          } else if (
+            typeof record?.content === "string" &&
+            (!bufferedText || replacesBufferedText)
+          ) {
             bufferedText = record.content;
+          } else if (replacesBufferedText) {
+            bufferedText = "";
           }
           if (!couldStillBePlainTextToolCall(bufferedText, toolNames)) {
             flushBufferedTextEvents();
@@ -360,6 +387,9 @@ function wrapPlainTextToolCallStream(
           if (promotedMessage) {
             bufferedTextEvents.splice(0);
             bufferedText = "";
+            if (replacementSupersedesFlushedText) {
+              emitTextReplacementClear(promotedMessage);
+            }
             emitPromotedToolCallEvents(stream, promotedMessage);
             stream.push({ ...record, reason: "toolUse", message: promotedMessage });
           } else {

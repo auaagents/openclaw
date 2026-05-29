@@ -585,8 +585,8 @@ export async function runBtwSideQuestion(
     }
 
     if (event.type === "text_delta") {
-      sawTextEvent = true;
       answerText = event.replace ? event.delta : answerText + event.delta;
+      sawTextEvent = Boolean(answerText.trim());
       if (event.replace) {
         chunker?.reset();
       }

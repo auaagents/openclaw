@@ -45,12 +45,13 @@ export function createOpenAiResponsesTextEvent(params: {
   type: "text_delta" | "text_end";
   text: string;
   delta?: string;
+  contentIndex?: number;
   id?: string;
   signaturePhase?: OpenAiResponsesTextEventPhase;
   partialPhase?: OpenAiResponsesTextEventPhase;
   messagePhase?: OpenAiResponsesTextEventPhase;
   content?: unknown[];
-  partial?: ReturnType<typeof createOpenAiResponsesPartial>;
+  partial?: unknown;
 }) {
   const partial =
     params.partial ??
@@ -72,6 +73,7 @@ export function createOpenAiResponsesTextEvent(params: {
     },
     assistantMessageEvent: {
       type: params.type,
+      ...(params.contentIndex !== undefined ? { contentIndex: params.contentIndex } : {}),
       ...(params.type === "text_delta"
         ? { delta: params.delta ?? params.text }
         : { content: params.text }),

@@ -598,20 +598,26 @@ export class EmbeddedTuiBackend implements TuiBackend {
     this.pendingLifecycleErrors.set(runId, timer);
   }
 
-  private emitChatDelta(runId: string, run: LocalRunState) {
+  private emitChatDelta(runId: string, run: LocalRunState, options?: { replace?: boolean }) {
     const projected = projectLiveAssistantBufferedText(run.buffer.trim(), {
       suppressLeadFragments: true,
     });
     const text = projected.text.trim();
-    if (!text || projected.suppress) {
+    const forceReplace = options?.replace === true && run.lastBroadcastText !== undefined;
+    const shouldClearSuppressedReplacement =
+      forceReplace && projected.suppress && run.lastBroadcastText !== "";
+    if ((!text || projected.suppress) && !shouldClearSuppressedReplacement) {
       return;
     }
-    const deltaPayload = resolveDeltaPayload(text, run.lastBroadcastText);
+    const broadcastText = shouldClearSuppressedReplacement ? "" : text;
+    const deltaPayload = forceReplace
+      ? { deltaText: broadcastText, replace: true as const }
+      : resolveDeltaPayload(broadcastText, run.lastBroadcastText);
     if (!deltaPayload.deltaText && !deltaPayload.replace) {
       return;
     }
     run.registered = true;
-    run.lastBroadcastText = text;
+    run.lastBroadcastText = broadcastText;
     this.emit("chat", {
       runId,
       sessionKey: run.sessionKey,
@@ -619,7 +625,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       ...deltaPayload,
       message: {
         role: "assistant",
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: broadcastText }],
         timestamp: Date.now(),
       },
     });
@@ -753,8 +759,9 @@ export class EmbeddedTuiBackend implements TuiBackend {
         previousText: run.buffer,
         nextText: cleaned.text,
         nextDelta: cleaned.delta,
+        nextReplace: evt.data.replace === true,
       });
-      this.emitChatDelta(evt.runId, run);
+      this.emitChatDelta(evt.runId, run, { replace: evt.data.replace === true });
       return;
     }
 

@@ -577,6 +577,31 @@ describe("runBtwSideQuestion", () => {
     expect(result).toEqual({ text: "Corrected answer" });
   });
 
+  it("uses the final BTW message after an empty replacement clears streamed text", async () => {
+    streamSimpleMock.mockReturnValue(
+      makeAsyncEvents([
+        {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "Draft answer",
+          partial: { role: "assistant", content: [] },
+        },
+        {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "",
+          replace: true,
+          partial: { role: "assistant", content: [] },
+        },
+        createDoneEvent("Corrected final answer"),
+      ]),
+    );
+
+    const result = await runSideQuestion();
+
+    expect(result).toEqual({ text: "Corrected final answer" });
+  });
+
   it("routes Codex-selected BTW questions through the harness side-question hook", async () => {
     const codexSideQuestionMock = vi.fn().mockResolvedValue({ text: "Codex side answer." });
     registerAgentHarness({

@@ -1195,6 +1195,77 @@ describe("EmbeddedTuiBackend", () => {
     ]);
   });
 
+  it("honors explicit local embedded replacement deltas that shorten or clear text", async () => {
+    const { EmbeddedTuiBackend } = await import("./embedded-backend.js");
+    const pending = deferred<{
+      payloads: Array<{ text: string }>;
+      meta: Record<string, unknown>;
+    }>();
+    agentCommandFromIngressMock.mockReturnValueOnce(pending.promise);
+
+    const backend = new EmbeddedTuiBackend();
+    const events: Array<{ event: string; payload: unknown }> = [];
+    backend.onEvent = (evt) => {
+      events.push({ event: evt.event, payload: evt.payload });
+    };
+
+    backend.start();
+    await backend.sendChat({
+      sessionKey: "agent:main:main",
+      message: "replace",
+      runId: "run-local-explicit-replace",
+    });
+
+    registeredListener?.({
+      runId: "run-local-explicit-replace",
+      stream: "assistant",
+      data: { text: "Hello world" },
+    });
+    registeredListener?.({
+      runId: "run-local-explicit-replace",
+      stream: "assistant",
+      data: { text: "NO_", delta: "", replace: true },
+    });
+    registeredListener?.({
+      runId: "run-local-explicit-replace",
+      stream: "assistant",
+      data: { text: "Hello", delta: "", replace: true },
+    });
+    registeredListener?.({
+      runId: "run-local-explicit-replace",
+      stream: "assistant",
+      data: { text: "", delta: "", replace: true },
+    });
+
+    pending.resolve({ payloads: [{ text: "" }], meta: {} });
+    await flushMicrotasks();
+
+    const chatPayloads = events
+      .filter((entry) => entry.event === "chat")
+      .map(
+        (entry) =>
+          entry.payload as {
+            state?: string;
+            deltaText?: string;
+            replace?: boolean;
+          },
+      );
+    expect(
+      chatPayloads
+        .filter((payload) => payload.state === "delta")
+        .map((payload) => ({
+          state: payload.state,
+          deltaText: payload.deltaText,
+          replace: payload.replace,
+        })),
+    ).toEqual([
+      { state: "delta", deltaText: "Hello world", replace: undefined },
+      { state: "delta", deltaText: "", replace: true },
+      { state: "delta", deltaText: "Hello", replace: true },
+      { state: "delta", deltaText: "", replace: true },
+    ]);
+  });
+
   it("keeps a fallback response deliverable after a retryable lifecycle error", async () => {
     const { EmbeddedTuiBackend } = await import("./embedded-backend.js");
     const pending = deferred<{

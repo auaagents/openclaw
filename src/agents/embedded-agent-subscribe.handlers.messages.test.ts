@@ -24,6 +24,7 @@ function createMessageUpdateContext(
   params: {
     onAgentEvent?: ReturnType<typeof vi.fn>;
     onPartialReply?: ReturnType<typeof vi.fn>;
+    onReasoningEnd?: ReturnType<typeof vi.fn>;
     flushBlockReplyBuffer?: ReturnType<typeof vi.fn>;
     resetAssistantTextStreamState?: () => void;
     resetAssistantMessageState?: ReturnType<typeof vi.fn>;
@@ -40,6 +41,7 @@ function createMessageUpdateContext(
       session: { id: "session-1" },
       ...(params.onAgentEvent ? { onAgentEvent: params.onAgentEvent } : {}),
       ...(params.onPartialReply ? { onPartialReply: params.onPartialReply } : {}),
+      ...(params.onReasoningEnd ? { onReasoningEnd: params.onReasoningEnd } : {}),
     },
     state: {
       deterministicApprovalPromptPending: false,
@@ -538,6 +540,47 @@ describe("handleMessageUpdate text signatures", () => {
     });
     expect(context.state.deltaBuffer).toBe("Corrected answer");
     expect(context.state.blockBuffer).toBe("Corrected answer");
+  });
+
+  it("closes open reasoning streams before replacement text deltas reset parser state", () => {
+    const onReasoningEnd = vi.fn();
+    const context = createMessageUpdateContext({
+      onReasoningEnd,
+      consumePartialReplyDirectives: vi.fn((text: string) => ({ text })),
+      state: {
+        reasoningStreamOpen: true,
+        deltaBuffer: "<think>draft",
+        partialBlockState: {
+          thinking: true,
+          final: false,
+          inlineCode: createInlineCodeState(),
+        },
+      },
+    });
+
+    handleMessageUpdate(context, {
+      type: "message_update",
+      message: { role: "assistant", content: [] },
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "Corrected answer",
+        replace: true,
+        partial: {
+          role: "assistant",
+          content: [],
+          stopReason: "stop",
+          api: "ollama",
+          provider: "ollama",
+          model: "qwen3:32b",
+          usage: {},
+          timestamp: 0,
+        },
+      },
+    } as never);
+
+    expect(onReasoningEnd).toHaveBeenCalledTimes(1);
+    expect(context.state.reasoningStreamOpen).toBe(false);
   });
 
   it("emits empty replacement text deltas to clear stale streamed text", () => {
@@ -1041,6 +1084,61 @@ describe("handleMessageUpdate commentary phase", () => {
     expect(event?.stream).toBe("assistant");
     expect(event?.data?.text).toBe("Done.");
     expect(event?.data?.delta).toBe("Done.");
+  });
+
+  it("uses reconstructed message metadata when delta partials are lightweight", () => {
+    const onAgentEvent = vi.fn();
+    const ctx = createMessageUpdateContext({
+      onAgentEvent,
+      shouldEmitPartialReplies: false,
+    });
+    const lightweightPartial = {
+      role: "assistant",
+      content: [],
+      stopReason: "stop",
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.2",
+      usage: {},
+      timestamp: 0,
+    };
+    const commentaryBlock = createOpenAiResponsesTextBlock({
+      text: "Working...",
+      id: "item_commentary",
+      phase: "commentary",
+    });
+    const finalBlock = createOpenAiResponsesTextBlock({
+      text: "Done.",
+      id: "item_final",
+      phase: "final_answer",
+    });
+
+    handleMessageUpdate(
+      ctx,
+      createTextUpdateEvent({
+        type: "text_delta",
+        text: "Working...",
+        contentIndex: 0,
+        content: [commentaryBlock],
+        partial: lightweightPartial,
+      }),
+    );
+    handleMessageUpdate(
+      ctx,
+      createTextUpdateEvent({
+        type: "text_delta",
+        text: "Done.",
+        contentIndex: 1,
+        content: [commentaryBlock, finalBlock],
+        partial: lightweightPartial,
+      }),
+    );
+
+    expect(onAgentEvent).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(onAgentEvent, "agent event")).toMatchObject({
+      stream: "assistant",
+      data: { text: "Done.", delta: "Done.", phase: "final_answer" },
+    });
   });
 
   it("contains synchronous text_end flush failures", async () => {

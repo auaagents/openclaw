@@ -1319,7 +1319,7 @@ describe("agent event handler", () => {
     nowSpy.mockRestore();
   });
 
-  it("suppresses non-empty control lead fragment replacements", () => {
+  it("clears prior visible text for non-empty control lead fragment replacements", () => {
     let now = 12_500;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     const { broadcast, nodeSendToSession, chatRunState, handler } = createHarness();
@@ -1345,8 +1345,18 @@ describe("agent event handler", () => {
       data: { text: "NO_", delta: "", replace: true },
     });
 
-    expect(chatBroadcastCalls(broadcast)).toHaveLength(1);
-    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
+    const chatCalls = chatBroadcastCalls(broadcast);
+    expect(chatCalls).toHaveLength(2);
+    const replacementPayload = chatCalls[1]?.[1] as {
+      deltaText?: string;
+      replace?: boolean;
+      message?: { content?: Array<{ text?: string }> };
+    };
+    expect(replacementPayload.deltaText).toBe("");
+    expect(replacementPayload.replace).toBe(true);
+    expect(replacementPayload.message?.content?.[0]?.text).toBe("");
+    expect(JSON.stringify(replacementPayload)).not.toContain("NO_");
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(2);
     nowSpy.mockRestore();
   });
 

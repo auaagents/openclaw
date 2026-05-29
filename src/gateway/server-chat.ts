@@ -523,12 +523,18 @@ export function createAgentEventHandler({
     chatRunState.bufferUpdatedAt.set(clientRunId, now);
     const projected = projectLiveAssistantBufferedText(mergedRawText);
     const mergedText = projected.text;
-    chatRunState.buffers.set(clientRunId, mergedText);
-    const shouldEmitSuppressedReplacementClear =
-      opts?.replace === true && mergedText === "" && !projected.pendingLeadFragment;
-    if (projected.suppress && !shouldEmitSuppressedReplacementClear) {
+    const previousBroadcastText = chatRunState.deltaLastBroadcastText.get(clientRunId);
+    const shouldClearSuppressedReplacement =
+      opts?.replace === true &&
+      projected.suppress &&
+      previousBroadcastText !== undefined &&
+      previousBroadcastText !== "";
+    const bufferedVisibleText = opts?.replace === true && projected.suppress ? "" : mergedText;
+    chatRunState.buffers.set(clientRunId, bufferedVisibleText);
+    if (projected.suppress && !shouldClearSuppressedReplacement) {
       return;
     }
+    const broadcastText = shouldClearSuppressedReplacement ? "" : mergedText;
     if (shouldHideHeartbeatChatOutput(clientRunId, sourceRunId)) {
       return;
     }
@@ -537,16 +543,16 @@ export function createAgentEventHandler({
       return;
     }
     const broadcastDelta = resolveBroadcastDelta({
-      text: mergedText,
-      previousBroadcastText: chatRunState.deltaLastBroadcastText.get(clientRunId),
+      text: broadcastText,
+      previousBroadcastText,
       replace: opts?.replace === true,
     });
     if (!broadcastDelta) {
       return;
     }
     chatRunState.deltaSentAt.set(clientRunId, now);
-    chatRunState.deltaLastBroadcastLen.set(clientRunId, mergedText.length);
-    chatRunState.deltaLastBroadcastText.set(clientRunId, mergedText);
+    chatRunState.deltaLastBroadcastLen.set(clientRunId, broadcastText.length);
+    chatRunState.deltaLastBroadcastText.set(clientRunId, broadcastText);
     const spawnedBy = resolveSpawnedBy(sessionKey);
     const payload = {
       runId: clientRunId,
@@ -558,7 +564,7 @@ export function createAgentEventHandler({
       ...(broadcastDelta.replace ? { replace: true as const } : {}),
       message: {
         role: "assistant",
-        content: [{ type: "text", text: mergedText }],
+        content: [{ type: "text", text: broadcastText }],
         timestamp: now,
       },
     };

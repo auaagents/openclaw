@@ -100,10 +100,10 @@ function extractStandaloneMessageToolText(
   }
 }
 
-function resolveAssistantStreamItemId(params: {
+function resolveAssistantStreamTextSignature(params: {
   contentIndex?: unknown;
   message: AgentMessage | undefined;
-}): string | undefined {
+}): { id?: string; phase?: AssistantPhase } | undefined {
   const content = (params.message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) {
     return undefined;
@@ -125,8 +125,8 @@ function resolveAssistantStreamItemId(params: {
       continue;
     }
     const signature = parseAssistantTextSignature(record.textSignature);
-    if (signature?.id) {
-      return signature.id;
+    if (signature?.id || signature?.phase) {
+      return signature;
     }
   }
   return undefined;
@@ -590,17 +590,32 @@ export function handleMessageUpdate(
     assistantRecord?.partial && typeof assistantRecord.partial === "object"
       ? (assistantRecord.partial as AssistantMessage)
       : msg;
-  const deliveryPhase = resolveAssistantMessagePhase(partialAssistant);
-  const isOpenAiResponsesPartial = isOpenAiResponsesAssistantMessage(partialAssistant);
-  const streamItemId =
-    deliveryPhase || isOpenAiResponsesPartial
-      ? resolveAssistantStreamItemId({
+  const partialSignature = resolveAssistantStreamTextSignature({
+    contentIndex: assistantRecord?.contentIndex,
+    message: partialAssistant,
+  });
+  const messageSignature =
+    partialAssistant === msg
+      ? undefined
+      : resolveAssistantStreamTextSignature({
           contentIndex: assistantRecord?.contentIndex,
-          message: partialAssistant,
-        })
+          message: msg,
+        });
+  const partialPhase = resolveAssistantMessagePhase(partialAssistant) ?? partialSignature?.phase;
+  const messagePhase = assistantPhase ?? messageSignature?.phase;
+  const deliveryPhase = partialPhase ?? messagePhase;
+  const phaseAssistant = partialPhase ? partialAssistant : messagePhase ? msg : partialAssistant;
+  const isOpenAiResponsesPartial = isOpenAiResponsesAssistantMessage(partialAssistant);
+  const isOpenAiResponsesMessage = isOpenAiResponsesAssistantMessage(msg);
+  const streamItemId =
+    deliveryPhase || isOpenAiResponsesPartial || isOpenAiResponsesMessage
+      ? (partialSignature?.id ?? messageSignature?.id)
       : undefined;
   const isPhasePendingOpenAiResponsesTextItem =
-    evtType !== "text_end" && !deliveryPhase && Boolean(streamItemId) && isOpenAiResponsesPartial;
+    evtType !== "text_end" &&
+    !deliveryPhase &&
+    Boolean(streamItemId) &&
+    (isOpenAiResponsesPartial || isOpenAiResponsesMessage);
   if ((deliveryPhase || isPhasePendingOpenAiResponsesTextItem) && streamItemId) {
     const previousStreamItemId = ctx.state.lastAssistantStreamItemId;
     if (previousStreamItemId && previousStreamItemId !== streamItemId) {
@@ -618,11 +633,12 @@ export function handleMessageUpdate(
   }
   const shouldUsePhaseAwareBlockReply = Boolean(deliveryPhase);
   const phaseAwareVisibleText = shouldUsePhaseAwareBlockReply
-    ? coerceChatContentText(extractAssistantVisibleText(partialAssistant)).trim()
+    ? coerceChatContentText(extractAssistantVisibleText(phaseAssistant)).trim()
     : "";
   const isUnphasedReplacementDelta = isReplacementDelta && !shouldUsePhaseAwareBlockReply;
 
   if (isUnphasedReplacementDelta) {
+    emitReasoningEnd(ctx);
     ctx.resetAssistantTextStreamState();
   }
   if (chunk) {
