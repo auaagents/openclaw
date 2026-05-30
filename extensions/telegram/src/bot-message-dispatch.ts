@@ -23,6 +23,7 @@ import {
   projectOutboundPayloadPlanForDelivery,
 } from "openclaw/plugin-sdk/channel-outbound";
 import {
+  buildChannelCommentaryProgressDraftLine,
   buildChannelProgressDraftLineForEntry,
   createChannelProgressDraftGate,
   type ChannelProgressDraftLine,
@@ -31,8 +32,11 @@ import {
   formatChannelProgressDraftText,
   isChannelProgressDraftWorkToolName,
   mergeChannelProgressDraftLine,
+  removeChannelProgressDraftLine,
+  resolveChannelCommentaryProgressLineId,
   resolveChannelProgressDraftMaxLines,
   resolveChannelStreamingBlockEnabled,
+  resolveChannelStreamingProgressCommentary,
   resolveChannelStreamingPreviewNativeToolProgress,
   resolveChannelStreamingPreviewNativeToolProgressAllowFrom,
   resolveChannelStreamingPreviewToolProgress,
@@ -920,6 +924,8 @@ export const dispatchTelegramMessage = async ({
   const reasoningLane = lanes.reasoning;
   const streamToolProgressEnabled =
     Boolean(answerLane.stream) && resolveChannelStreamingPreviewToolProgress(telegramCfg);
+  const commentaryProgressEnabled =
+    Boolean(answerLane.stream) && resolveChannelStreamingProgressCommentary(telegramCfg);
   const nativeToolProgressDraft =
     streamToolProgressEnabled &&
     !isRoomEvent &&
@@ -982,6 +988,25 @@ export const dispatchTelegramMessage = async ({
   });
   let finalAnswerDeliveryStarted = false;
   let finalAnswerDelivered = false;
+  const clearStreamProgressDraftLine = async (lineId: string) => {
+    const nextLines = removeChannelProgressDraftLine(streamToolProgressLines, lineId);
+    if (nextLines === streamToolProgressLines) {
+      return false;
+    }
+    streamToolProgressLines = nextLines;
+    if (!progressDraftGate.hasStarted) {
+      return true;
+    }
+    if (await renderProgressDraft()) {
+      return true;
+    }
+    answerLane.lastPartialText = "";
+    answerLane.hasStreamedMessage = false;
+    answerLane.finalized = false;
+    resetAnswerToolProgressDraft();
+    await answerLane.stream?.clear();
+    return true;
+  };
   const pushStreamToolProgress = async (
     line?: string | ChannelProgressDraftLine,
     options?: { toolName?: string; startImmediately?: boolean },
@@ -1061,6 +1086,34 @@ export const dispatchTelegramMessage = async ({
       return true;
     }
     return false;
+  };
+  const pushCommentaryProgress = async (text?: string, options?: { itemId?: string }) => {
+    if (!answerLane.stream || streamMode !== "progress" || !commentaryProgressEnabled) {
+      return false;
+    }
+    if (answerLane.finalized || finalAnswerDeliveryStarted || finalAnswerDelivered) {
+      return false;
+    }
+    const line = buildChannelCommentaryProgressDraftLine({
+      text,
+      itemId: options?.itemId,
+    });
+    if (!line) {
+      const lineId = resolveChannelCommentaryProgressLineId({
+        text,
+        itemId: options?.itemId,
+      });
+      return lineId ? await clearStreamProgressDraftLine(lineId) : false;
+    }
+    const nextLines = mergeChannelProgressDraftLine(streamToolProgressLines, line, {
+      maxLines: resolveChannelProgressDraftMaxLines(telegramCfg),
+    });
+    if (nextLines === streamToolProgressLines) {
+      return false;
+    }
+    streamToolProgressLines = nextLines;
+    await progressDraftGate.startNow();
+    return await renderProgressDraft();
   };
   let splitReasoningOnNextStream = false;
   let draftLaneEventQueue = Promise.resolve();
@@ -2003,6 +2056,12 @@ export const dispatchTelegramMessage = async ({
                     await progressPromise;
                   },
                   onItemEvent: async (payload) => {
+                    if (payload.kind === "preamble") {
+                      await pushCommentaryProgress(payload.progressText, {
+                        itemId: payload.itemId,
+                      });
+                      return;
+                    }
                     await pushStreamToolProgress(
                       buildChannelProgressDraftLineForEntry(telegramCfg, {
                         event: "item",
