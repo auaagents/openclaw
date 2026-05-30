@@ -1,16 +1,18 @@
 import type {
   AgentHarnessTaskRuntime,
   AgentHarnessTaskRuntimeScope,
+} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import type {
   emitAgentHarnessSubagentEndedHook,
   emitAgentHarnessSubagentSpawnedHook,
   SubagentLifecycleEndedOutcome,
   SubagentLifecycleEndedReason,
-} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+} from "openclaw/plugin-sdk/codex-native-task-runtime";
 import {
   resolveAgentHarnessFailedSubagentEnd,
   resolveAgentHarnessKilledSubagentEnd,
   resolveAgentHarnessSucceededSubagentEnd,
-} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+} from "openclaw/plugin-sdk/codex-native-task-runtime";
 import { CODEX_NATIVE_SUBAGENT_RUN_ID_PREFIX } from "./native-subagent-task-ids.js";
 import type {
   CodexServerNotification,

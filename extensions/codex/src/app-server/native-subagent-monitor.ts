@@ -5,13 +5,15 @@ import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-
 import {
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
-  emitAgentHarnessSubagentEndedHook,
-  emitAgentHarnessSubagentSpawnedHook,
   isDurableAgentHarnessCompletionDelivery,
   type AgentHarnessTaskRuntimeScope,
   type AgentHarnessTaskRuntime,
   type AgentHarnessTaskRecord,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import {
+  emitAgentHarnessSubagentEndedHook,
+  emitAgentHarnessSubagentSpawnedHook,
+} from "openclaw/plugin-sdk/codex-native-task-runtime";
 import { asFiniteNumber, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { CodexAppServerClient } from "./client.js";
 import {
