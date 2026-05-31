@@ -529,10 +529,7 @@ describe("Windows startup fallback", () => {
       env.OPENCLAW_SERVICE_KIND = "node";
       env.OPENCLAW_WINDOWS_TASK_NAME = "OpenClaw Node";
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4242]);
-      schtasksResponses.push(
-        { code: 0, stdout: "", stderr: "" },
-        { code: 0, stdout: notYetRunTaskQueryOutput(), stderr: "" },
-      );
+      schtasksResponses.push({ code: 0, stdout: notYetRunTaskQueryOutput(), stderr: "" });
 
       const runtime = await readScheduledTaskRuntime(env);
       expect(runtime.status).toBe("stopped");

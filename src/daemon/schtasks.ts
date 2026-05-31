@@ -32,6 +32,7 @@ import type {
   GatewayServiceManageArgs,
   GatewayServiceRenderArgs,
   GatewayServiceRestartResult,
+  GatewayServiceRuntimeArgs,
 } from "./service-types.js";
 
 function resolveTaskName(env: GatewayServiceEnv): string {
@@ -462,9 +463,12 @@ async function isStartupEntryInstalled(env: GatewayServiceEnv): Promise<boolean>
   return false;
 }
 
-async function isRegisteredScheduledTask(env: GatewayServiceEnv): Promise<boolean> {
+async function isRegisteredScheduledTask(
+  env: GatewayServiceEnv,
+  options: { timeoutMs?: number } = {},
+): Promise<boolean> {
   const taskName = resolveTaskName(env);
-  const res = await execSchtasks(["/Query", "/TN", taskName]).catch(() => ({
+  const res = await execSchtasks(["/Query", "/TN", taskName], options).catch(() => ({
     code: 1,
     stdout: "",
     stderr: "",
@@ -1372,7 +1376,8 @@ export async function restartScheduledTask({
 
 export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Promise<boolean> {
   const effectiveEnv = args.env ?? (process.env as GatewayServiceEnv);
-  if (await isRegisteredScheduledTask(effectiveEnv)) {
+  const options = args.timeoutMs === undefined ? undefined : { timeoutMs: args.timeoutMs };
+  if (await isRegisteredScheduledTask(effectiveEnv, options)) {
     return true;
   }
   return await isStartupEntryInstalled(effectiveEnv);
@@ -1380,9 +1385,10 @@ export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Pro
 
 export async function readScheduledTaskRuntime(
   env: GatewayServiceEnv = process.env as GatewayServiceEnv,
+  options: GatewayServiceRuntimeArgs = {},
 ): Promise<GatewayServiceRuntime> {
   const taskName = resolveTaskName(env);
-  const res = await execSchtasks(["/Query", "/TN", taskName, "/V", "/FO", "LIST"]).catch(
+  const res = await execSchtasks(["/Query", "/TN", taskName, "/V", "/FO", "LIST"], options).catch(
     (err: unknown) => ({
       code: 1,
       stdout: "",
