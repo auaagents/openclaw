@@ -1,8 +1,11 @@
 import { formatErrorMessage } from "../infra/errors.js";
 
 type StartupTaskResult =
+  /** Task intentionally did not run; reason is logged at debug level. */
   | { status: "skipped"; reason: string }
+  /** Task completed work successfully. */
   | { status: "ran" }
+  /** Task threw or returned a failure; reason is logged as a warning. */
   | { status: "failed"; reason: string };
 
 export type StartupTask = {
