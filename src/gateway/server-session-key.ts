@@ -84,7 +84,13 @@ function resolveRunSessionKeyForCaller(storeKey: string) {
 }
 
 /** Resolve the caller-facing session key that owns an agent run id. */
-export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string } = {}) {
+export function resolveSessionKeyForRun(
+  runId: string,
+  opts: {
+    /** Agent scope used to disambiguate shared run ids across per-agent stores. */
+    agentId?: string;
+  } = {},
+) {
   const cfg = getRuntimeConfig();
   const explicitAgentId =
     typeof opts.agentId === "string" && opts.agentId.trim()
@@ -97,6 +103,8 @@ export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string 
   const requestedAgentId = explicitAgentId ?? normalizeAgentId(resolveDefaultAgentId(cfg));
   const cacheAgentId = requestedAgentId;
   if (cached && sessionKeyMatchesAgent(cached, requestedAgentId, cfg)) {
+    // Live run context wins over a previous store miss; lifecycle events can
+    // arrive before the session row is persisted.
     const sessionKey = resolveRunSessionKeyForCaller(cached);
     setResolvedSessionKeyCache(runId, cacheAgentId, sessionKey);
     return sessionKey;
@@ -119,6 +127,8 @@ export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string 
     (entry): entry is [string, SessionEntry] =>
       entry[1]?.sessionId === runId && sessionKeyMatchesAgent(entry[0], requestedAgentId, cfg),
   );
+  // Duplicate sessionIds can exist during migration/import; choose only when
+  // the shared resolver can identify one structural owner.
   const storeKey = resolvePreferredSessionKeyForSessionIdMatches(matches, runId);
   if (storeKey) {
     const sessionKey = resolveRunSessionKeyForCaller(storeKey);
