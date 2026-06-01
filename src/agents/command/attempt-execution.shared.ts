@@ -2,7 +2,7 @@
  * Shared session persistence and prompt-body helpers for agent attempt
  * execution paths.
  */
-import { updateSessionStore } from "../../config/sessions/store.js";
+import { patchSessionLifecycleEntry } from "../../config/sessions/session-entry-lifecycle.js";
 import { mergeSessionEntry, type SessionEntry } from "../../config/sessions/types.js";
 import {
   formatAgentInternalEventsForPlainPrompt,
@@ -28,30 +28,29 @@ export type PersistSessionEntryParams = {
 export async function persistSessionEntry(
   params: PersistSessionEntryParams,
 ): Promise<SessionEntry | undefined> {
-  const persisted = await updateSessionStore(
-    params.storePath,
-    (store) => {
-      const current = store[params.sessionKey];
-      if (params.shouldPersist && !params.shouldPersist(current)) {
-        return current;
-      }
-      const merged = mergeSessionEntry(store[params.sessionKey], params.entry);
-      for (const field of params.clearedFields ?? []) {
-        // Cleared fields only apply when the replacement entry did not set the
-        // field again; this preserves explicit false/null updates.
-        if (!Object.hasOwn(params.entry, field)) {
-          Reflect.deleteProperty(merged, field);
+  const persisted =
+    (await patchSessionLifecycleEntry(
+      { sessionKey: params.sessionKey, storePath: params.storePath },
+      (current, context) => {
+        if (params.shouldPersist && !params.shouldPersist(context.existingEntry)) {
+          return null;
         }
-      }
-      store[params.sessionKey] = merged;
-      return merged;
-    },
-    {
-      resolveSingleEntryPersistence: (entry) =>
-        entry ? { sessionKey: params.sessionKey, entry } : null,
-      takeCacheOwnership: true,
-    },
-  );
+        const merged = mergeSessionEntry(current, params.entry);
+        for (const field of params.clearedFields ?? []) {
+          // Cleared fields only apply when the replacement entry did not set the
+          // field again; this preserves explicit false/null updates.
+          if (!Object.hasOwn(params.entry, field)) {
+            Reflect.deleteProperty(merged, field);
+          }
+        }
+        return merged;
+      },
+      {
+        fallbackEntry: params.entry,
+        replaceEntry: true,
+        takeCacheOwnership: true,
+      },
+    )) ?? undefined;
   if (persisted) {
     params.sessionStore[params.sessionKey] = persisted;
   } else {

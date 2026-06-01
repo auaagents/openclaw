@@ -14,6 +14,7 @@ export * from "./sessions/store.js";
 export * from "./sessions/types.js";
 export * from "./sessions/transcript.js";
 export * from "./sessions/session-file.js";
+export * from "./sessions/session-entry-lifecycle.js";
 export * from "./sessions/session-file-rotation.js";
 export * from "./sessions/delivery-info.js";
 export * from "./sessions/disk-budget.js";

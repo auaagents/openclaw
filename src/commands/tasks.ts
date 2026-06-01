@@ -10,9 +10,9 @@ import { formatLookupMiss } from "../cli/error-format.js";
 import { getRuntimeConfig } from "../config/config.js";
 import {
   loadSessionStore,
+  deleteSessionEntries,
   pruneStaleEntries,
   resolveAllAgentSessionStoreTargetsSync,
-  updateSessionStore,
   type SessionEntry,
 } from "../config/sessions.js";
 import { loadCronJobsStoreSync, resolveCronJobsStorePath } from "../cron/store.js";
@@ -165,23 +165,21 @@ async function runSessionRegistryMaintenance(params: {
     const beforeStore = loadSessionStore(target.storePath, { skipCache: true });
     const beforeCount = Object.keys(beforeStore).length;
     if (params.apply) {
-      // Apply mode mutates each store atomically through updateSessionStore.
-      const applied = await updateSessionStore(
-        target.storePath,
-        (store) => {
-          const { preserveKeys, preservedRunning } = buildSessionRegistryPreserveKeys({
-            store,
-            runningCronJobIds,
-          });
-          const pruned = pruneStaleEntries(store, SESSION_REGISTRY_RETENTION_MS, {
-            log: false,
-            preserveKeys,
-          });
-          return {
-            pruned,
-            afterCount: Object.keys(store).length,
-            preservedRunning,
-          };
+      // Apply mode mutates each store atomically through the entry lifecycle seam.
+      let preservedRunning = 0;
+      const cutoffMs = Date.now() - SESSION_REGISTRY_RETENTION_MS;
+      const deletion = await deleteSessionEntries(
+        { storePath: target.storePath },
+        (entry, { sessionKey }) => {
+          const jobId = parseCronRunSessionJobId(sessionKey);
+          if (!jobId) {
+            return false;
+          }
+          if (runningCronJobIds.has(jobId)) {
+            preservedRunning += 1;
+            return false;
+          }
+          return entry.updatedAt != null && entry.updatedAt < cutoffMs;
         },
         { skipMaintenance: true },
       );
@@ -189,9 +187,9 @@ async function runSessionRegistryMaintenance(params: {
         agentId: target.agentId,
         storePath: target.storePath,
         beforeCount,
-        afterCount: applied.afterCount,
-        pruned: applied.pruned,
-        preservedRunning: applied.preservedRunning,
+        afterCount: beforeCount - deletion.deleted.length,
+        pruned: deletion.deleted.length,
+        preservedRunning,
       });
       continue;
     }
