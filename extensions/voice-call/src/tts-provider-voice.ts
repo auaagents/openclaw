@@ -11,6 +11,8 @@ function resolveProviderVoiceSetting(providerConfig: unknown): string | undefine
     voice?: unknown;
     voiceId?: unknown;
   };
+  // Prefer the voice-call-specific keys, then fall back to legacy provider TTS keys
+  // so existing per-provider configs keep selecting the same speaker.
   return (
     normalizeOptionalString(candidate.speakerVoice) ??
     normalizeOptionalString(candidate.speakerVoiceId) ??
@@ -19,6 +21,7 @@ function resolveProviderVoiceSetting(providerConfig: unknown): string | undefine
   );
 }
 
+/** Resolve the active TTS provider's preferred speaker voice from voice-call config. */
 export function resolvePreferredTtsVoice(config: { tts?: VoiceCallTtsConfig }): string | undefined {
   const providerId = config.tts?.provider;
   if (!providerId) {

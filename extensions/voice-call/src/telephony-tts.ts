@@ -11,6 +11,7 @@ import { deepMergeDefined } from "./deep-merge.js";
 import { convertPcmToMulaw8k } from "./telephony-audio.js";
 
 export type TelephonyTtsRuntime = {
+  /** Synthesize PCM audio for the configured core TTS runtime before telephony conversion. */
   textToSpeechTelephony: (params: {
     text: string;
     cfg: CoreConfig;
@@ -28,7 +29,9 @@ export type TelephonyTtsRuntime = {
 };
 
 export type TelephonyTtsProvider = {
+  /** Maximum time the call flow should wait for speech synthesis before falling back. */
   synthesisTimeoutMs: number;
+  /** Convert response text into 8 kHz mu-law audio that telephony providers can stream. */
   synthesizeForTelephony: (text: string) => Promise<Buffer>;
 };
 
@@ -69,6 +72,8 @@ export function createTelephonyTtsProvider(params: {
   return {
     synthesisTimeoutMs,
     synthesizeForTelephony: async (text: string) => {
+      // Directive tags can hide caller-facing text or override speaker/model settings.
+      // Parse them before sending text to TTS so callers never hear control syntax.
       const directives = parseTtsDirectives(text, modelOverrides, {
         cfg: mergedConfig,
         providerConfigs,
@@ -140,6 +145,8 @@ function mergeTtsConfig(
   if (!base) {
     return override;
   }
+  // Number routes layer TTS settings over global voice-call TTS; deepMergeDefined
+  // preserves existing nested provider fields while blocking prototype pollution.
   return deepMergeDefined(base, override) as VoiceCallTtsConfig;
 }
 
@@ -208,6 +215,8 @@ function collectTelephonyProviderConfigs(
     const normalized = normalizeProviderId(providerId) ?? providerId;
     entries[normalized] = asProviderConfig(value);
   }
+  // Older configs also allow provider blocks directly under messages.tts; keep those
+  // readable for directive overrides without treating scalar TTS settings as providers.
   const reservedKeys = new Set([
     "auto",
     "enabled",
