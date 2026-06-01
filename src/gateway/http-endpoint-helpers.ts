@@ -31,6 +31,8 @@ export async function handleGatewayPostJsonEndpoint(
     ) => string[];
   },
 ): Promise<false | { body: unknown; requestAuth: AuthorizedGatewayHttpRequest } | undefined> {
+  // Return false only when this helper does not own the path; undefined means
+  // the helper consumed the request by writing an error response.
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname !== opts.pathname) {
     return false;
@@ -67,6 +69,8 @@ export async function handleGatewayPostJsonEndpoint(
     }
   }
 
+  // Scope checks run before body parsing so unauthorized callers cannot force
+  // large JSON reads on endpoints they are not allowed to use.
   const body = await readJsonBodyOrError(req, res, opts.maxBodyBytes);
   if (body === undefined) {
     return undefined;
