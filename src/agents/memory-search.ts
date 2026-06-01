@@ -113,10 +113,7 @@ export type ResolvedMemorySearchConfig = {
 export type ResolvedMemorySearchSyncConfig = ResolvedMemorySearchConfig["sync"];
 export type MemorySearchResolvePurpose = "default" | "status" | "cli";
 export type MemorySearchResolveOptions = {
-  /**
-   * @deprecated Accepted for SDK compatibility. Memory watch defaults no longer
-   * vary by resolver purpose.
-   */
+  /** @deprecated No-op; kept for resolver call-site compatibility. */
   purpose?: MemorySearchResolvePurpose;
 };
 

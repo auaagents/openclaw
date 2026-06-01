@@ -1617,8 +1617,6 @@ export class QmdMemoryManager implements MemorySearchManager {
     this.watcher.on("change", markDirty);
     this.watcher.on("unlink", markDirty);
     this.watcher.on("error", (err) => {
-      // File watcher errors (for example ENOSPC/EMFILE) should not crash the
-      // gateway. Search still works; automatic watch freshness may be degraded.
       const message = err instanceof Error ? err.message : String(err);
       log.warn(`qmd watcher error: ${message}`);
     });
