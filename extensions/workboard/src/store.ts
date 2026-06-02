@@ -1644,6 +1644,48 @@ function latestMetadataIdChanged(
   return Boolean(latestId && latestId !== existing?.at(-1)?.id);
 }
 
+function lifecycleStatusSourceUpdatedAtFromPatch(metadata: unknown): number | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return undefined;
+  }
+  if (!Object.hasOwn(metadata, "lifecycleStatusSourceUpdatedAt")) {
+    return undefined;
+  }
+  const sourceUpdatedAt = normalizeTimestamp(
+    (metadata as Record<string, unknown>).lifecycleStatusSourceUpdatedAt,
+    0,
+  );
+  return sourceUpdatedAt || undefined;
+}
+
+function latestStatusTransitionAt(card: WorkboardCard): number | undefined {
+  for (let index = (card.events?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const event = card.events?.[index];
+    if (
+      event?.kind === "moved" &&
+      event.fromStatus !== event.toStatus &&
+      event.toStatus === card.status &&
+      typeof event.at === "number" &&
+      Number.isFinite(event.at)
+    ) {
+      return event.at;
+    }
+  }
+  return undefined;
+}
+
+function shouldSkipPersistedLifecycleStatusUpdate(
+  existing: WorkboardCard,
+  sourceUpdatedAt: number,
+): boolean {
+  const lifecycleStatusSourceUpdatedAt = existing.metadata?.lifecycleStatusSourceUpdatedAt;
+  if (lifecycleStatusSourceUpdatedAt !== undefined) {
+    return sourceUpdatedAt < lifecycleStatusSourceUpdatedAt;
+  }
+  const statusTransitionAt = latestStatusTransitionAt(existing);
+  return statusTransitionAt !== undefined && sourceUpdatedAt < statusTransitionAt;
+}
+
 function updateEvent(
   existing: WorkboardCard,
   next: WorkboardCard,
@@ -2590,6 +2632,16 @@ export class WorkboardStore {
     const existing = await this.get(id);
     if (!existing) {
       throw new Error(`card not found: ${id}`);
+    }
+    const lifecycleStatusSourceUpdatedAt = lifecycleStatusSourceUpdatedAtFromPatch(patch.metadata);
+    if (
+      patch.status !== undefined &&
+      lifecycleStatusSourceUpdatedAt !== undefined &&
+      shouldSkipPersistedLifecycleStatusUpdate(existing, lifecycleStatusSourceUpdatedAt)
+    ) {
+      // Lifecycle status writes can race with manual moves from other tabs; persisted
+      // state owns the freshness check so stale Gateway writes cannot survive reload.
+      return existing;
     }
     const status = normalizeStatus(patch.status, existing.status);
     const now = Date.now();

@@ -356,6 +356,23 @@ describe("WorkboardStore", () => {
 
     const manual = await store.move(card.id, "running", 2000);
     expect(manual.metadata?.lifecycleStatusSourceUpdatedAt).toBeUndefined();
+
+    const staleLifecycle = await store.update(card.id, {
+      status: "review",
+      metadata: { lifecycleStatusSourceUpdatedAt: 2000 },
+    });
+    expect(staleLifecycle.status).toBe("running");
+    expect(staleLifecycle.metadata?.lifecycleStatusSourceUpdatedAt).toBeUndefined();
+
+    const freshLifecycleSourceUpdatedAt = Date.now() + 1000;
+    const freshLifecycle = await store.update(card.id, {
+      status: "review",
+      metadata: { lifecycleStatusSourceUpdatedAt: freshLifecycleSourceUpdatedAt },
+    });
+    expect(freshLifecycle.status).toBe("review");
+    expect(freshLifecycle.metadata?.lifecycleStatusSourceUpdatedAt).toBe(
+      freshLifecycleSourceUpdatedAt,
+    );
   });
 
   it("keeps execution session links aligned with edited card links", async () => {
