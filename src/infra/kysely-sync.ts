@@ -1,8 +1,8 @@
 // Adapts node:sqlite sync database calls for Kysely-style query execution.
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import type { CompiledQuery, Kysely, QueryResult } from "kysely";
-import { InsertQueryNode, Kysely as KyselyInstance } from "kysely";
-import { NodeSqliteKyselyDialect } from "./kysely-node-sqlite.js";
+import { Kysely as KyselyInstance } from "kysely";
+import { NodeSqliteKyselyDialect, executeCompiledQuerySync } from "./kysely-node-sqlite.js";
 
 // Sync query helpers execute compiled Kysely SQL against node:sqlite without
 // going through Kysely's async driver path.
@@ -24,38 +24,12 @@ export function getNodeSqliteKysely<Database>(db: DatabaseSync): Kysely<Database
   return kysely;
 }
 
-/** Execute a compiled Kysely query synchronously against node:sqlite. */
-export function executeCompiledSqliteQuerySync<Row>(
-  db: DatabaseSync,
-  compiledQuery: CompiledQuery<Row>,
-): QueryResult<Row> {
-  const statement = db.prepare(compiledQuery.sql);
-  const parameters = compiledQuery.parameters as SQLInputValue[];
-
-  if (statement.columns().length > 0) {
-    return { rows: statement.all(...parameters) as Row[] };
-  }
-
-  const { changes, lastInsertRowid } = statement.run(...parameters);
-  const result: QueryResult<Row> = {
-    numAffectedRows: BigInt(changes),
-    rows: [],
-  };
-  if (InsertQueryNode.is(compiledQuery.query) && changes > 0) {
-    return {
-      ...result,
-      insertId: BigInt(lastInsertRowid),
-    };
-  }
-  return result;
-}
-
 /** Compile and execute a Kysely query synchronously. */
 export function executeSqliteQuerySync<Row>(
   db: DatabaseSync,
   query: CompilableQuery<Row>,
 ): QueryResult<Row> {
-  return executeCompiledSqliteQuerySync<Row>(db, query.compile());
+  return executeCompiledQuerySync<Row>(db, query.compile());
 }
 
 /** Execute a Kysely query synchronously and return its first row. */
