@@ -173,9 +173,7 @@ without exceptions outside doctor/import/export/debug boundaries.
       Proof: `rg -n 'sessions\\.json|sessionFile|\\.jsonl' scripts/e2e/session-runtime-context-docker-client.ts` shows only
       `seedBrokenLegacySessionForDoctorMigration`.
 - [x] Keep Kysely generated types aligned after any schema change.
-      Files: `src/state/openclaw-state-schema.sql`,
-      `src/state/openclaw-agent-schema.sql`,
-      `src/state/*generated*`.
+      Files: `src/state/openclaw-state-schema.sql`, `src/state/*generated*`.
       Proof: no schema change in this pass; `pnpm db:kysely:check`;
       `pnpm lint:kysely`.
 - [x] Re-run focused tests for touched stores, commands, and scripts.
@@ -326,15 +324,11 @@ The branch already has a real shared SQLite base:
   normal migration ledger. New plugin installs do not require changing
   `openclaw-state-schema.sql` unless the host itself is taking ownership of a
   new cross-plugin contract.
-- `src/state/openclaw-agent-db.ts` opens
-  `agents/<agentId>/agent/openclaw-agent.sqlite`, registers the database in the
-  global DB, and owns agent-local session, transcript, VFS, artifact, cache,
-  and memory-index tables. Shared runtime discovery now reads the generated-typed
-  `agent_databases` registry instead of reimplementing that query at each call
-  site.
-- Global and per-agent databases record a `schema_meta` row with database role,
-  schema version, timestamps, and agent id for agent databases. The layout still
-  stays at `user_version = 1` because this SQLite schema has not shipped yet.
+- Agent-local databases are not part of the current production surface. Keep
+  agent-local persistence proposals out of production files until a runtime
+  caller owns the schema and release proof.
+- Global databases record a `schema_meta` row with database role, schema
+  version, and timestamps.
 - Per-agent session identity now has a canonical `sessions` root table keyed by
   `session_id`, with `session_key`, `session_scope`, `account_id`,
   `primary_conversation_id`, timestamps, display fields, model metadata,
