@@ -175,7 +175,7 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-vi.mock("chokidar-slim", () => ({
+vi.mock("chokidar", () => ({
   default: { watch: watchMock },
   watch: watchMock,
 }));
@@ -560,6 +560,7 @@ describe("QmdMemoryManager", () => {
       [workspaceDir]: Array.from({ length: 2_001 }, (_value, index) => `${index}.md`),
     };
     watcher.emit("ready");
+    await Promise.resolve();
     expectMockMessageContains(logWarnMock, "Memory file watching is tracking 2002 paths.");
 
     const notesPath = path.join(workspaceDir, "notes.md");

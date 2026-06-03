@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { FSWatcher } from "chokidar-slim";
+import type { FSWatcher } from "chokidar";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createSubsystemLogger,

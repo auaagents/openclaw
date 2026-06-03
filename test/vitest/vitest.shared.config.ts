@@ -415,7 +415,7 @@ export const sharedVitestConfig = {
       sourcePackageAlias("media-core", "read-response-with-limit"),
       sourcePackageAlias("media-core"),
       {
-        find: "chokidar-slim",
+        find: "chokidar",
         replacement: path.join(repoRoot, "packages", "chokidar-slim", "src", "index.ts"),
       },
       ...sourcePackageAliasesFromExports("acp-core", acpCorePackageJson.exports),

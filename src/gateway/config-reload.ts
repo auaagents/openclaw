@@ -1,4 +1,4 @@
-import chokidar from "chokidar-slim";
+import chokidar from "chokidar";
 import type { ConfigWriteNotification } from "../config/io.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { resolveConfigWriteFollowUp } from "../config/runtime-snapshot.js";

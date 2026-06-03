@@ -9,7 +9,7 @@ import {
   clearTimeout as clearNativeTimeout,
   setTimeout as scheduleNativeTimeout,
 } from "node:timers";
-import chokidar from "chokidar-slim";
+import chokidar from "chokidar";
 import { detectMime } from "openclaw/plugin-sdk/media-mime";
 import { isTruthyEnvValue, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
@@ -27,7 +27,7 @@ import {
 } from "./a2ui-shared.js";
 import { normalizeUrlPath, resolveFileWithinRoot } from "./file-resolver.js";
 
-type ChokidarWatch = typeof import("chokidar-slim").watch;
+type ChokidarWatch = typeof import("chokidar").watch;
 
 export type CanvasHostOpts = {
   runtime: RuntimeEnv;
@@ -232,7 +232,7 @@ function resolveDefaultWatchFactory(): ChokidarWatch {
   }
 
   const require = createRequire(import.meta.url);
-  const runtime = require("chokidar-slim") as
+  const runtime = require("chokidar") as
     | { watch?: ChokidarWatch; default?: { watch?: ChokidarWatch } }
     | undefined;
   if (runtime && typeof runtime.watch === "function") {
