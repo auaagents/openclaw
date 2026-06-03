@@ -456,7 +456,7 @@ export async function runCodexAppServerAttempt(
         agentDir,
         config: params.config,
       });
-  const reviewerPolicyContext = resolveCodexModelBackedReviewerPolicyContext({
+  let reviewerPolicyContext = resolveCodexModelBackedReviewerPolicyContext({
     provider: params.provider,
     model: params.modelId,
     bindingModelProvider: startupBinding?.modelProvider,
@@ -469,7 +469,7 @@ export async function runCodexAppServerAttempt(
     }),
   });
   preDynamicStartupStages.mark("auth-profile");
-  const configuredAppServer = resolveCodexAppServerRuntimeOptions({
+  let configuredAppServer = resolveCodexAppServerRuntimeOptions({
     pluginConfig,
     execPolicy,
     modelProvider: reviewerPolicyContext.modelProvider,
@@ -490,7 +490,7 @@ export async function runCodexAppServerAttempt(
   const effectiveCwd = sandbox?.enabled ? effectiveWorkspace : (requestedCwd ?? effectiveWorkspace);
   await ensureCodexWorkspaceDirOnce(effectiveWorkspace);
   preDynamicStartupStages.mark("effective-workspace");
-  const policyAppServer = resolveCodexAppServerForOpenClawToolPolicy({
+  let policyAppServer = resolveCodexAppServerForOpenClawToolPolicy({
     appServer: configuredAppServer,
     pluginConfig,
     env: process.env,
@@ -502,7 +502,7 @@ export async function runCodexAppServerAttempt(
       configuredAppServer.start.transport !== "stdio" ||
       isCodexAppServerApprovalPolicyAllowedByRequirements("untrusted"),
   });
-  const appServer = resolveCodexAppServerForModelProvider({
+  let appServer = resolveCodexAppServerForModelProvider({
     appServer: policyAppServer,
     provider: reviewerPolicyContext.modelProvider,
     model: reviewerPolicyContext.model,
@@ -517,7 +517,7 @@ export async function runCodexAppServerAttempt(
   }
   preDynamicStartupStages.mark("app-server-policy");
   let pluginAppServer: CodexAppServerRuntimeOptions = appServer;
-  const nativeHookRelayEvents = resolveCodexNativeHookRelayEvents({
+  let nativeHookRelayEvents = resolveCodexNativeHookRelayEvents({
     configuredEvents: options.nativeHookRelay?.events,
     appServer,
   });
@@ -544,6 +544,47 @@ export async function runCodexAppServerAttempt(
   const initialInactiveThreadBootstrapBindingForcedFreshStart =
     initialStartupBindingHadInactiveThreadBootstrap && !startupBinding?.threadId;
   preDynamicStartupStages.mark("rotate-binding");
+  reviewerPolicyContext = resolveCodexModelBackedReviewerPolicyContext({
+    provider: params.provider,
+    model: params.modelId,
+    bindingModelProvider: startupBinding?.modelProvider,
+    bindingModel: startupBinding?.model,
+    nativeAuthProfile: isCodexAppServerNativeAuthProfile({
+      authProfileId: startupAuthProfileId,
+      authProfileStore: params.authProfileStore,
+      agentDir,
+      config: params.config,
+    }),
+  });
+  configuredAppServer = resolveCodexAppServerRuntimeOptions({
+    pluginConfig,
+    execPolicy,
+    modelProvider: reviewerPolicyContext.modelProvider,
+    model: reviewerPolicyContext.model,
+    openClawSandboxActive: sandbox?.enabled === true,
+  });
+  policyAppServer = resolveCodexAppServerForOpenClawToolPolicy({
+    appServer: configuredAppServer,
+    pluginConfig,
+    env: process.env,
+    shouldPromote:
+      beforeToolCallPolicy.hasBeforeToolCallHook ||
+      beforeToolCallPolicy.trustedToolPolicies.length > 0,
+    execPolicy,
+    canUseUntrustedApprovalPolicy:
+      configuredAppServer.start.transport !== "stdio" ||
+      isCodexAppServerApprovalPolicyAllowedByRequirements("untrusted"),
+  });
+  appServer = resolveCodexAppServerForModelProvider({
+    appServer: policyAppServer,
+    provider: reviewerPolicyContext.modelProvider,
+    model: reviewerPolicyContext.model,
+  });
+  pluginAppServer = appServer;
+  nativeHookRelayEvents = resolveCodexNativeHookRelayEvents({
+    configuredEvents: options.nativeHookRelay?.events,
+    appServer,
+  });
   const runtimeParams = {
     ...params,
     sessionKey: contextSessionKey,
