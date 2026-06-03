@@ -415,9 +415,15 @@ describeControlUiE2e("Control UI Workboard mocked Gateway E2E", () => {
         status: "review",
       });
       await writableGateway.resolveDeferred("workboard.cards.update", { card: reviewedCard });
-      await cardInColumn(writable.page, "Review", editedCard.title).waitFor({ state: "visible" });
-      await writable.page.getByText("Moved to Review").waitFor({ state: "visible" });
+      const reviewedCardSurface = cardInColumn(writable.page, "Review", editedCard.title);
+      await reviewedCardSurface.waitFor({ state: "visible" });
+      await reviewedCardSurface.getByTitle("View details").click();
+      await writable.page.locator(".workboard-detail").getByText("Moved to Review").waitFor({
+        state: "visible",
+      });
       await captureScreenshot(writable.page, artifacts, "06-lifecycle-review");
+      await details.locator('button[title="Cancel"]').click();
+      await details.waitFor({ state: "hidden" });
 
       await writableGateway.deferNext("workboard.cards.list");
       const listBeforeReload = (await writableGateway.getRequests("workboard.cards.list")).length;
