@@ -161,6 +161,39 @@ describe("createAgentSession tool defaults", () => {
     expect(session.getAllTools().map((tool) => tool.name)).toEqual(["custom_lookup"]);
   });
 
+  it("skips unreadable active state tool names in status accessors", async () => {
+    const customTool: ToolDefinition = {
+      name: "custom_lookup",
+      label: "Custom Lookup",
+      description: "Looks up a test value.",
+      parameters: Type.Object({}),
+      execute: async () => ({
+        content: [{ type: "text", text: "ok" }],
+        details: {},
+      }),
+    };
+    const unreadableTool = Object.defineProperty({}, "name", {
+      enumerable: true,
+      get() {
+        throw new Error("revoked active tool name");
+      },
+    });
+
+    const { session } = await createAgentSession({
+      model: testModel,
+      noTools: "builtin",
+      customTools: [customTool],
+      resourceLoader: createEmptyResourceLoader(),
+      sessionManager: SessionManager.inMemory(),
+      settingsManager: SettingsManager.inMemory(),
+      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+    });
+
+    session.agent.state.tools.unshift(unreadableTool as never);
+
+    expect(session.getActiveToolNames()).toEqual(["custom_lookup"]);
+  });
+
   it("preserves an exact base system prompt when active tools change", async () => {
     const customTool: ToolDefinition = {
       name: "custom_lookup",

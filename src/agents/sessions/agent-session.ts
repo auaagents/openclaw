@@ -306,6 +306,15 @@ type CompactionWorkOutcome =
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+function readSessionAgentToolName(tool: AgentTool): string | undefined {
+  try {
+    const name = tool.name;
+    return typeof name === "string" ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -857,7 +866,9 @@ export class AgentSession {
    * Returns the names of tools currently set on the agent.
    */
   getActiveToolNames(): string[] {
-    return this.agent.state.tools.map((t) => t.name);
+    return this.agent.state.tools
+      .map((tool) => readSessionAgentToolName(tool))
+      .filter((name): name is string => Boolean(name));
   }
 
   /**
