@@ -8,7 +8,7 @@ import type {
   ToolResultMessage,
 } from "../../llm-core/src/index.js";
 import type { EventStream as SourceEventStream } from "../../llm-core/src/index.js";
-import { createAgentFailureMessage } from "./failure-message.js";
+import { createAgentFailureMessage, formatAgentFailureErrorMessage } from "./failure-message.js";
 import { type AgentCoreStreamRuntimeDeps, resolveAgentCoreStreamFn } from "./runtime-deps.js";
 import { snapshotAgentTools } from "./tool-snapshot.js";
 import type {
@@ -709,7 +709,7 @@ async function prepareToolCall(
   } catch (error) {
     return {
       kind: "immediate",
-      result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+      result: createErrorToolResult(formatAgentFailureErrorMessage(error)),
       isError: true,
     };
   }
@@ -746,7 +746,7 @@ async function executePreparedToolCall(
   } catch (error) {
     await Promise.all(updateEvents);
     return {
-      result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+      result: createErrorToolResult(formatAgentFailureErrorMessage(error)),
       isError: true,
     };
   }
@@ -785,7 +785,7 @@ async function finalizeExecutedToolCall(
         isError = afterResult.isError ?? isError;
       }
     } catch (error) {
-      result = createErrorToolResult(error instanceof Error ? error.message : String(error));
+      result = createErrorToolResult(formatAgentFailureErrorMessage(error));
       isError = true;
     }
   }

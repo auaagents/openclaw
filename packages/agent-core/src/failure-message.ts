@@ -21,7 +21,7 @@ function readFailureModelString(model: Model, key: "api" | "provider" | "id"): s
   }
 }
 
-function formatFailureErrorMessage(error: unknown): string {
+export function formatAgentFailureErrorMessage(error: unknown): string {
   try {
     return error instanceof Error ? error.message : String(error);
   } catch {
@@ -42,7 +42,7 @@ export function createAgentFailureMessage(
     model: readFailureModelString(model, "id"),
     usage: createEmptyUsage(),
     stopReason: aborted ? "aborted" : "error",
-    errorMessage: formatFailureErrorMessage(error),
+    errorMessage: formatAgentFailureErrorMessage(error),
     timestamp: Date.now(),
   };
 }

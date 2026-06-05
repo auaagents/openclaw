@@ -8,6 +8,7 @@ import {
   type Context,
   type Message,
   type Model,
+  type ToolResultMessage,
 } from "./llm.js";
 import type {
   AgentContext,
@@ -129,6 +130,50 @@ function createStreamFn(contexts: Context[]): StreamFn {
     stream.push({ type: "done", reason: "stop", message: assistantMessage });
     return stream;
   };
+}
+
+function createToolCallThenDoneStreamFn(): StreamFn {
+  let callCount = 0;
+  return () => {
+    callCount += 1;
+    const stream = createAssistantMessageEventStream();
+    if (callCount === 1) {
+      stream.push({
+        type: "done",
+        reason: "tool_call",
+        message: {
+          ...assistantMessage,
+          content: [
+            {
+              type: "toolCall",
+              id: "call_poison",
+              name: "poison_tool",
+              arguments: { query: "hello" },
+            },
+          ],
+          stopReason: "tool_call",
+        },
+      });
+      return stream;
+    }
+    stream.push({ type: "done", reason: "stop", message: assistantMessage });
+    return stream;
+  };
+}
+
+function createPoisonedStringificationError(): unknown {
+  return {
+    toString() {
+      throw new Error("stringify exploded");
+    },
+  };
+}
+
+function findToolResult(events: AgentEvent[]): ToolResultMessage | undefined {
+  return events.find(
+    (event): event is Extract<AgentEvent, { type: "message_end" }> =>
+      event.type === "message_end" && event.message.role === "toolResult",
+  )?.message;
 }
 
 describe("agentLoop EventStream failures", () => {
@@ -284,5 +329,88 @@ describe("agentLoop tool snapshots", () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('skipped invalid agent loop tool "bad_lookup": revoked parameters'),
     );
+  });
+
+  it("keeps tool execution errors reachable when thrown values resist stringification", async () => {
+    const poisonTool = createTool("poison_tool");
+    poisonTool.execute = async () => {
+      throw createPoisonedStringificationError();
+    };
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [poisonTool] },
+        config,
+        undefined,
+        createToolCallThenDoneStreamFn(),
+      ),
+    );
+
+    const toolResult = findToolResult(events);
+    const finalAgentEnd = events.find(
+      (event): event is Extract<AgentEvent, { type: "agent_end" }> => event.type === "agent_end",
+    );
+
+    expect(toolResult).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call_poison",
+      toolName: "poison_tool",
+      isError: true,
+      content: [{ type: "text", text: "Unknown agent failure" }],
+    });
+    expect(finalAgentEnd?.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      stopReason: "stop",
+    });
+  });
+
+  it("keeps before-tool-call errors reachable when thrown values resist stringification", async () => {
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [createTool("poison_tool")] },
+        {
+          ...config,
+          beforeToolCall: async () => {
+            throw createPoisonedStringificationError();
+          },
+        },
+        undefined,
+        createToolCallThenDoneStreamFn(),
+      ),
+    );
+
+    expect(findToolResult(events)).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call_poison",
+      toolName: "poison_tool",
+      isError: true,
+      content: [{ type: "text", text: "Unknown agent failure" }],
+    });
+  });
+
+  it("keeps after-tool-call errors reachable when thrown values resist stringification", async () => {
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [createTool("poison_tool")] },
+        {
+          ...config,
+          afterToolCall: async () => {
+            throw createPoisonedStringificationError();
+          },
+        },
+        undefined,
+        createToolCallThenDoneStreamFn(),
+      ),
+    );
+
+    expect(findToolResult(events)).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call_poison",
+      toolName: "poison_tool",
+      isError: true,
+      content: [{ type: "text", text: "Unknown agent failure" }],
+    });
   });
 });
