@@ -284,6 +284,11 @@ type ToolDiagnosticIdentity = {
   toolOwner?: string;
 };
 
+type BeforeToolCallToolPropertyReadResult = { ok: true; value: unknown } | { ok: false };
+type BeforeToolCallWrapperFieldSnapshot =
+  | { ok: true; fields: Record<string, unknown> }
+  | { ok: false };
+
 function resolveToolDiagnosticIdentity(tool: AnyAgentTool): ToolDiagnosticIdentity {
   const pluginMeta = getPluginToolMeta(tool);
   if (pluginMeta) {
@@ -296,6 +301,141 @@ function resolveToolDiagnosticIdentity(tool: AnyAgentTool): ToolDiagnosticIdenti
     return { toolSource: "channel", toolOwner: channelMeta.channelId };
   }
   return { toolSource: "core" };
+}
+
+function tryReadBeforeToolCallToolProperty(
+  tool: unknown,
+  key: PropertyKey,
+): BeforeToolCallToolPropertyReadResult {
+  try {
+    return { ok: true, value: (tool as Record<PropertyKey, unknown>)[key] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readBeforeToolCallToolProperty(tool: unknown, key: PropertyKey): unknown {
+  const result = tryReadBeforeToolCallToolProperty(tool, key);
+  return result.ok ? result.value : undefined;
+}
+
+function readBeforeToolCallToolName(tool: AnyAgentTool): string | undefined {
+  const result = tryReadBeforeToolCallToolProperty(tool, "name");
+  if (!result.ok || typeof result.value !== "string" || !result.value.trim()) {
+    return undefined;
+  }
+  return result.value;
+}
+
+function readBeforeToolCallToolExecute(
+  tool: AnyAgentTool,
+): { ok: true; execute?: AnyAgentTool["execute"] } | { ok: false } {
+  const result = tryReadBeforeToolCallToolProperty(tool, "execute");
+  if (!result.ok) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    execute:
+      typeof result.value === "function" ? (result.value as AnyAgentTool["execute"]) : undefined,
+  };
+}
+
+function readBeforeToolCallPrepare(
+  tool: AnyAgentTool,
+): BeforeToolCallPreparingTool["prepareBeforeToolCallParams"] | undefined {
+  const prepare = readBeforeToolCallToolProperty(tool, "prepareBeforeToolCallParams");
+  return typeof prepare === "function"
+    ? (prepare as BeforeToolCallPreparingTool["prepareBeforeToolCallParams"])
+    : undefined;
+}
+
+function readBeforeToolCallFinalize(
+  tool: AnyAgentTool,
+): BeforeToolCallPreparingTool["finalizeBeforeToolCallParams"] | undefined {
+  const finalize = readBeforeToolCallToolProperty(tool, "finalizeBeforeToolCallParams");
+  return typeof finalize === "function"
+    ? (finalize as BeforeToolCallPreparingTool["finalizeBeforeToolCallParams"])
+    : undefined;
+}
+
+function snapshotBeforeToolCallWrapperFields(
+  tool: AnyAgentTool,
+): BeforeToolCallWrapperFieldSnapshot {
+  const snapshot: Record<string, unknown> = {};
+  let keys: string[];
+  try {
+    keys = Object.keys(tool as Record<string, unknown>);
+  } catch {
+    return { ok: false };
+  }
+  for (const key of keys) {
+    const result = tryReadBeforeToolCallToolProperty(tool, key);
+    if (!result.ok) {
+      if (key === "prepareBeforeToolCallParams" || key === "finalizeBeforeToolCallParams") {
+        continue;
+      }
+      return { ok: false };
+    }
+    const value = result.value;
+    if (value !== undefined) {
+      snapshot[key] = value;
+    }
+  }
+  return { ok: true, fields: snapshot };
+}
+
+function attachBeforeToolCallWrapperMetadata(params: {
+  source: AnyAgentTool;
+  target: AnyAgentTool;
+  ctx?: HookContext;
+  hookOptions: BeforeToolCallWrapperOptions;
+}): AnyAgentTool {
+  copyPluginToolMeta(params.source, params.target);
+  copyChannelAgentToolMeta(params.source as never, params.target as never);
+  Object.defineProperty(params.target, BEFORE_TOOL_CALL_WRAPPED, {
+    value: true,
+    enumerable: true,
+  });
+  Object.defineProperty(params.target, BEFORE_TOOL_CALL_DIAGNOSTIC_OPTIONS, {
+    value: params.hookOptions,
+    enumerable: false,
+  });
+  Object.defineProperty(params.target, BEFORE_TOOL_CALL_SOURCE_TOOL, {
+    value: params.source,
+    enumerable: false,
+  });
+  Object.defineProperty(params.target, BEFORE_TOOL_CALL_HOOK_CONTEXT, {
+    value: params.ctx,
+    enumerable: false,
+  });
+  return params.target;
+}
+
+function createBlockedBeforeToolCallWrapper(params: {
+  source: AnyAgentTool;
+  ctx?: HookContext;
+  hookOptions: BeforeToolCallWrapperOptions;
+  reason: string;
+  toolName?: string;
+}): AnyAgentTool {
+  const fieldsSnapshot = snapshotBeforeToolCallWrapperFields(params.source);
+  const fields = fieldsSnapshot.ok ? fieldsSnapshot.fields : {};
+  if (params.toolName && typeof fields.name !== "string") {
+    fields.name = params.toolName;
+  }
+  const blockedTool = {
+    ...fields,
+    execute: async () => {
+      throw new Error(params.reason);
+    },
+  } as unknown as AnyAgentTool;
+  return attachBeforeToolCallWrapperMetadata({
+    source: params.source,
+    target: blockedTool,
+    ctx: params.ctx,
+    hookOptions: params.hookOptions,
+  });
 }
 
 type SkillUsageMatch = {
@@ -1107,20 +1247,48 @@ export function wrapToolWithBeforeToolCallHook(
   ctx?: HookContext,
   options: { approvalMode?: "request" | "report"; emitDiagnostics?: boolean } = {},
 ): AnyAgentTool {
-  const execute = tool.execute;
-  if (!execute) {
-    return tool;
-  }
-  const toolName = tool.name || "tool";
   const diagnosticIdentity = resolveToolDiagnosticIdentity(tool);
   const hookOptions: BeforeToolCallWrapperOptions = {
     ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
     emitDiagnostics: options.emitDiagnostics !== false,
   };
-  const wrappedTool: AnyAgentTool = {
-    ...tool,
+  const toolName = readBeforeToolCallToolName(tool);
+  if (!toolName) {
+    return createBlockedBeforeToolCallWrapper({
+      source: tool,
+      ctx,
+      hookOptions,
+      reason: "before_tool_call wrapper requires a readable tool name.",
+    });
+  }
+  const executeResult = readBeforeToolCallToolExecute(tool);
+  if (!executeResult.ok) {
+    return createBlockedBeforeToolCallWrapper({
+      source: tool,
+      ctx,
+      hookOptions,
+      reason: "before_tool_call wrapper requires a readable execute function.",
+      toolName,
+    });
+  }
+  if (!executeResult.execute) {
+    return tool;
+  }
+  const execute = executeResult.execute;
+  const fieldsSnapshot = snapshotBeforeToolCallWrapperFields(tool);
+  if (!fieldsSnapshot.ok) {
+    return createBlockedBeforeToolCallWrapper({
+      source: tool,
+      ctx,
+      hookOptions,
+      reason: "before_tool_call wrapper requires readable tool metadata.",
+      toolName,
+    });
+  }
+  const wrappedTool = {
+    ...fieldsSnapshot.fields,
     execute: async (toolCallId, params, signal, onUpdate) => {
-      const prepare = (tool as BeforeToolCallPreparingTool).prepareBeforeToolCallParams;
+      const prepare = readBeforeToolCallPrepare(tool);
       const preparedParams = prepare
         ? await prepare(params, {
             ...(toolCallId ? { toolCallId } : {}),
@@ -1178,17 +1346,14 @@ export function wrapToolWithBeforeToolCallHook(
         });
         return blockedResult;
       }
+      const finalize = readBeforeToolCallFinalize(tool);
       let executeParams = reconcileCodeModeExecBeforeHookParams({
         tool,
         originalParams: preparedParams,
         hookParams,
         adjustedParams: outcome.params,
       });
-      executeParams =
-        (tool as BeforeToolCallPreparingTool).finalizeBeforeToolCallParams?.(
-          executeParams,
-          preparedParams,
-        ) ?? executeParams;
+      executeParams = finalize ? finalize(executeParams, preparedParams) : executeParams;
       recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
       const normalizedToolName = normalizeToolName(toolName || "tool");
       const trace = ctx?.trace
@@ -1264,38 +1429,23 @@ export function wrapToolWithBeforeToolCallHook(
         throw err;
       }
     },
-  };
-  copyPluginToolMeta(tool, wrappedTool);
-  copyChannelAgentToolMeta(tool as never, wrappedTool as never);
-  Object.defineProperty(wrappedTool, BEFORE_TOOL_CALL_WRAPPED, {
-    value: true,
-    enumerable: true,
+  } as AnyAgentTool;
+  return attachBeforeToolCallWrapperMetadata({
+    source: tool,
+    target: wrappedTool,
+    ctx,
+    hookOptions,
   });
-  Object.defineProperty(wrappedTool, BEFORE_TOOL_CALL_DIAGNOSTIC_OPTIONS, {
-    value: hookOptions,
-    enumerable: false,
-  });
-  Object.defineProperty(wrappedTool, BEFORE_TOOL_CALL_SOURCE_TOOL, {
-    value: tool,
-    enumerable: false,
-  });
-  Object.defineProperty(wrappedTool, BEFORE_TOOL_CALL_HOOK_CONTEXT, {
-    value: ctx,
-    enumerable: false,
-  });
-  return wrappedTool;
 }
 
 /** Return true when a tool already carries the before_tool_call wrapper marker. */
 export function isToolWrappedWithBeforeToolCallHook(tool: AnyAgentTool): boolean {
-  const taggedTool = tool as unknown as Record<symbol, unknown>;
-  return taggedTool[BEFORE_TOOL_CALL_WRAPPED] === true;
+  return readBeforeToolCallToolProperty(tool, BEFORE_TOOL_CALL_WRAPPED) === true;
 }
 
 /** Toggle diagnostic event emission on an existing before_tool_call wrapper. */
 export function setBeforeToolCallDiagnosticsEnabled(tool: AnyAgentTool, enabled: boolean): void {
-  const taggedTool = tool as unknown as Record<symbol, unknown>;
-  const options = taggedTool[BEFORE_TOOL_CALL_DIAGNOSTIC_OPTIONS];
+  const options = readBeforeToolCallToolProperty(tool, BEFORE_TOOL_CALL_DIAGNOSTIC_OPTIONS);
   if (options && typeof options === "object" && "emitDiagnostics" in options) {
     (options as { emitDiagnostics: boolean }).emitDiagnostics = enabled;
   }
@@ -1307,9 +1457,8 @@ export function rewrapToolWithBeforeToolCallHook(
   ctx?: HookContext,
   options: { approvalMode?: "request" | "report"; emitDiagnostics?: boolean } = {},
 ): AnyAgentTool {
-  const taggedTool = tool as unknown as Record<symbol, unknown>;
-  const source = taggedTool[BEFORE_TOOL_CALL_SOURCE_TOOL];
-  const wrappedContext = taggedTool[BEFORE_TOOL_CALL_HOOK_CONTEXT];
+  const source = readBeforeToolCallToolProperty(tool, BEFORE_TOOL_CALL_SOURCE_TOOL);
+  const wrappedContext = readBeforeToolCallToolProperty(tool, BEFORE_TOOL_CALL_HOOK_CONTEXT);
   const preservedContext =
     wrappedContext && typeof wrappedContext === "object"
       ? (wrappedContext as HookContext)
@@ -1331,7 +1480,7 @@ export function copyBeforeToolCallHookMarker(source: AnyAgentTool, target: AnyAg
     enumerable: true,
   });
   const taggedSource = source as unknown as Record<symbol, unknown>;
-  const sourceTool = taggedSource[BEFORE_TOOL_CALL_SOURCE_TOOL];
+  const sourceTool = readBeforeToolCallToolProperty(taggedSource, BEFORE_TOOL_CALL_SOURCE_TOOL);
   if (sourceTool && typeof sourceTool === "object") {
     Object.defineProperty(target, BEFORE_TOOL_CALL_SOURCE_TOOL, {
       value: sourceTool,

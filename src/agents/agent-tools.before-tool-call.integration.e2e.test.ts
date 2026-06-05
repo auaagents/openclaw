@@ -979,6 +979,149 @@ describe("before_tool_call hook deduplication (#15502)", () => {
     );
   });
 
+  it("blocks tools with unreadable before-tool-call identity", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const rawTool = Object.defineProperties(
+      {
+        execute,
+        description: "hostile metadata",
+        parameters: {},
+      },
+      {
+        name: {
+          enumerable: true,
+          get: () => {
+            throw new Error("tool name getter exploded");
+          },
+        },
+      },
+    );
+    const tool = wrapToolWithBeforeToolCallHook(rawTool as never, {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session-main",
+    });
+
+    await expect(tool.execute("call-hostile-wrapper", { value: "ok" })).rejects.toThrow(
+      "before_tool_call wrapper requires a readable tool name.",
+    );
+
+    expect(isToolWrappedWithBeforeToolCallHook(tool)).toBe(true);
+    expect(beforeToolCallHook).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("blocks tools with unreadable execute accessors before policy wrapping", async () => {
+    const rawTool = Object.defineProperty(
+      {
+        name: "exec",
+        description: "hostile execute",
+        parameters: {},
+      },
+      "execute",
+      {
+        enumerable: true,
+        get: () => {
+          throw new Error("execute getter exploded");
+        },
+      },
+    );
+    const tool = wrapToolWithBeforeToolCallHook(rawTool as never, {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+    });
+
+    await expect(tool.execute("call-hostile-execute", { value: "ok" })).rejects.toThrow(
+      "before_tool_call wrapper requires a readable execute function.",
+    );
+
+    expect(isToolWrappedWithBeforeToolCallHook(tool)).toBe(true);
+    expect(beforeToolCallHook).not.toHaveBeenCalled();
+  });
+
+  it("blocks tools whose wrapper metadata cannot be enumerated", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const rawTool = new Proxy(
+      {
+        name: "exec",
+        execute,
+        description: "hostile ownKeys",
+        parameters: {},
+      },
+      {
+        ownKeys: () => {
+          throw new Error("tool ownKeys exploded");
+        },
+      },
+    );
+    const tool = wrapToolWithBeforeToolCallHook(rawTool as never, {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+    });
+
+    await expect(tool.execute("call-hostile-ownkeys", { value: "ok" })).rejects.toThrow(
+      "before_tool_call wrapper requires readable tool metadata.",
+    );
+
+    expect(isToolWrappedWithBeforeToolCallHook(tool)).toBe(true);
+    expect(beforeToolCallHook).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("guards unreadable optional prepare/finalize metadata while preserving execution", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const rawTool = Object.defineProperties(
+      {
+        name: "exec",
+        execute,
+        description: "hostile optional metadata",
+        parameters: {},
+      },
+      {
+        prepareBeforeToolCallParams: {
+          enumerable: true,
+          get: () => {
+            throw new Error("prepare getter exploded");
+          },
+        },
+        finalizeBeforeToolCallParams: {
+          enumerable: true,
+          get: () => {
+            throw new Error("finalize getter exploded");
+          },
+        },
+      },
+    );
+    const tool = wrapToolWithBeforeToolCallHook(rawTool as never, {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session-main",
+    });
+
+    await tool.execute("call-hostile-optional-wrapper", { value: "ok" });
+
+    expect(beforeToolCallHook).toHaveBeenCalledWith(
+      {
+        toolName: "exec",
+        params: { value: "ok" },
+        toolCallId: "call-hostile-optional-wrapper",
+      },
+      {
+        toolName: "exec",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        sessionId: "session-main",
+        toolCallId: "call-hostile-optional-wrapper",
+      },
+    );
+    expect(execute).toHaveBeenCalledWith(
+      "call-hostile-optional-wrapper",
+      { value: "ok" },
+      undefined,
+      undefined,
+    );
+  });
+
   it("preserves the hook marker when abort wrapping a hooked tool", () => {
     const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
     const baseTool = { name: "Bash", execute, description: "bash", parameters: {} } as any;
