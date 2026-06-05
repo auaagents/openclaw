@@ -222,8 +222,19 @@ function connectWithTimeout(
   });
 }
 
+function stringifyMcpRuntimeError(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return String(error);
+  } catch {
+    return "Unknown MCP runtime error";
+  }
+}
+
 function redactErrorUrls(error: unknown): string {
-  return redactSensitiveUrlLikeString(String(error));
+  return redactSensitiveUrlLikeString(stringifyMcpRuntimeError(error));
 }
 
 async function listAllTools(client: Client, timeoutMs: number) {
@@ -238,11 +249,19 @@ async function listAllTools(client: Client, timeoutMs: number) {
   return tools;
 }
 
-function isMcpMethodNotFoundError(error: unknown): boolean {
-  if (isMcpConfigRecord(error) && error.code === ErrorCode.MethodNotFound) {
+function readMcpRuntimeErrorCode(error: unknown): unknown {
+  try {
+    return isMcpConfigRecord(error) ? error.code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isMcpMethodNotFoundError(error: unknown): boolean {
+  if (readMcpRuntimeErrorCode(error) === ErrorCode.MethodNotFound) {
     return true;
   }
-  const message = String(error);
+  const message = stringifyMcpRuntimeError(error);
   return message.includes("-32601") || /method not found/i.test(message);
 }
 

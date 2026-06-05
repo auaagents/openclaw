@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createBundleMcpJsonSchemaValidator,
+  isMcpMethodNotFoundError,
   snapshotListedMcpToolsForCatalog,
 } from "./agent-bundle-mcp-runtime.js";
 import { cleanupBundleMcpHarness } from "./agent-bundle-mcp-test-harness.js";
@@ -334,6 +335,32 @@ describe("snapshotListedMcpToolsForCatalog", () => {
       "skipped malformed MCP tool catalog entry 2: missing readable name",
       "skipped malformed MCP tool catalog entry 3: missing readable inputSchema",
     ]);
+  });
+});
+
+describe("isMcpMethodNotFoundError", () => {
+  it("classifies unreadable MCP rejections without throwing", () => {
+    const hostileError = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("property denied");
+        },
+        getPrototypeOf() {
+          throw new Error("prototype denied");
+        },
+      },
+    );
+    const hostileStringError = {
+      [Symbol.toPrimitive]() {
+        throw new Error("string conversion denied");
+      },
+    };
+
+    expect(isMcpMethodNotFoundError({ code: -32601 })).toBe(true);
+    expect(isMcpMethodNotFoundError("MCP method not found")).toBe(true);
+    expect(isMcpMethodNotFoundError(hostileError)).toBe(false);
+    expect(isMcpMethodNotFoundError(hostileStringError)).toBe(false);
   });
 });
 
