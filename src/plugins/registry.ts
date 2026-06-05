@@ -1172,10 +1172,11 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     record: PluginRecord,
     transforms: PluginTextTransformsRegistration["transforms"],
   ) => {
-    if (
-      (!transforms.input || transforms.input.length === 0) &&
-      (!transforms.output || transforms.output.length === 0)
-    ) {
+    const snapshot = snapshotTextTransforms(record, transforms);
+    if (!snapshot) {
+      return;
+    }
+    if (!snapshot.input && !snapshot.output) {
       pushDiagnostic({
         level: "warn",
         pluginId: record.id,
@@ -1187,10 +1188,83 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     registry.textTransforms.push({
       pluginId: record.id,
       pluginName: record.name,
-      transforms,
+      transforms: snapshot,
       source: record.source,
       rootDir: record.rootDir,
     });
+  };
+
+  const snapshotTextTransforms = (
+    record: PluginRecord,
+    transforms: PluginTextTransformsRegistration["transforms"],
+  ): PluginTextTransformsRegistration["transforms"] | undefined => {
+    let input: unknown;
+    let output: unknown;
+    try {
+      input = transforms.input;
+      output = transforms.output;
+      const inputReplacements = snapshotTextReplacementList(record, input, "input");
+      const outputReplacements = snapshotTextReplacementList(record, output, "output");
+      if (!inputReplacements.ok || !outputReplacements.ok) {
+        return undefined;
+      }
+      return {
+        ...(inputReplacements.value.length > 0 ? { input: inputReplacements.value } : {}),
+        ...(outputReplacements.value.length > 0 ? { output: outputReplacements.value } : {}),
+      };
+    } catch (error) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `text transform registration has unreadable fields: ${formatErrorMessage(error)}`,
+      });
+      return undefined;
+    }
+  };
+
+  const snapshotTextReplacementList = (
+    record: PluginRecord,
+    value: unknown,
+    direction: "input" | "output",
+  ):
+    | {
+        ok: true;
+        value: NonNullable<PluginTextTransformsRegistration["transforms"][typeof direction]>;
+      }
+    | { ok: false } => {
+    if (value === undefined) {
+      return { ok: true, value: [] };
+    }
+    if (!Array.isArray(value)) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `text transform ${direction} replacements must be an array`,
+      });
+      return { ok: false };
+    }
+    const replacements: NonNullable<
+      PluginTextTransformsRegistration["transforms"][typeof direction]
+    > = [];
+    for (const [index, replacement] of value.entries()) {
+      try {
+        replacements.push({
+          from: replacement.from,
+          to: replacement.to,
+        });
+      } catch (error) {
+        pushDiagnostic({
+          level: "error",
+          pluginId: record.id,
+          source: record.source,
+          message: `text transform ${direction} replacement ${index + 1} has unreadable fields: ${formatErrorMessage(error)}`,
+        });
+        return { ok: false };
+      }
+    }
+    return { ok: true, value: replacements };
   };
 
   const registerEmbeddingProviderForPlugin = (
