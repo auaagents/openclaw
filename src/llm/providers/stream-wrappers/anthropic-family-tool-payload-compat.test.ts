@@ -1,9 +1,15 @@
 // Anthropic-family payload compatibility tests cover provider payload projection.
 import { describe, expect, it } from "vitest";
 import type { StreamFn } from "../../../agents/runtime/index.js";
-import { createOpenAIAnthropicToolPayloadCompatibilityWrapper } from "./anthropic-family-tool-payload-compat.js";
+import {
+  createAnthropicToolPayloadCompatibilityWrapper,
+  createOpenAIAnthropicToolPayloadCompatibilityWrapper,
+} from "./anthropic-family-tool-payload-compat.js";
 
-function runAnthropicPayloadWrapper(payload: Record<string, unknown>): void {
+function runAnthropicPayloadWrapper(
+  payload: Record<string, unknown>,
+  modelOverride?: unknown,
+): void {
   const baseStreamFn: StreamFn = (_model, _context, options) => {
     options?.onPayload?.(payload, {} as never);
     return {} as ReturnType<StreamFn>;
@@ -11,15 +17,25 @@ function runAnthropicPayloadWrapper(payload: Record<string, unknown>): void {
   const wrapped = createOpenAIAnthropicToolPayloadCompatibilityWrapper(baseStreamFn);
 
   void wrapped(
-    {
+    (modelOverride ?? {
       api: "anthropic-messages",
       provider: "openai-compatible-anthropic",
       id: "compat-model",
       compat: { requiresOpenAiAnthropicToolPayload: true },
-    } as never,
+    }) as never,
     { messages: [] } as never,
     {},
   );
+}
+
+function runGenericAnthropicPayloadWrapper(payload: Record<string, unknown>, model: unknown): void {
+  const baseStreamFn: StreamFn = (_model, _context, options) => {
+    options?.onPayload?.(payload, {} as never);
+    return {} as ReturnType<StreamFn>;
+  };
+  const wrapped = createAnthropicToolPayloadCompatibilityWrapper(baseStreamFn);
+
+  void wrapped(model as never, { messages: [] } as never, {});
 }
 
 describe("createOpenAIAnthropicToolPayloadCompatibilityWrapper", () => {
@@ -87,5 +103,77 @@ describe("createOpenAIAnthropicToolPayloadCompatibilityWrapper", () => {
 
     expect(Object.hasOwn(payload, "tools")).toBe(false);
     expect(Object.hasOwn(payload, "tool_choice")).toBe(false);
+  });
+
+  it("ignores hostile model api accessors before payload conversion", () => {
+    const model = {
+      compat: { requiresOpenAiAnthropicToolPayload: true },
+      id: "compat-model",
+      provider: "openai-compatible-anthropic",
+    };
+    Object.defineProperty(model, "api", {
+      enumerable: true,
+      get() {
+        throw new Error("model api getter should not run");
+      },
+    });
+    const payload = {
+      tools: [{ name: "lookup", input_schema: { type: "object", properties: {} } }],
+    };
+
+    expect(() => runGenericAnthropicPayloadWrapper(payload, model)).not.toThrow();
+
+    expect(payload.tools).toEqual([
+      { name: "lookup", input_schema: { type: "object", properties: {} } },
+    ]);
+  });
+
+  it("ignores hostile model compat accessors before payload conversion", () => {
+    const model = {
+      api: "anthropic-messages",
+      id: "compat-model",
+      provider: "openai-compatible-anthropic",
+    };
+    Object.defineProperty(model, "compat", {
+      enumerable: true,
+      get() {
+        throw new Error("model compat getter should not run");
+      },
+    });
+    const payload = {
+      tools: [{ name: "lookup", input_schema: { type: "object", properties: {} } }],
+    };
+
+    expect(() => runGenericAnthropicPayloadWrapper(payload, model)).not.toThrow();
+
+    expect(payload.tools).toEqual([
+      { name: "lookup", input_schema: { type: "object", properties: {} } },
+    ]);
+  });
+
+  it("ignores hostile compat flag accessors before payload conversion", () => {
+    const compat = {};
+    Object.defineProperty(compat, "requiresOpenAiAnthropicToolPayload", {
+      enumerable: true,
+      get() {
+        throw new Error("compat flag getter should not run");
+      },
+    });
+    const payload = {
+      tools: [{ name: "lookup", input_schema: { type: "object", properties: {} } }],
+    };
+
+    expect(() =>
+      runGenericAnthropicPayloadWrapper(payload, {
+        api: "anthropic-messages",
+        compat,
+        id: "compat-model",
+        provider: "openai-compatible-anthropic",
+      }),
+    ).not.toThrow();
+
+    expect(payload.tools).toEqual([
+      { name: "lookup", input_schema: { type: "object", properties: {} } },
+    ]);
   });
 });

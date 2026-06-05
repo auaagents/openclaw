@@ -28,15 +28,35 @@ function deletePayloadField(record: Record<string, unknown>, key: string): void 
   }
 }
 
-function hasOpenAiAnthropicToolPayloadCompatFlag(model: { compat?: unknown }): boolean {
-  if (!model.compat || typeof model.compat !== "object" || Array.isArray(model.compat)) {
-    return false;
+function readModelField(model: unknown, key: string): unknown {
+  if (!model || typeof model !== "object") {
+    return undefined;
   }
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(model, key);
+  } catch {
+    return undefined;
+  }
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
 
-  return (
-    (model.compat as { requiresOpenAiAnthropicToolPayload?: unknown })
-      .requiresOpenAiAnthropicToolPayload === true
-  );
+function readCompatField(model: unknown, key: string): unknown {
+  const compat = readModelField(model, "compat");
+  if (!compat || typeof compat !== "object" || Array.isArray(compat)) {
+    return undefined;
+  }
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(compat, key);
+  } catch {
+    return undefined;
+  }
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+function hasOpenAiAnthropicToolPayloadCompatFlag(model: { compat?: unknown }): boolean {
+  return readCompatField(model, "requiresOpenAiAnthropicToolPayload") === true;
 }
 
 function requiresAnthropicToolPayloadCompatibilityForModel(
@@ -46,7 +66,7 @@ function requiresAnthropicToolPayloadCompatibilityForModel(
   },
   options?: AnthropicToolPayloadCompatibilityOptions,
 ): boolean {
-  if (model.api !== "anthropic-messages") {
+  if (readModelField(model, "api") !== "anthropic-messages") {
     return false;
   }
   return (
