@@ -71,7 +71,7 @@ import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from ".
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { prepareCliBundleMcpConfig } from "./bundle-mcp.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
-import { buildCliAgentSystemPrompt, normalizeCliModel } from "./helpers.js";
+import { buildCliAgentSystemPrompt, collectCliToolNames, normalizeCliModel } from "./helpers.js";
 import { cliBackendLog } from "./log.js";
 import {
   buildCliSessionHistoryPrompt,
@@ -381,7 +381,7 @@ export async function prepareCliRunContext(
       : [];
   const promptToolNamesHash =
     bundleMcpEnabled && mcpLoopbackRuntime
-      ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
+      ? hashCliSessionText(JSON.stringify(collectCliToolNames(promptTools).toSorted()))
       : undefined;
   const reusableCliSessionCandidate: CliReusableSession = params.cliSessionBinding
     ? resolveCliSessionReuse({

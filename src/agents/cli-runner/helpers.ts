@@ -132,7 +132,7 @@ export function buildCliAgentSystemPrompt(params: {
       surface: "cli_backend",
     }),
     runtimeInfo,
-    toolNames: params.tools.map((tool) => tool.name),
+    toolNames: collectCliToolNames(params.tools),
     skillsPrompt: params.skillsPrompt,
     userTimezone,
     userTime,
@@ -143,6 +143,26 @@ export function buildCliAgentSystemPrompt(params: {
 
 /** Alternate export name for the CLI system prompt builder. */
 export const buildSystemPrompt = buildCliAgentSystemPrompt;
+
+export function collectCliToolNames(tools: Array<{ name?: string }>): string[] {
+  const names: string[] = [];
+  for (const tool of tools) {
+    let rawName: unknown;
+    try {
+      rawName = tool.name;
+    } catch {
+      continue;
+    }
+    if (typeof rawName !== "string") {
+      continue;
+    }
+    const name = rawName.trim();
+    if (name) {
+      names.push(name);
+    }
+  }
+  return names;
+}
 
 /** Applies backend model aliases to a requested CLI model id. */
 export function normalizeCliModel(modelId: string, backend: CliBackendConfig): string {

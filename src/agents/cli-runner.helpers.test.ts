@@ -9,6 +9,7 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { escapeRegExp } from "../shared/regexp.js";
 import {
   buildCliArgs,
+  collectCliToolNames,
   loadPromptRefImages,
   prepareCliPromptImagePayload,
   resolveCliRunQueueKey,
@@ -19,6 +20,26 @@ import * as promptImageUtils from "./embedded-agent-runner/run/images.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "./system-prompt-cache-boundary.js";
 import * as toolImages from "./tool-images.js";
+
+describe("collectCliToolNames", () => {
+  it("skips unreadable and non-string tool names", () => {
+    const unreadableTool = {};
+    Object.defineProperty(unreadableTool, "name", {
+      get() {
+        throw new Error("bad tool name");
+      },
+    });
+
+    expect(
+      collectCliToolNames([
+        { name: " read " },
+        unreadableTool as { name?: string },
+        { name: 42 as unknown as string },
+        { name: "write" },
+      ]),
+    ).toEqual(["read", "write"]);
+  });
+});
 
 describe("loadPromptRefImages", () => {
   beforeEach(() => {

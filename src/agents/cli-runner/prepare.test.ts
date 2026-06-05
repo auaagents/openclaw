@@ -1177,9 +1177,29 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       }));
       const ensureMcpLoopbackServer = vi.fn(createTestMcpLoopbackServer);
       const createMcpLoopbackServerConfig = vi.fn(createTestMcpLoopbackServerConfig);
+      const unreadableTool = {};
+      Object.defineProperty(unreadableTool, "name", {
+        get() {
+          throw new Error("bad tool name");
+        },
+      });
       const resolveMcpLoopbackScopedTools = vi.fn(() => ({
         agentId: "main",
         tools: [
+          unreadableTool as {
+            name: string;
+            label?: string;
+            description?: string;
+            parameters?: unknown;
+            execute?: unknown;
+          },
+          {
+            name: 42 as unknown as string,
+            label: "Bad Tool",
+            description: "Bad tool",
+            parameters: { type: "object", properties: {} },
+            execute: vi.fn(),
+          },
           {
             name: "memory_search",
             label: "Memory Search",
