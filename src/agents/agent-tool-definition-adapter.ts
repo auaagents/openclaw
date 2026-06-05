@@ -81,6 +81,7 @@ type ToolDefinitionSnapshot = {
   label: string;
   description: string;
   parameters: ToolDefinition["parameters"];
+  execute: AnyAgentTool["execute"];
   beforeHookWrapped: boolean;
 };
 type ClientToolDefinitionSnapshot = {
@@ -397,6 +398,7 @@ export function toToolDefinitions(
       label,
       description,
       parameters,
+      execute,
       beforeHookWrapped,
     } = toolSnapshot;
     return {
@@ -453,7 +455,12 @@ export function toToolDefinitions(
             });
             recordAdjustedParamsForToolCall(toolCallId, executeParams, hookContext?.runId);
           }
-          const rawResult = await tool.execute(toolCallId, executeParams, signal, onUpdate);
+          const rawResult = await Reflect.apply(execute, tool, [
+            toolCallId,
+            executeParams,
+            signal,
+            onUpdate,
+          ]);
           const result = normalizeToolExecutionResult({
             toolName: normalizedName,
             result: rawResult,
@@ -515,6 +522,10 @@ function snapshotAgentToolDefinition(tool: AnyAgentTool): ToolDefinitionSnapshot
     const label = typeof rawLabel === "string" && rawLabel.length > 0 ? rawLabel : name;
     const description = typeof rawDescription === "string" ? rawDescription : "";
     const parameters = snapshotToolDefinitionSchema(tool.parameters);
+    const execute = tool.execute;
+    if (typeof execute !== "function") {
+      throw new Error("tool execute must be a function");
+    }
     return {
       sourceTool: tool,
       name,
@@ -522,6 +533,7 @@ function snapshotAgentToolDefinition(tool: AnyAgentTool): ToolDefinitionSnapshot
       label,
       description,
       parameters,
+      execute,
       beforeHookWrapped: isToolWrappedWithBeforeToolCallHook(tool),
     };
   } catch (err) {

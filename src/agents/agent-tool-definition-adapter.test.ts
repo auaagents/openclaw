@@ -106,6 +106,40 @@ describe("agent tool definition adapter", () => {
     expect(defs.map((def) => def.name)).toEqual(["healthy_name"]);
   });
 
+  it("skips unreadable or non-callable tool execute handlers before exposing definitions", () => {
+    const unreadableExecute = {
+      name: "bad_execute",
+      label: "Bad Execute",
+      description: "throws while reading execute",
+      parameters: { type: "object", properties: {} },
+    } as AgentTool;
+    Object.defineProperty(unreadableExecute, "execute", {
+      get: () => {
+        throw new Error("revoked execute");
+      },
+    });
+    const nonCallableExecute = {
+      name: "non_callable_execute",
+      label: "Non-callable Execute",
+      description: "execute is not callable",
+      parameters: { type: "object", properties: {} },
+      execute: "not a function",
+    } as unknown as AgentTool;
+    const healthyTool = {
+      name: "healthy_execute",
+      label: "Healthy Execute",
+      description: "survives a bad sibling",
+      parameters: { type: "object", properties: {} },
+      execute: async () => ({
+        content: [{ type: "text" as const, text: "ok" }],
+      }),
+    } satisfies AgentTool;
+
+    const defs = toToolDefinitions([unreadableExecute, nonCallableExecute, healthyTool]);
+
+    expect(defs.map((def) => def.name)).toEqual(["healthy_execute"]);
+  });
+
   it("snapshots tool definition schemas before exposing session definitions", () => {
     const parameters = {
       type: "object",
