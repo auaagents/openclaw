@@ -27,6 +27,19 @@ const model: Model = {
   maxTokens: 1000,
 };
 
+function makeHostileModel(): Model {
+  const hostile = { ...model };
+  for (const key of ["api", "provider", "id"] as const) {
+    Object.defineProperty(hostile, key, {
+      enumerable: true,
+      get() {
+        throw new Error(`revoked ${key}`);
+      },
+    });
+  }
+  return hostile;
+}
+
 const assistantMessage: AssistantMessage = {
   role: "assistant",
   content: [{ type: "text", text: "ok" }],
@@ -75,16 +88,26 @@ function createRuntime(onContext: (context: Context) => void): AgentCoreRuntimeD
   };
 }
 
+function createFailingRuntime(): AgentCoreRuntimeDeps {
+  return {
+    streamSimple: async () => {
+      throw new Error("provider exploded");
+    },
+    completeSimple: async () => assistantMessage,
+  };
+}
+
 function createHarness(
   tools: AgentTool[],
   onContext: (context: Context) => void,
+  options?: { model?: Model; runtime?: AgentCoreRuntimeDeps },
 ): CoreAgentHarness {
   return new CoreAgentHarness({
     env: new NodeExecutionEnv({ cwd: "/" }),
     session: new Session(new InMemorySessionStorage()),
-    model,
+    model: options?.model ?? model,
     tools,
-    runtime: createRuntime(onContext),
+    runtime: options?.runtime ?? createRuntime(onContext),
   });
 }
 
@@ -157,5 +180,23 @@ describe("CoreAgentHarness tool snapshots", () => {
     expect(seenTools?.map((entry) => [entry.name, entry.description])).toEqual([
       ["empty_description", ""],
     ]);
+  });
+
+  it("keeps run-failure messages reachable with hostile model identity", async () => {
+    const harness = createHarness([], () => {}, {
+      model: makeHostileModel(),
+      runtime: createFailingRuntime(),
+    });
+
+    const result = await harness.prompt("hello");
+
+    expect(result).toMatchObject({
+      role: "assistant",
+      api: "unknown",
+      provider: "unknown",
+      model: "unknown",
+      stopReason: "error",
+      errorMessage: "provider exploded",
+    });
   });
 });

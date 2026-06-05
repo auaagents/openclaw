@@ -6,6 +6,7 @@ import type {
   UserMessage,
 } from "../../../llm-core/src/index.js";
 import { runAgentLoop } from "../agent-loop.js";
+import { createAgentFailureMessage } from "../failure-message.js";
 import { type AgentCoreRuntimeDeps, resolveAgentCoreStreamFn } from "../runtime-deps.js";
 import { snapshotAgentTools } from "../tool-snapshot.js";
 import type {
@@ -63,27 +64,6 @@ function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
     content.push(...images);
   }
   return { role: "user", content, timestamp: Date.now() };
-}
-
-function createFailureMessage(model: Model, error: unknown, aborted: boolean): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [{ type: "text", text: "" }],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    stopReason: aborted ? "aborted" : "error",
-    errorMessage: error instanceof Error ? error.message : String(error),
-    timestamp: Date.now(),
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-  };
 }
 
 function cloneStreamOptions(streamOptions?: AgentHarnessStreamOptions): AgentHarnessStreamOptions {
@@ -621,7 +601,7 @@ export class CoreAgentHarness<
     aborted: boolean,
     signal: AbortSignal,
   ): Promise<AgentMessage[]> {
-    const failureMessage = createFailureMessage(model, error, aborted);
+    const failureMessage = createAgentFailureMessage(model, error, aborted);
     await this.handleAgentEvent({ type: "message_start", message: failureMessage }, signal);
     await this.handleAgentEvent({ type: "message_end", message: failureMessage }, signal);
     await this.handleAgentEvent(

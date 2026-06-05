@@ -36,6 +36,19 @@ const config: AgentLoopConfig = {
   convertToLlm: (messages) => messages as Message[],
 };
 
+function makeHostileModel(): Model {
+  const hostile = { ...model };
+  for (const key of ["api", "provider", "id"] as const) {
+    Object.defineProperty(hostile, key, {
+      enumerable: true,
+      get() {
+        throw new Error(`revoked ${key}`);
+      },
+    });
+  }
+  return hostile;
+}
+
 const failingStreamFn: StreamFn = async () => {
   throw new Error("provider exploded");
 };
@@ -78,6 +91,22 @@ function expectTerminalFailure(events: AgentEvent[], result: AgentMessage[]): vo
     stopReason: "error",
     errorMessage: "provider exploded",
   });
+}
+
+async function collectEventsWithTimeout(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      collectEvents(stream),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("agent loop stream did not settle")), 500);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function createTool(name: string, parameters = Type.Object({ query: Type.String() })): AgentTool {
@@ -129,6 +158,26 @@ describe("agentLoop EventStream failures", () => {
     const result = await stream.result();
 
     expectTerminalFailure(events, result);
+  });
+
+  it("keeps rejection failure messages reachable with hostile model identity", async () => {
+    const stream = agentLoop(
+      [{ role: "user", content: "hello", timestamp: 1 }],
+      { systemPrompt: "", messages: [] },
+      { ...config, model: makeHostileModel() },
+      undefined,
+      failingStreamFn,
+    );
+
+    const events = await collectEventsWithTimeout(stream);
+    const result = await stream.result();
+
+    expectTerminalFailure(events, result);
+    expect(result[0]).toMatchObject({
+      api: "unknown",
+      provider: "unknown",
+      model: "unknown",
+    });
   });
 });
 

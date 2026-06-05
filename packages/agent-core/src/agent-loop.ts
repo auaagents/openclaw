@@ -8,6 +8,7 @@ import type {
   ToolResultMessage,
 } from "../../llm-core/src/index.js";
 import type { EventStream as SourceEventStream } from "../../llm-core/src/index.js";
+import { createAgentFailureMessage } from "./failure-message.js";
 import { type AgentCoreStreamRuntimeDeps, resolveAgentCoreStreamFn } from "./runtime-deps.js";
 import { snapshotAgentTools } from "./tool-snapshot.js";
 import type {
@@ -24,15 +25,6 @@ import { validateToolArguments } from "./validation.js";
 
 /** Callback used by synchronous loop runners to publish agent lifecycle events. */
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
-
-const EMPTY_USAGE = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
 
 const EventStreamConstructor: typeof SourceEventStream = LlmEventStream;
 
@@ -187,31 +179,13 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
   );
 }
 
-function createLoopFailureMessage(
-  config: AgentLoopConfig,
-  error: unknown,
-  aborted: boolean,
-): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [{ type: "text", text: "" }],
-    api: config.model.api,
-    provider: config.model.provider,
-    model: config.model.id,
-    usage: EMPTY_USAGE,
-    stopReason: aborted ? "aborted" : "error",
-    errorMessage: error instanceof Error ? error.message : String(error),
-    timestamp: Date.now(),
-  };
-}
-
 function pushLoopFailure(
   stream: EventStream<AgentEvent, AgentMessage[]>,
   config: AgentLoopConfig,
   error: unknown,
   aborted: boolean,
 ): void {
-  const failureMessage = createLoopFailureMessage(config, error, aborted);
+  const failureMessage = createAgentFailureMessage(config.model, error, aborted);
   stream.push({ type: "message_start", message: failureMessage });
   stream.push({ type: "message_end", message: failureMessage });
   stream.push({ type: "turn_end", message: failureMessage, toolResults: [] });
