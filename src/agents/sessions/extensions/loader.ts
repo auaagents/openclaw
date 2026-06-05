@@ -487,6 +487,17 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
   };
 }
 
+function describeExtensionLoadError(err: unknown): string {
+  try {
+    if (err instanceof Error) {
+      return err.message || err.name || "Unknown extension load error";
+    }
+    return String(err);
+  } catch {
+    return "Unknown extension load error";
+  }
+}
+
 async function loadExtension(
   extensionPath: string,
   cwd: string,
@@ -510,7 +521,7 @@ async function loadExtension(
 
     return { extension, error: null };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeExtensionLoadError(err);
     return { extension: null, error: `Failed to load extension: ${message}` };
   }
 }

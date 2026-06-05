@@ -86,4 +86,34 @@ export default async function(api) {
     expect(result.extensions).toHaveLength(1);
     expect(Array.from(result.extensions[0]?.tools.keys() ?? [])).toEqual(["healthy_lookup"]);
   });
+
+  it("reports hostile extension factory failures without crashing the loader", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "openclaw-extension-load-error-"));
+    tempDirs.push(dir);
+    const extensionPath = join(dir, "extension.ts");
+    await writeFile(
+      extensionPath,
+      `
+export default async function() {
+  const error = new Error("factory failed");
+  Object.defineProperty(error, "message", {
+    get() {
+      throw new Error("message denied");
+    },
+  });
+  throw error;
+}
+`,
+    );
+
+    const result = await loadExtensions([extensionPath], dir);
+
+    expect(result.extensions).toEqual([]);
+    expect(result.errors).toEqual([
+      {
+        path: extensionPath,
+        error: "Failed to load extension: Unknown extension load error",
+      },
+    ]);
+  });
 });
