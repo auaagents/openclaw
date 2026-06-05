@@ -77,6 +77,7 @@ import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js
 import { createOpenClawTools } from "./openclaw-tools.js";
 import type { SandboxContext } from "./sandbox.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./sandbox/constants.js";
+import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
 import { resolveSenderToolPolicy } from "./sender-tool-policy.js";
 import { createCodingTools, createReadTool } from "./sessions/index.js";
 import {
@@ -121,6 +122,15 @@ type GuardContainerMount = {
   containerRoot: string;
   hostRoot: string;
 };
+
+function readAgentToolName(tool: AnyAgentTool): string | undefined {
+  try {
+    const name = tool.name;
+    return typeof name === "string" ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function readOnlyAgentWorkspaceMount(
   sandbox: SandboxContext | null | undefined,
@@ -275,10 +285,49 @@ function applyModelProviderToolPolicy(
       agentDir: params?.agentDir,
     })
   ) {
-    return tools.filter((tool) => tool.name !== "web_search");
+    return tools.filter((tool) => {
+      const name = readAgentToolName(tool);
+      return Boolean(name && name !== "web_search");
+    });
   }
 
   return tools;
+}
+
+function filterMemoryFlushTools(params: {
+  tools: AnyAgentTool[];
+  memoryFlushWritePath?: string;
+  memoryFlushWriteRoot: string;
+  sandbox?: SandboxContext | null;
+  sandboxRoot?: string;
+  sandboxFsBridge?: SandboxFsBridge;
+}): AnyAgentTool[] {
+  if (!params.memoryFlushWritePath) {
+    return params.tools;
+  }
+  const toolsForMemoryFlush: AnyAgentTool[] = [];
+  for (const tool of params.tools) {
+    const name = readAgentToolName(tool);
+    if (!name || !MEMORY_FLUSH_ALLOWED_TOOL_NAMES.has(name)) {
+      continue;
+    }
+    if (name === "write") {
+      toolsForMemoryFlush.push(
+        wrapToolMemoryFlushAppendOnlyWrite(tool, {
+          root: params.memoryFlushWriteRoot,
+          relativePath: params.memoryFlushWritePath,
+          containerWorkdir: params.sandbox?.containerWorkdir,
+          sandbox:
+            params.sandboxRoot && params.sandboxFsBridge
+              ? { root: params.sandboxRoot, bridge: params.sandboxFsBridge }
+              : undefined,
+        }),
+      );
+      continue;
+    }
+    toolsForMemoryFlush.push(tool);
+  }
+  return toolsForMemoryFlush;
 }
 
 function isApplyPatchAllowedForModel(params: {
@@ -384,6 +433,7 @@ export const testing = {
   wrapToolParamValidation,
   assertRequiredParams,
   applyModelProviderToolPolicy,
+  filterMemoryFlushTools,
 } as const;
 
 export type OpenClawCodingToolConstructionPlan = {
@@ -1044,29 +1094,17 @@ export function createOpenClawCodingTools(options?: {
     ...toolSearchTools,
   ];
   options?.recordToolPrepStage?.("openclaw-tools");
-  const toolsForMemoryFlush: AnyAgentTool[] = isMemoryFlushRun && memoryFlushWritePath ? [] : tools;
-  if (isMemoryFlushRun && memoryFlushWritePath) {
-    for (const tool of tools) {
-      if (!MEMORY_FLUSH_ALLOWED_TOOL_NAMES.has(tool.name)) {
-        continue;
-      }
-      if (tool.name === "write") {
-        toolsForMemoryFlush.push(
-          wrapToolMemoryFlushAppendOnlyWrite(tool, {
-            root: memoryFlushWriteRoot,
-            relativePath: memoryFlushWritePath,
-            containerWorkdir: sandbox?.containerWorkdir,
-            sandbox:
-              sandboxRoot && sandboxFsBridge
-                ? { root: sandboxRoot, bridge: sandboxFsBridge }
-                : undefined,
-          }),
-        );
-        continue;
-      }
-      toolsForMemoryFlush.push(tool);
-    }
-  }
+  const toolsForMemoryFlush =
+    isMemoryFlushRun && memoryFlushWritePath
+      ? filterMemoryFlushTools({
+          tools,
+          memoryFlushWritePath,
+          memoryFlushWriteRoot,
+          sandbox,
+          sandboxRoot,
+          sandboxFsBridge,
+        })
+      : tools;
   const unavailableCoreToolReason =
     isMemoryFlushRun && memoryFlushWritePath
       ? "memory-triggered compaction runs expose only read and append-only write"

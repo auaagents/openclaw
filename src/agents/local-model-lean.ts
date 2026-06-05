@@ -7,7 +7,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveAgentConfig, resolveDefaultAgentId } from "./agent-scope-config.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
-import { expandToolGroups, normalizeToolName } from "./tool-policy.js";
+import { expandToolGroups, normalizeToolName, readNormalizedToolName } from "./tool-policy.js";
 
 const LOCAL_MODEL_LEAN_DENY_TOOL_NAMES = new Set(["browser", "cron", "message"]);
 
@@ -84,7 +84,10 @@ export function filterLocalModelLeanTools(params: {
   }
   const preservedToolNames = resolvePreservedLocalModelLeanToolNames(params.preserveToolNames);
   return params.tools.filter((tool) => {
-    const normalizedName = normalizeToolName(tool.name);
+    const normalizedName = readNormalizedToolName(tool);
+    if (!normalizedName) {
+      return false;
+    }
     return (
       preservedToolNames.has(normalizedName) ||
       !LOCAL_MODEL_LEAN_DENY_TOOL_NAMES.has(normalizedName)

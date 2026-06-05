@@ -20,6 +20,14 @@ function toolNames(tools: AnyAgentTool[]): string[] {
   return tools.map((tool) => tool.name);
 }
 
+function unreadableNameTool(): AnyAgentTool {
+  return Object.defineProperty({ description: "hostile tool" }, "name", {
+    get() {
+      throw new Error("revoked tool name");
+    },
+  }) as AnyAgentTool;
+}
+
 describe("applyModelProviderToolPolicy", () => {
   it("keeps web_search for non-xAI models", () => {
     const filtered = testing.applyModelProviderToolPolicy(baseTools, {
@@ -69,6 +77,31 @@ describe("applyModelProviderToolPolicy", () => {
       modelId: "gpt-5.4",
     });
 
+    expect(toolNames(filtered)).toEqual(["read", "exec"]);
+  });
+
+  it("drops unreadable tool names while suppressing managed web_search", () => {
+    const hostileTool = unreadableNameTool();
+    const filtered = testing.applyModelProviderToolPolicy(
+      [{ name: "read" }, hostileTool, { name: "web_search" }, { name: "exec" }] as AnyAgentTool[],
+      {
+        config: {
+          tools: {
+            web: {
+              search: {
+                enabled: true,
+                openaiCodex: { enabled: true, mode: "cached" },
+              },
+            },
+          },
+        },
+        modelProvider: "gateway",
+        modelApi: "openai-chatgpt-responses",
+        modelId: "gpt-5.4",
+      },
+    );
+
+    expect(filtered.some((tool) => Object.is(tool, hostileTool))).toBe(false);
     expect(toolNames(filtered)).toEqual(["read", "exec"]);
   });
 
@@ -142,9 +175,11 @@ describe("applyModelProviderToolPolicy", () => {
   });
 
   it("drops heavyweight tools when the experimental lean local-model flag is enabled", () => {
+    const hostileTool = unreadableNameTool();
     const filtered = testing.applyModelProviderToolPolicy(
       [
         { name: "read" },
+        hostileTool,
         { name: "browser" },
         { name: "cron" },
         { name: "message" },
@@ -166,6 +201,7 @@ describe("applyModelProviderToolPolicy", () => {
       },
     );
 
+    expect(filtered.some((tool) => Object.is(tool, hostileTool))).toBe(false);
     expect(toolNames(filtered)).toEqual(["read", "exec"]);
   });
 
@@ -334,5 +370,25 @@ describe("applyModelProviderToolPolicy", () => {
     );
 
     expect(toolNames(filtered)).toEqual(["read", "browser", "cron", "message", "exec"]);
+  });
+});
+
+describe("filterMemoryFlushTools", () => {
+  it("skips unreadable tool names while keeping read and append-only write", () => {
+    const hostileTool = unreadableNameTool();
+    const filtered = testing.filterMemoryFlushTools({
+      tools: [
+        { name: "read" },
+        hostileTool,
+        { name: "exec" },
+        { name: "write", description: "write tool" },
+      ] as AnyAgentTool[],
+      memoryFlushWritePath: "memory/2026-06-05.md",
+      memoryFlushWriteRoot: "/tmp/openclaw-memory",
+    });
+
+    expect(filtered.some((tool) => Object.is(tool, hostileTool))).toBe(false);
+    expect(toolNames(filtered)).toEqual(["read", "write"]);
+    expect(filtered[1]?.description).toContain("During memory flush");
   });
 });
