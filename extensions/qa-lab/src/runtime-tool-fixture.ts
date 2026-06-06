@@ -14,7 +14,6 @@ type QaRuntimeToolFixtureConfig = {
   ensureImageGeneration?: unknown;
   allowAsyncHappyPath?: unknown;
   asyncHappyPathProof?: unknown;
-  asyncHappyPathOutputSnippet?: unknown;
   expectedAvailable?: unknown;
   toolCoverage?: unknown;
   knownBroken?: unknown;
@@ -25,7 +24,6 @@ type QaRuntimeToolFixtureRequest = {
   allInputText?: string;
   plannedToolName?: string;
   plannedToolArgs?: unknown;
-  toolOutput?: string;
 };
 
 type QaRuntimeToolFixtureDeps = {
@@ -58,20 +56,59 @@ function readBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function isKnownBroken(value: unknown) {
-  return Boolean(value && typeof value === "object");
+  return isRecord(value);
 }
 
 function isKnownHarnessGap(value: unknown) {
-  return Boolean(value && typeof value === "object");
+  return isRecord(value);
 }
 
 function isQaRuntimeToolFixtureRequest(value: unknown): value is QaRuntimeToolFixtureRequest {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  return isRecord(value);
 }
 
 function readQaRuntimeToolFixtureRequests(value: unknown): QaRuntimeToolFixtureRequest[] {
   return Array.isArray(value) ? value.filter(isQaRuntimeToolFixtureRequest) : [];
+}
+
+function readRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function countRecordKeys(records: readonly Record<string, unknown>[]) {
+  const counts = new Map<string, number>();
+  for (const record of records) {
+    const key = JSON.stringify(record);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function findNewImageGenerationRequest(params: {
+  before: readonly Record<string, unknown>[];
+  after: readonly Record<string, unknown>[];
+  prompt: string;
+}) {
+  const beforeCounts = countRecordKeys(params.before);
+  const seenAfter = new Map<string, number>();
+  return params.after.find((record) => {
+    if (readString(record.prompt) !== params.prompt) {
+      return false;
+    }
+    const key = JSON.stringify(record);
+    const seen = (seenAfter.get(key) ?? 0) + 1;
+    seenAfter.set(key, seen);
+    return seen > (beforeCounts.get(key) ?? 0);
+  });
+}
+
+function readPlannedPrompt(value: unknown) {
+  return isRecord(value) ? readString(value.prompt) : "";
 }
 
 function requestMatchesPrompt(request: QaRuntimeToolFixtureRequest, promptSnippet: string) {
@@ -171,6 +208,27 @@ function toError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+async function waitForAsyncImageGenerationRequest(params: {
+  deps: QaRuntimeToolFixtureDeps;
+  mockBaseUrl: string;
+  before: readonly Record<string, unknown>[];
+  prompt: string;
+}) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const after = readRecords(await params.deps.fetchJson(`${params.mockBaseUrl}/debug/image-generations`));
+    const request = findNewImageGenerationRequest({
+      before: params.before,
+      after,
+      prompt: params.prompt,
+    });
+    if (request) {
+      return request;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return undefined;
+}
+
 export async function runRuntimeToolFixture(
   env: QaSuiteRuntimeEnv,
   config: QaRuntimeToolFixtureConfig,
@@ -241,6 +299,10 @@ export async function runRuntimeToolFixture(
     : 0;
   const allowAsyncHappyPath = readBoolean(config.allowAsyncHappyPath, false);
   const asyncHappyPathProof = readString(config.asyncHappyPathProof);
+  const imageGenerationRequestsBefore =
+    env.mock && asyncHappyPathProof === "image-generation-request"
+      ? readRecords(await deps.fetchJson(`${env.mock.baseUrl}/debug/image-generations`))
+      : [];
   let asyncHappyPathError: Error | undefined;
   let asyncHappyPathDetails: string | undefined;
   let asyncHappyPathRequest: QaRuntimeToolFixtureRequest | undefined;
@@ -272,25 +334,28 @@ export async function runRuntimeToolFixture(
     if (!happyEntry) {
       throw asyncHappyPathError;
     }
-    if (asyncHappyPathProof !== "tool-output-started") {
+    if (asyncHappyPathProof !== "image-generation-request") {
       throw new Error(
-        `allowAsyncHappyPath for ${toolName} requires asyncHappyPathProof: tool-output-started`,
+        `allowAsyncHappyPath for ${toolName} requires asyncHappyPathProof: image-generation-request`,
       );
     }
-    const outputSnippet = readString(
-      config.asyncHappyPathOutputSnippet,
-      "Background task started",
-    );
-    const asyncStartOutput = requestsAfterHappy
-      .slice(happyEntry.index + 1)
-      .find((request) => (request.toolOutput ?? "").includes(outputSnippet));
-    if (!asyncStartOutput) {
+    const happyPlannedPrompt = readPlannedPrompt(happyEntry.request.plannedToolArgs);
+    if (!happyPlannedPrompt) {
+      throw new Error(`expected happy-path ${toolName} planned args to include prompt`);
+    }
+    const imageGenerationRequest = await waitForAsyncImageGenerationRequest({
+      deps,
+      mockBaseUrl: env.mock.baseUrl,
+      before: imageGenerationRequestsBefore,
+      prompt: happyPlannedPrompt,
+    });
+    if (!imageGenerationRequest) {
       throw new Error(
-        `expected async tool-output start after happy-path ${toolName}; happy prompt error: ${formatPromptError(asyncHappyPathError)}`,
+        `expected image generation request for happy-path ${toolName}; happy prompt error: ${formatPromptError(asyncHappyPathError)}`,
       );
     }
     asyncHappyPathRequest = happyEntry.request;
-    asyncHappyPathDetails = `${toolName} happy path started async work before ending: ${formatPromptError(asyncHappyPathError)}`;
+    asyncHappyPathDetails = `${toolName} happy path started async image generation before ending: ${formatPromptError(asyncHappyPathError)}`;
   }
   await deps.runAgentPrompt(env, {
     sessionKey: failureSessionKey,

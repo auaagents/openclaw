@@ -155,7 +155,7 @@ describe("runtime tool fixture", () => {
     ).rejects.toThrow("web_search not present in effective tools");
   });
 
-  it("accepts async happy-path completion only after the mock records the planned call", async () => {
+  it("accepts async happy-path completion after the matching image request starts", async () => {
     const env = await makeEnv({ mock: { baseUrl: "http://127.0.0.1:9999" } });
     const runAgentPrompt = vi
       .fn()
@@ -172,19 +172,22 @@ describe("runtime tool fixture", () => {
       plannedToolArgs: { prompt: "" },
     };
     let requestReads = 0;
-    const fetchJson = vi.fn(async () => {
+    let imageGenerationReads = 0;
+    const fetchJson = vi.fn(async (url: string) => {
+      if (url.endsWith("/debug/image-generations")) {
+        imageGenerationReads += 1;
+        return imageGenerationReads === 1
+          ? []
+          : [{ prompt: "QA lighthouse runtime parity fixture" }];
+      }
       requestReads += 1;
       if (requestReads === 1) {
         return [];
       }
       if (requestReads === 2) {
-        return [happyRequest, { toolOutput: "Background task started for image generation." }];
+        return [happyRequest];
       }
-      return [
-        happyRequest,
-        { toolOutput: "Background task started for image generation." },
-        failureRequest,
-      ];
+      return [happyRequest, failureRequest];
     });
 
     const details = await runRuntimeToolFixture(
@@ -192,8 +195,7 @@ describe("runtime tool fixture", () => {
       {
         toolName: "image_generate",
         allowAsyncHappyPath: true,
-        asyncHappyPathProof: "tool-output-started",
-        asyncHappyPathOutputSnippet: "Background task started",
+        asyncHappyPathProof: "image-generation-request",
         promptSnippet: "target=image_generate",
         failurePromptSnippet: "failure target=image_generate",
         toolCoverage: {
@@ -211,7 +213,7 @@ describe("runtime tool fixture", () => {
     );
 
     expect(runAgentPrompt).toHaveBeenCalledTimes(2);
-    expect(details).toContain("happy path started async work");
+    expect(details).toContain("happy path started async image generation");
     expect(details).toContain("mock provider happy planned args");
     expect(details).toContain("mock provider failure planned args");
   });
@@ -228,7 +230,10 @@ describe("runtime tool fixture", () => {
       plannedToolArgs: { prompt: "" },
     };
     let requestReads = 0;
-    const fetchJson = vi.fn(async () => {
+    const fetchJson = vi.fn(async (url: string) => {
+      if (url.endsWith("/debug/image-generations")) {
+        return [];
+      }
       requestReads += 1;
       return requestReads === 1 ? [] : [failureRequest];
     });
@@ -239,8 +244,7 @@ describe("runtime tool fixture", () => {
         {
           toolName: "image_generate",
           allowAsyncHappyPath: true,
-          asyncHappyPathProof: "tool-output-started",
-          asyncHappyPathOutputSnippet: "Background task started",
+          asyncHappyPathProof: "image-generation-request",
           promptSnippet: "target=image_generate",
           failurePromptSnippet: "failure target=image_generate",
           toolCoverage: {
@@ -277,7 +281,10 @@ describe("runtime tool fixture", () => {
       plannedToolArgs: { prompt: "" },
     };
     let requestReads = 0;
-    const fetchJson = vi.fn(async () => {
+    const fetchJson = vi.fn(async (url: string) => {
+      if (url.endsWith("/debug/image-generations")) {
+        return [];
+      }
       requestReads += 1;
       if (requestReads === 1) {
         return [];
@@ -291,8 +298,7 @@ describe("runtime tool fixture", () => {
         {
           toolName: "image_generate",
           allowAsyncHappyPath: true,
-          asyncHappyPathProof: "tool-output-started",
-          asyncHappyPathOutputSnippet: "Background task started",
+          asyncHappyPathProof: "image-generation-request",
           promptSnippet: "target=image_generate",
           failurePromptSnippet: "failure target=image_generate",
           toolCoverage: {
@@ -308,7 +314,7 @@ describe("runtime tool fixture", () => {
           ensureImageGenerationConfigured: vi.fn(),
         },
       ),
-    ).rejects.toThrow("expected async tool-output start after happy-path image_generate");
+    ).rejects.toThrow("expected image generation request for happy-path image_generate");
     expect(runAgentPrompt).toHaveBeenCalledTimes(1);
   });
 });

@@ -27,8 +27,7 @@ execution:
     toolName: image_generate
     ensureImageGeneration: true
     allowAsyncHappyPath: true
-    asyncHappyPathProof: tool-output-started
-    asyncHappyPathOutputSnippet: Background task started
+    asyncHappyPathProof: image-generation-request
     toolCoverage:
       family: image_generate
       actualTool: image_generate
