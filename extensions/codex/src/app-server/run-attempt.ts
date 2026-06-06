@@ -475,6 +475,7 @@ export async function runCodexAppServerAttempt(
     modelProvider: reviewerPolicyContext.modelProvider,
     model: reviewerPolicyContext.model,
     config: params.config,
+    agentDir,
     openClawSandboxActive: sandbox?.enabled === true,
   });
   const effectiveWorkspace = sandbox?.enabled
@@ -509,6 +510,7 @@ export async function runCodexAppServerAttempt(
     model: reviewerPolicyContext.model,
     config: params.config,
     env: process.env,
+    agentDir,
   });
   if (configuredAppServer.approvalPolicy === "never" && appServer.approvalPolicy === "untrusted") {
     embeddedAgentLog.info("codex app-server approval policy promoted for OpenClaw tool policy", {
@@ -565,6 +567,7 @@ export async function runCodexAppServerAttempt(
     modelProvider: reviewerPolicyContext.modelProvider,
     model: reviewerPolicyContext.model,
     config: params.config,
+    agentDir,
     openClawSandboxActive: sandbox?.enabled === true,
   });
   policyAppServer = resolveCodexAppServerForOpenClawToolPolicy({
@@ -585,6 +588,7 @@ export async function runCodexAppServerAttempt(
     model: reviewerPolicyContext.model,
     config: params.config,
     env: process.env,
+    agentDir,
   });
   pluginAppServer = appServer;
   nativeHookRelayEvents = resolveCodexNativeHookRelayEvents({
@@ -1977,6 +1981,8 @@ export async function runCodexAppServerAttempt(
       promptText: codexTurnPromptText,
       sandboxPolicy: codexSandboxPolicy,
       environmentSelection: codexEnvironmentSelection,
+      model: thread.model,
+      modelProvider: thread.modelProvider,
       turnScopedDeveloperInstructions: workspaceBootstrapContext.turnScopedDeveloperInstructions,
       skillsCollaborationInstructions,
       memoryCollaborationInstructions: workspaceBootstrapContext.memoryCollaborationInstructions,
