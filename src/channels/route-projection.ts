@@ -17,9 +17,10 @@ import {
   deliveryContextFromSession,
   normalizeDeliveryContext,
   normalizeSessionDeliveryFields,
-  resolveConversationDeliveryTarget,
+  resolveConversationDeliveryTarget as resolveGenericConversationDeliveryTarget,
   type DeliveryContext,
 } from "../utils/delivery-context.js";
+import { getChannelPlugin, normalizeChannelId } from "./plugins/registry.js";
 
 /** Channel route normalized enough to address an outbound delivery target. */
 export type RoutableChannelRouteRef = ChannelRouteRef & {
@@ -87,6 +88,52 @@ export function sessionDeliveryFieldsFromRoute(
   route?: ChannelRouteRef,
 ): SessionRouteDeliveryFields {
   return normalizeSessionDeliveryFields({ route });
+}
+
+/** Formats a conversation id into a deliverable target, using channel plugin hooks before generic fallback. */
+export function formatConversationTarget(params: {
+  channel?: string;
+  conversationId?: string | number;
+  parentConversationId?: string | number;
+}): string | undefined {
+  return resolveConversationDeliveryTarget(params).to;
+}
+
+/** Resolves a channel conversation into target/thread fields for delivery routing. */
+export function resolveConversationDeliveryTarget(params: {
+  channel?: string;
+  conversationId?: string | number;
+  parentConversationId?: string | number;
+}): { to?: string; threadId?: string } {
+  const channel = typeof params.channel === "string" ? params.channel.trim() : undefined;
+  const conversationId =
+    typeof params.conversationId === "number" && Number.isFinite(params.conversationId)
+      ? String(Math.trunc(params.conversationId))
+      : typeof params.conversationId === "string"
+        ? params.conversationId.trim()
+        : undefined;
+  const parentConversationId =
+    typeof params.parentConversationId === "number" && Number.isFinite(params.parentConversationId)
+      ? String(Math.trunc(params.parentConversationId))
+      : typeof params.parentConversationId === "string"
+        ? params.parentConversationId.trim()
+        : undefined;
+  const pluginTarget =
+    channel && conversationId
+      ? getChannelPlugin(
+          normalizeChannelId(channel) ?? channel,
+        )?.messaging?.resolveDeliveryTarget?.({
+          conversationId,
+          parentConversationId,
+        })
+      : null;
+  if (pluginTarget) {
+    return {
+      ...(pluginTarget.to?.trim() ? { to: pluginTarget.to.trim() } : {}),
+      ...(pluginTarget.threadId?.trim() ? { threadId: pluginTarget.threadId.trim() } : {}),
+    };
+  }
+  return resolveGenericConversationDeliveryTarget(params);
 }
 
 /** Converts a persisted conversation reference into a channel route. */

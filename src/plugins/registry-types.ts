@@ -32,7 +32,6 @@ import type {
 import type { PluginManifestContracts } from "./manifest.js";
 import type { MemoryEmbeddingProviderAdapter } from "./memory-embedding-providers.js";
 import type { PluginKind } from "./plugin-kind.types.js";
-import type { PluginRuntime } from "./runtime/types.js";
 import type { PluginDependencyStatus } from "./status-dependencies.js";
 import type {
   CliBackendPlugin,
@@ -70,6 +69,8 @@ import type {
   WebSearchProviderPlugin,
   UnifiedModelCatalogProviderPlugin,
 } from "./types.js";
+
+type PluginRuntime = import("./runtime/types.js").PluginRuntime;
 
 /** Agent tool factory registered by one plugin runtime. */
 export type PluginToolRegistration = {

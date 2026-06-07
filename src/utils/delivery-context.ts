@@ -1,6 +1,5 @@
 // Delivery context helpers normalize target and route metadata for delivery.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.js";
 import { normalizeMessageChannel } from "./message-channel.js";
 export {
   channelRouteFromDeliveryContext,
@@ -41,48 +40,21 @@ function normalizeConversationTargetParams(params: ConversationTargetParams): {
   return { channel, conversationId, parentConversationId };
 }
 
-/** Formats a conversation id into a deliverable target, using plugin hooks before generic fallback. */
+/** Formats a conversation id into a generic deliverable target. */
 export function formatConversationTarget(params: ConversationTargetParams): string | undefined {
-  const { channel, conversationId, parentConversationId } =
-    normalizeConversationTargetParams(params);
+  const { channel, conversationId } = normalizeConversationTargetParams(params);
   if (!channel || !conversationId) {
     return undefined;
-  }
-  const pluginTarget = normalizeChannelId(channel)
-    ? getChannelPlugin(normalizeChannelId(channel)!)?.messaging?.resolveDeliveryTarget?.({
-        conversationId,
-        parentConversationId,
-      })
-    : null;
-  if (pluginTarget?.to?.trim()) {
-    return pluginTarget.to.trim();
   }
   return `channel:${conversationId}`;
 }
 
-/** Resolves a channel conversation into target/thread fields for delivery routing. */
+/** Resolves a channel conversation into generic target fields for delivery routing. */
 export function resolveConversationDeliveryTarget(params: {
   channel?: string;
   conversationId?: string | number;
   parentConversationId?: string | number;
 }): { to?: string; threadId?: string } {
-  const { channel, conversationId, parentConversationId } =
-    normalizeConversationTargetParams(params);
-  const pluginTarget =
-    channel && conversationId
-      ? getChannelPlugin(
-          normalizeChannelId(channel) ?? channel,
-        )?.messaging?.resolveDeliveryTarget?.({
-          conversationId,
-          parentConversationId,
-        })
-      : null;
-  if (pluginTarget) {
-    return {
-      ...(pluginTarget.to?.trim() ? { to: pluginTarget.to.trim() } : {}),
-      ...(pluginTarget.threadId?.trim() ? { threadId: pluginTarget.threadId.trim() } : {}),
-    };
-  }
   const to = formatConversationTarget(params);
   return { to };
 }

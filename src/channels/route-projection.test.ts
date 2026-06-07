@@ -4,7 +4,9 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import {
   deliveryContextFromRoute,
+  formatConversationTarget,
   normalizeRoutableChannelRoute,
+  resolveConversationDeliveryTarget,
   routeFromBindingRecord,
   routeFromConversationRef,
   routeFromDeliveryContext,
@@ -91,6 +93,35 @@ describe("channel route projection", () => {
       accountId: "default",
       target: { to: "channel:room-1" },
       thread: { id: "thread-1", source: "target" },
+    });
+  });
+
+  it("formats plugin-defined conversation targets via channel messaging hooks", () => {
+    expect(formatConversationTarget({ channel: "thread-chat", conversationId: "room-1" })).toBe(
+      "channel:room-1",
+    );
+    expect(
+      formatConversationTarget({
+        channel: "thread-chat",
+        conversationId: "thread-1",
+        parentConversationId: "room-1",
+      }),
+    ).toBe("channel:room-1");
+    expect(formatConversationTarget({ channel: "thread-chat", conversationId: "  " })).toBe(
+      undefined,
+    );
+  });
+
+  it("resolves delivery targets for plugin-defined child threads", () => {
+    expect(
+      resolveConversationDeliveryTarget({
+        channel: "thread-chat",
+        conversationId: "thread-1",
+        parentConversationId: "room-1",
+      }),
+    ).toEqual({
+      to: "channel:room-1",
+      threadId: "thread-1",
     });
   });
 

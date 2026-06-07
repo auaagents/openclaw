@@ -5,10 +5,10 @@ export { defineStableChannelIngressIdentity } from "./runtime-identity.js";
 export {
   channelIngressRoutes,
   createChannelIngressResolver,
-  readChannelIngressStoreAllowFromForDmPolicy,
   resolveChannelMessageIngress,
   resolveStableChannelMessageIngress,
 } from "./runtime.js";
+export { readChannelIngressStoreAllowFromForDmPolicy } from "./store-allow-from.runtime.js";
 export { resolveChannelIngressState } from "./state.js";
 export type {
   ChannelIngressAccessGroupMembershipResolver,

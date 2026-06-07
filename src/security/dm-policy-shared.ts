@@ -2,11 +2,8 @@
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { resolveGroupAllowFromSources } from "../channels/allow-from.js";
 import { resolveControlCommandGate } from "../channels/command-gating.js";
+import { resolveChannelIngressEffectiveAllowFromLists } from "../channels/message-access/allow-from-lists.js";
 import { resolveDmAllowAuditState } from "../channels/message-access/dm-allow-state.js";
-import {
-  readChannelIngressStoreAllowFromForDmPolicy,
-  resolveChannelIngressEffectiveAllowFromLists,
-} from "../channels/message-access/runtime.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import type { GroupPolicy } from "../config/types.base.js";
 import { evaluateMatchedGroupAccessForPolicy } from "../plugin-sdk/group-access.js";
@@ -152,6 +149,18 @@ export async function readStoreAllowFromForDmPolicy(params: {
   shouldRead?: boolean | null;
   readStore?: (provider: ChannelId, accountId: string) => Promise<string[]>;
 }): Promise<string[]> {
+  if (params.readStore) {
+    if (
+      params.shouldRead === false ||
+      params.dmPolicy === "allowlist" ||
+      params.dmPolicy === "open"
+    ) {
+      return [];
+    }
+    return await params.readStore(params.provider, params.accountId).catch(() => []);
+  }
+  const { readChannelIngressStoreAllowFromForDmPolicy } =
+    await import("../channels/message-access/store-allow-from.runtime.js");
   return await readChannelIngressStoreAllowFromForDmPolicy(params);
 }
 

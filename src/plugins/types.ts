@@ -144,7 +144,6 @@ import type {
   ProviderThinkingProfile,
   ProviderThinkingPolicyContext,
 } from "./provider-thinking.types.js";
-import type { PluginRuntime } from "./runtime/types.js";
 import type {
   OpenClawPluginHookOptions,
   OpenClawPluginToolFactory,
@@ -155,7 +154,7 @@ import type { WebFetchProviderPlugin, WebSearchProviderPlugin } from "./web-prov
 type ModelProviderRequestTransportOverrides =
   import("../agents/provider-request-config.js").ModelProviderRequestTransportOverrides;
 
-export type { PluginRuntime } from "./runtime/types.js";
+export type PluginRuntime = import("./runtime/types.js").PluginRuntime;
 export type { PluginOrigin } from "./plugin-origin.types.js";
 export type {
   PluginBundleFormat,

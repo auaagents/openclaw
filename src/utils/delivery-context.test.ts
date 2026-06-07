@@ -19,51 +19,15 @@ describe("delivery context helpers", () => {
         {
           pluginId: "room-chat",
           source: "test",
-          plugin: {
-            ...createChannelTestPluginBase({ id: "room-chat", label: "Room chat" }),
-            messaging: {
-              resolveDeliveryTarget: ({
-                conversationId,
-                parentConversationId,
-              }: {
-                conversationId: string;
-                parentConversationId?: string;
-              }) =>
-                conversationId.startsWith("$")
-                  ? {
-                      to: parentConversationId ? `room:${parentConversationId}` : undefined,
-                      threadId: conversationId,
-                    }
-                  : {
-                      to: `room:${conversationId}`,
-                    },
-            },
-          },
+          plugin: createChannelTestPluginBase({ id: "room-chat", label: "Room chat" }),
         },
         {
           pluginId: "thread-child-chat",
           source: "test",
-          plugin: {
-            ...createChannelTestPluginBase({
-              id: "thread-child-chat",
-              label: "Thread child chat",
-            }),
-            messaging: {
-              resolveDeliveryTarget: ({
-                conversationId,
-                parentConversationId,
-              }: {
-                conversationId: string;
-                parentConversationId?: string;
-              }) => {
-                const parent = parentConversationId?.trim();
-                const child = conversationId.trim();
-                return parent && parent !== child
-                  ? { to: `channel:${parent}`, threadId: child }
-                  : { to: `channel:${child}` };
-              },
-            },
-          },
+          plugin: createChannelTestPluginBase({
+            id: "thread-child-chat",
+            label: "Thread child chat",
+          }),
         },
       ]),
     );
@@ -149,23 +113,23 @@ describe("delivery context helpers", () => {
     );
   });
 
-  it("formats plugin-defined conversation targets via channel messaging hooks", () => {
+  it("formats conversation targets without loading channel plugin hooks", () => {
     expect(
       formatConversationTarget({ channel: "room-chat", conversationId: "!room:example" }),
-    ).toBe("room:!room:example");
+    ).toBe("channel:!room:example");
     expect(
       formatConversationTarget({
         channel: "room-chat",
         conversationId: "$thread",
         parentConversationId: "!room:example",
       }),
-    ).toBe("room:!room:example");
+    ).toBe("channel:$thread");
     expect(
       formatConversationTarget({ channel: "room-chat", conversationId: "  " }),
     ).toBeUndefined();
   });
 
-  it("resolves delivery targets for plugin-defined child threads", () => {
+  it("resolves generic delivery targets without loading channel plugin hooks", () => {
     expect(
       resolveConversationDeliveryTarget({
         channel: "room-chat",
@@ -173,19 +137,18 @@ describe("delivery context helpers", () => {
         parentConversationId: "!room:example",
       }),
     ).toEqual({
-      to: "room:!room:example",
-      threadId: "$thread",
+      to: "channel:$thread",
     });
   });
 
-  it("resolves parent-scoped thread delivery targets through channel messaging hooks", () => {
+  it("resolves parent-scoped thread ids as generic channel targets", () => {
     expect(
       resolveConversationDeliveryTarget({
         channel: "thread-child-chat",
         conversationId: "msg-child-id",
         parentConversationId: "channel-parent-id",
       }),
-    ).toEqual({ to: "channel:channel-parent-id", threadId: "msg-child-id" });
+    ).toEqual({ to: "channel:msg-child-id" });
   });
 
   it("derives delivery context from a session entry", () => {
