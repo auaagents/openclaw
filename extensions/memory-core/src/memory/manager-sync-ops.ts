@@ -21,6 +21,7 @@ import {
   isSessionArchiveArtifactName,
   isUsageCountedSessionTranscriptFileName,
   listSessionFilesForAgent,
+  scanSessionFilesForAgent,
   sessionPathForFile,
 } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
 import {
@@ -1624,9 +1625,14 @@ export abstract class MemoryManagerSyncOps {
     const targetSessionFiles = params.needsFullReindex
       ? null
       : this.normalizeTargetSessionFiles(params.targetSessionFiles);
-    const files = targetSessionFiles
-      ? Array.from(targetSessionFiles)
-      : await listSessionFilesForAgent(this.agentId);
+    // Targeted syncs use the requested set directly (no directory scan). Full
+    // enumerations scan the sessions dir and track whether the scan actually
+    // succeeded, so a transient NFS failure cannot masquerade as an empty dir
+    // and drive the destructive stale-row prune below.
+    const scan = targetSessionFiles
+      ? { ok: true, files: Array.from(targetSessionFiles) }
+      : await scanSessionFilesForAgent(this.agentId);
+    const files = scan.files;
     const sessionPlan = resolveMemorySessionSyncPlan({
       needsFullReindex: params.needsFullReindex,
       files,
@@ -1639,8 +1645,9 @@ export abstract class MemoryManagerSyncOps {
             source: "sessions",
           }).rows,
       sessionPathForFile,
+      scanOk: scan.ok,
     });
-    const { activePaths, existingRows, existingHashes, indexAll } = sessionPlan;
+    const { activePaths, existingRows, existingHashes, indexAll, pruneStaleRows } = sessionPlan;
     log.debug("memory sync: indexing session files", {
       files: files.length,
       indexAll,
@@ -1714,9 +1721,21 @@ export abstract class MemoryManagerSyncOps {
     });
     await runWithConcurrency(tasks, this.getIndexConcurrency());
 
-    if (activePaths === null) {
-      // Targeted syncs only refresh the requested transcripts and should not
-      // prune unrelated session rows without a full directory enumeration.
+    if (!pruneStaleRows || activePaths === null) {
+      // Skip the stale-row prune unless we hold an authoritative full
+      // enumeration. Targeted syncs (activePaths === null) only refresh the
+      // requested transcripts. A failed directory scan also lands here: it
+      // surfaces an empty listing for reasons unrelated to on-disk state
+      // (e.g. transient NFS EIO/ESTALE), so pruning would wipe the entire
+      // session index on one blip. Leave the index intact and let the next
+      // successful enumeration reconcile.
+      if (activePaths !== null && !scan.ok) {
+        log.warn(
+          `memory sync: skipping session prune after a failed directory scan; retaining ${
+            (existingRows ?? []).length
+          } indexed session rows until the next successful enumeration`,
+        );
+      }
       return;
     }
 
