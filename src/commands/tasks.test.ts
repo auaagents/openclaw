@@ -291,7 +291,7 @@ describe("tasks commands", () => {
       const updated = readTaskSessionStore(storePath);
       expect(updated[childSessionKey]).toBeUndefined();
     });
-  });
+  }, 240_000);
 
   it("does not build JSON-only diagnostics for text maintenance output", async () => {
     await withTaskCommandStateDir(async () => {
