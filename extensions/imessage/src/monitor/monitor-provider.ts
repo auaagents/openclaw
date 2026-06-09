@@ -257,6 +257,62 @@ function isRetriableWatchSubscribeStartupError(error: unknown): boolean {
   );
 }
 
+const IMESSAGE_DIAGNOSTIC_DROP_REASONS = new Set([
+  "agent echo in self-chat",
+  "echo",
+  "reflected assistant content",
+  "self-chat echo",
+]);
+
+export function describeIMessageInboundDropDiagnostic(params: {
+  accountId: string;
+  reason: string;
+  message: Pick<IMessagePayload, "chat_id" | "created_at" | "guid" | "id" | "is_group">;
+}): string | null {
+  if (!IMESSAGE_DIAGNOSTIC_DROP_REASONS.has(params.reason)) {
+    return null;
+  }
+  const messageId =
+    typeof params.message.id === "number" || typeof params.message.id === "string"
+      ? String(params.message.id)
+      : "unknown";
+  return (
+    `imessage: dropped inbound message account=${params.accountId} reason=${JSON.stringify(
+      params.reason,
+    )} ` +
+    `chat_id=${params.message.chat_id ?? "unknown"} group=${params.message.is_group === true} ` +
+    `message_id=${messageId} guid=${params.message.guid ? "present" : "missing"} ` +
+    `created_at=${params.message.created_at ?? "unknown"}`
+  );
+}
+
+function describeIMessageWatchSubscribeStartupFailure(params: {
+  accountId: string;
+  attempt: number;
+  maxAttempts: number;
+  cliPath: string;
+  dbPath?: string;
+  remoteHost?: string;
+  includeAttachments: boolean;
+  probeTimeoutMs: number;
+  watchSinceRowid: number | null;
+  error: unknown;
+  retryDelayMs?: number;
+}): string {
+  const retry = params.retryDelayMs !== undefined ? ` retry_in_ms=${params.retryDelayMs}` : "";
+  return (
+    `imessage: watch.subscribe startup failed attempt=${params.attempt}/${params.maxAttempts} ` +
+    `account=${params.accountId} cliPath=${params.cliPath} ` +
+    `dbPath=${params.dbPath ? "configured" : "default"} remoteHost=${
+      params.remoteHost ? "configured" : "none"
+    } ` +
+    `timeoutMs=${params.probeTimeoutMs} since_rowid=${params.watchSinceRowid ?? "none"} ` +
+    `attachments=${params.includeAttachments} include_reactions=true${retry}: ${String(
+      params.error,
+    )}`
+  );
+}
+
 async function waitForWatchSubscribeRetryDelay(params: {
   ms: number;
   abortSignal?: AbortSignal;
@@ -849,6 +905,14 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       if (isLoopDrop) {
         loopRateLimiter.record(rateLimitKey);
       }
+      const diagnostic = describeIMessageInboundDropDiagnostic({
+        accountId: accountInfo.accountId,
+        reason: decision.reason,
+        message,
+      });
+      if (diagnostic) {
+        runtime.log?.(warn(diagnostic));
+      }
       // Surface the silent-allowlist drop once per chat. Without this, operators
       // who set groupPolicy="allowlist" without populating
       // channels.imessage.groups see every group message vanish at default log
@@ -1424,12 +1488,39 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       const shouldRetry =
         attempt < WATCH_SUBSCRIBE_MAX_ATTEMPTS && isRetriableWatchSubscribeStartupError(err);
       if (!shouldRetry) {
-        runtime.error?.(danger(`imessage: monitor failed: ${String(err)}`));
+        runtime.error?.(
+          danger(
+            `imessage: monitor failed: ${describeIMessageWatchSubscribeStartupFailure({
+              accountId: accountInfo.accountId,
+              attempt,
+              maxAttempts: WATCH_SUBSCRIBE_MAX_ATTEMPTS,
+              cliPath,
+              dbPath,
+              remoteHost,
+              includeAttachments,
+              probeTimeoutMs,
+              watchSinceRowid,
+              error: err,
+            })}`,
+          ),
+        );
         throw err;
       }
       runtime.log?.(
         warn(
-          `imessage: watch.subscribe startup failed (attempt ${attempt}/${WATCH_SUBSCRIBE_MAX_ATTEMPTS}): ${String(err)}; retrying`,
+          describeIMessageWatchSubscribeStartupFailure({
+            accountId: accountInfo.accountId,
+            attempt,
+            maxAttempts: WATCH_SUBSCRIBE_MAX_ATTEMPTS,
+            cliPath,
+            dbPath,
+            remoteHost,
+            includeAttachments,
+            probeTimeoutMs,
+            watchSinceRowid,
+            error: err,
+            retryDelayMs: WATCH_SUBSCRIBE_RETRY_DELAY_MS,
+          }),
         ),
       );
       // Tear down the failed client before waiting so a slow subscribe attempt
