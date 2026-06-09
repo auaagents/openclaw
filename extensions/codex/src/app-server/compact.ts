@@ -14,7 +14,9 @@ import { resolveCodexAppServerRuntimeOptions } from "./config.js";
 import type { JsonObject } from "./protocol.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import {
+  CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
   readCodexAppServerBinding,
+  withCodexAppServerBindingLock,
   writeCodexAppServerBinding,
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
@@ -178,13 +180,16 @@ async function compactCodexNativeThread(
     return { ok: false, compacted: false, reason: nativeExecutionBlock };
   }
   const appServer = resolveCodexAppServerRuntimeOptions({ pluginConfig: options.pluginConfig });
-  const binding = await readCodexAppServerBinding(params.sessionFile, { config: params.config });
-  if (!binding?.threadId) {
+  const initialBinding = await readCodexAppServerBinding(params.sessionFile, {
+    config: params.config,
+  });
+  if (!initialBinding?.threadId) {
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",
       recovery: "missing_thread_binding",
     });
   }
+  let binding = initialBinding;
   const requestedAuthProfileId = params.authProfileId?.trim() || undefined;
   if (
     requestedAuthProfileId &&
@@ -195,15 +200,6 @@ async function compactCodexNativeThread(
     // with another profile risks operating on a different Codex account.
     return { ok: false, compacted: false, reason: "auth profile mismatch for session binding" };
   }
-  if (options.allowNonManualNativeRequest) {
-    await clearContextEngineProjectionBeforeNativeCompaction({
-      sessionId: params.sessionId,
-      sessionFile: params.sessionFile,
-      binding,
-      config: params.config,
-    });
-  }
-
   const shouldReleaseDefaultLease = !options.clientFactory;
   const clientFactory = options.clientFactory ?? defaultLeasedCodexAppServerClientFactory;
   const client = await clientFactory(
@@ -213,9 +209,71 @@ async function compactCodexNativeThread(
     params.config,
   );
   try {
-    await client.request("thread/compact/start", {
-      threadId: binding.threadId,
-    });
+    if (options.allowNonManualNativeRequest) {
+      const guardedResult = await withCodexAppServerBindingLock(params.sessionFile, async () => {
+        const currentBinding = await readCodexAppServerBinding(params.sessionFile, {
+          config: params.config,
+        });
+        if (params.abortSignal?.aborted) {
+          return {
+            started: false as const,
+            result: skippedCodexNativeCompactionResult(params, {
+              reason: "codex app-server compaction aborted before native compaction",
+              code: "aborted_before_native_compaction",
+              expectedThreadId: binding.threadId,
+              currentThreadId: currentBinding?.threadId,
+            }),
+          };
+        }
+        if (!currentBinding || !isSameNativeCompactionBinding(currentBinding, binding)) {
+          embeddedAgentLog.warn(
+            "skipping codex app-server compaction because the thread binding changed",
+            {
+              sessionId: params.sessionId,
+              sessionKey: params.sessionKey,
+              expectedThreadId: binding.threadId,
+              currentThreadId: currentBinding?.threadId,
+            },
+          );
+          return {
+            started: false as const,
+            result: skippedCodexNativeCompactionResult(params, {
+              reason: "codex app-server binding changed before native compaction",
+              code: "binding_changed_before_native_compaction",
+              expectedThreadId: binding.threadId,
+              currentThreadId: currentBinding?.threadId,
+            }),
+          };
+        }
+        binding = currentBinding;
+        await clearContextEngineProjectionBeforeNativeCompaction({
+          sessionId: params.sessionId,
+          sessionFile: params.sessionFile,
+          binding,
+          config: params.config,
+        });
+        await client.request(
+          "thread/compact/start",
+          {
+            threadId: binding.threadId,
+          },
+          {
+            timeoutMs: Math.min(
+              appServer.requestTimeoutMs,
+              CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
+            ),
+          },
+        );
+        return { started: true as const };
+      });
+      if (!guardedResult.started) {
+        return guardedResult.result;
+      }
+    } else {
+      await client.request("thread/compact/start", {
+        threadId: binding.threadId,
+      });
+    }
     embeddedAgentLog.info("started codex app-server compaction", {
       sessionId: params.sessionId,
       threadId: binding.threadId,
@@ -264,6 +322,36 @@ async function compactCodexNativeThread(
       firstKeptEntryId: "",
       tokensBefore: params.currentTokenCount ?? 0,
       details: resultDetails,
+    },
+  };
+}
+
+function skippedCodexNativeCompactionResult(
+  params: CompactEmbeddedAgentSessionParams,
+  skipped: {
+    reason: string;
+    code: string;
+    expectedThreadId?: string;
+    currentThreadId?: string;
+  },
+): EmbeddedAgentCompactResult {
+  return {
+    ok: true,
+    compacted: false,
+    reason: skipped.reason,
+    result: {
+      summary: "",
+      firstKeptEntryId: "",
+      tokensBefore: params.currentTokenCount ?? 0,
+      details: {
+        backend: "codex-app-server",
+        skipped: true,
+        reason: skipped.code,
+        request: "after_context_engine",
+        trigger: params.trigger ?? "unknown",
+        ...(skipped.expectedThreadId ? { expectedThreadId: skipped.expectedThreadId } : {}),
+        ...(skipped.currentThreadId ? { currentThreadId: skipped.currentThreadId } : {}),
+      },
     },
   };
 }
@@ -324,6 +412,22 @@ async function clearContextEngineProjectionBeforeNativeCompaction(params: {
     previousEpoch: contextEngineBinding.projection.epoch,
     previousFingerprint: contextEngineBinding.projection.fingerprint,
   });
+}
+
+function isSameNativeCompactionBinding(
+  current: CodexAppServerThreadBinding,
+  expected: CodexAppServerThreadBinding,
+): boolean {
+  return (
+    current.threadId === expected.threadId &&
+    current.authProfileId === expected.authProfileId &&
+    current.contextEngine?.engineId === expected.contextEngine?.engineId &&
+    current.contextEngine?.policyFingerprint === expected.contextEngine?.policyFingerprint &&
+    current.contextEngine?.projection?.mode === expected.contextEngine?.projection?.mode &&
+    current.contextEngine?.projection?.epoch === expected.contextEngine?.projection?.epoch &&
+    current.contextEngine?.projection?.fingerprint ===
+      expected.contextEngine?.projection?.fingerprint
+  );
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {
