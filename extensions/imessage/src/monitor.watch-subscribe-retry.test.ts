@@ -4,7 +4,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { createIMessageRpcClient, IMessageRpcClient } from "./client.js";
 import { monitorIMessageProvider } from "./monitor.js";
 import type { attachIMessageMonitorAbortHandler } from "./monitor/abort-handler.js";
-import { describeIMessageInboundDropDiagnostic } from "./monitor/monitor-provider.js";
+import {
+  describeIMessageInboundDropDiagnostic,
+  shouldThrottleIMessageInboundDropDiagnostic,
+} from "./monitor/monitor-provider.js";
 
 const waitForTransportReadyMock = vi.hoisted(() =>
   vi.fn<typeof waitForTransportReady>(async () => {}),
@@ -179,6 +182,27 @@ describe("describeIMessageInboundDropDiagnostic", () => {
     );
     expect(diagnostic).not.toContain("secret-guid");
     expect(diagnostic).not.toContain("+1555");
+  });
+
+  it("describes from-me drops and marks them for throttling", () => {
+    const diagnostic = describeIMessageInboundDropDiagnostic({
+      accountId: "default",
+      reason: "from me",
+      message: {
+        id: 43,
+        chat_id: 456,
+        guid: "p:0/outbound-guid",
+        is_group: true,
+        created_at: "2026-06-09T10:01:00.000Z",
+      },
+    });
+
+    expect(diagnostic).toBe(
+      'imessage: dropped inbound message account=default reason="from me" chat_id=456 group=true message_id=43 guid=present created_at=2026-06-09T10:01:00.000Z',
+    );
+    expect(diagnostic).not.toContain("outbound-guid");
+    expect(shouldThrottleIMessageInboundDropDiagnostic("from me")).toBe(true);
+    expect(shouldThrottleIMessageInboundDropDiagnostic("echo")).toBe(false);
   });
 
   it("keeps normal policy drops quiet", () => {

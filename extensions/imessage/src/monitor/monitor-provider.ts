@@ -260,9 +260,15 @@ function isRetriableWatchSubscribeStartupError(error: unknown): boolean {
 const IMESSAGE_DIAGNOSTIC_DROP_REASONS = new Set([
   "agent echo in self-chat",
   "echo",
+  "from me",
   "reflected assistant content",
   "self-chat echo",
 ]);
+const IMESSAGE_THROTTLED_DIAGNOSTIC_DROP_REASONS = new Set(["from me"]);
+
+export function shouldThrottleIMessageInboundDropDiagnostic(reason: string): boolean {
+  return IMESSAGE_THROTTLED_DIAGNOSTIC_DROP_REASONS.has(reason);
+}
 
 export function describeIMessageInboundDropDiagnostic(params: {
   accountId: string;
@@ -419,6 +425,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
   // replay aggressively without the old catchup cursor/retry bookkeeping.
   const inboundReplayGuard = createIMessageInboundReplayGuard();
   let staleBacklogSuppressed = 0;
+  const loggedThrottledDropDiagnostics = new Set<string>();
 
   // Downtime recovery. We pass the persisted recovery cursor (the last
   // dispatched rowid) to watch.subscribe as since_rowid so imsg replays the rows
@@ -911,7 +918,16 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         message,
       });
       if (diagnostic) {
-        runtime.log?.(warn(diagnostic));
+        const throttleKey = `${rateLimitKey}:${decision.reason}`;
+        const shouldThrottleDiagnostic = shouldThrottleIMessageInboundDropDiagnostic(
+          decision.reason,
+        );
+        if (!shouldThrottleDiagnostic || !loggedThrottledDropDiagnostics.has(throttleKey)) {
+          if (shouldThrottleDiagnostic) {
+            loggedThrottledDropDiagnostics.add(throttleKey);
+          }
+          runtime.log?.(warn(diagnostic));
+        }
       }
       // Surface the silent-allowlist drop once per chat. Without this, operators
       // who set groupPolicy="allowlist" without populating
