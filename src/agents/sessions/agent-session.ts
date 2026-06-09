@@ -1952,12 +1952,13 @@ export class AgentSession {
       return { status: "aborted" };
     }
 
+    const finalCompactionResult = compactionResult;
     const persistCompaction = async () => {
       this.sessionManager.appendCompaction(
-        compactionResult.summary,
-        compactionResult.firstKeptEntryId,
-        compactionResult.tokensBefore,
-        compactionResult.details,
+        finalCompactionResult.summary,
+        finalCompactionResult.firstKeptEntryId,
+        finalCompactionResult.tokensBefore,
+        finalCompactionResult.details,
         fromExtension,
       );
       const newEntries = this.sessionManager.getEntries();
@@ -1965,7 +1966,7 @@ export class AgentSession {
       this.agent.state.messages = sessionContext.messages;
 
       const savedCompactionEntry = newEntries.find(
-        (e) => e.type === "compaction" && e.summary === compactionResult.summary,
+        (e) => e.type === "compaction" && e.summary === finalCompactionResult.summary,
       ) as CompactionEntry | undefined;
 
       if (this.currentExtensionRunner && savedCompactionEntry) {
@@ -1982,7 +1983,7 @@ export class AgentSession {
       await this.runWithSessionWriteLock(persistCompaction, { publishOwnedWrite: true });
     }
 
-    return { status: "compacted", result: compactionResult };
+    return { status: "compacted", result: finalCompactionResult };
   }
 
   /**
