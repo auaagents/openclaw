@@ -20,7 +20,7 @@ describe("guardedJsonApiRequest", () => {
     vi.clearAllMocks();
   });
 
-  it("uses the SSRF-guarded fetch and parses json responses", async () => {
+  it("uses the response-release fetch helper and parses json responses", async () => {
     const release = vi.fn(async () => {});
     fetchWithResponseReleaseMock.mockResolvedValue({
       response: new Response(JSON.stringify({ ok: true }), { status: 200 }),

@@ -1,6 +1,6 @@
 /**
  * Regression coverage for MCP HTTP fetch wrappers.
- * Verifies SSRF-guarded fetch, scoped dispatcher behavior, and same-origin headers.
+ * Verifies canonical egress fetch mechanics, scoped dispatcher behavior, and same-origin headers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_UNDICI_RUNTIME_DEPS_KEY } from "../infra/net/undici-runtime.js";

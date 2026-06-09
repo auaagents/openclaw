@@ -41,7 +41,7 @@ export type SavedRemoteMedia = SavedMedia & {
 /** Closed error classes callers can use for retry and diagnostic policy. */
 export type MediaFetchErrorCode = "max_bytes" | "http_error" | "fetch_failed";
 
-/** Retry policy applied around the complete guarded fetch and body read/save operation. */
+/** Retry policy applied around the complete egress fetch and body read/save operation. */
 export type MediaFetchRetryOptions = RetryOptions;
 
 /** Structured fetch error used for retry decisions and caller-facing diagnostics. */
@@ -61,10 +61,10 @@ export class MediaFetchError extends Error {
   }
 }
 
-/** Fetch-compatible injection point used by tests and guarded network callers. */
+/** Fetch-compatible injection point used by tests and egress-policy callers. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Alternate dispatcher/lookup pair tried inside a single guarded fetch attempt. */
+/** Alternate dispatcher/lookup pair tried inside a single egress fetch attempt. */
 export type FetchDispatcherAttempt = {
   dispatcherPolicy?: PinnedDispatcherPolicy;
   lookupFn?: LookupFn;
@@ -87,7 +87,7 @@ type FetchMediaOptions = {
   filePathHint?: string;
   maxBytes?: number;
   maxRedirects?: number;
-  /** Abort the guarded fetch request if it has not completed by this deadline (ms). */
+  /** Abort the egress fetch request if it has not completed by this deadline (ms). */
   timeoutMs?: number;
   /** Abort if the response body stops yielding data for this long (ms). */
   readIdleTimeoutMs?: number;
@@ -97,7 +97,7 @@ type FetchMediaOptions = {
   dispatcherAttempts?: FetchDispatcherAttempt[];
   shouldRetryFetchError?: (error: unknown) => boolean;
   /**
-   * Retries the complete guarded fetch/read-or-save operation. Dispatcher
+   * Retries the complete egress fetch/read-or-save operation. Dispatcher
    * attempts still run inside each retry attempt.
    */
   retry?: MediaFetchRetryOptions;
@@ -271,9 +271,7 @@ function assertMediaUrlAllowedByPolicy(url: string, policy?: MediaFetchUrlPolicy
   }
 }
 
-async function fetchGuardedMediaResponse(
-  options: FetchMediaOptions,
-): Promise<GuardedMediaResponse> {
+async function fetchMediaEgressResponse(options: FetchMediaOptions): Promise<GuardedMediaResponse> {
   const {
     url,
     fetchImpl,
@@ -703,13 +701,13 @@ export async function saveResponseMedia(
   });
 }
 
-/** Fetches media through SSRF guards and saves the body into the media store. */
+/** Fetches media through the canonical egress helper and saves the body into the media store. */
 export async function saveRemoteMedia(options: SaveRemoteMediaOptions): Promise<SavedRemoteMedia> {
   return await withMediaFetchRetry(options, () => saveRemoteMediaOnce(options));
 }
 
 async function saveRemoteMediaOnce(options: SaveRemoteMediaOptions): Promise<SavedRemoteMedia> {
-  const { response: res, finalUrl, release, sourceUrl } = await fetchGuardedMediaResponse(options);
+  const { response: res, finalUrl, release, sourceUrl } = await fetchMediaEgressResponse(options);
   try {
     await assertMediaResponseOk({
       res,
@@ -736,7 +734,7 @@ async function saveRemoteMediaOnce(options: SaveRemoteMediaOptions): Promise<Sav
   }
 }
 
-/** Fetches media through SSRF guards and returns the bounded response body as a buffer. */
+/** Fetches media through the canonical egress helper and returns the bounded response body. */
 export async function readRemoteMediaBuffer(options: FetchMediaOptions): Promise<FetchMediaResult> {
   return await withMediaFetchRetry(options, () => readRemoteMediaBufferOnce(options));
 }
@@ -745,7 +743,7 @@ export async function readRemoteMediaBuffer(options: FetchMediaOptions): Promise
 export const fetchRemoteMedia = readRemoteMediaBuffer;
 
 async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<FetchMediaResult> {
-  const { response: res, finalUrl, release, sourceUrl } = await fetchGuardedMediaResponse(options);
+  const { response: res, finalUrl, release, sourceUrl } = await fetchMediaEgressResponse(options);
 
   try {
     await assertMediaResponseOk({
