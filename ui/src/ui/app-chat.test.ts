@@ -48,6 +48,7 @@ let handleAbortChat: typeof import("./app-chat.ts").handleAbortChat;
 let hasAbortableSessionRun: typeof import("./app-chat.ts").hasAbortableSessionRun;
 let refreshChat: typeof import("./app-chat.ts").refreshChat;
 let refreshChatAvatar: typeof import("./app-chat.ts").refreshChatAvatar;
+let createChatSessionsLoadOverrides: typeof import("./app-chat.ts").createChatSessionsLoadOverrides;
 let clearPendingQueueItemsForRun: typeof import("./app-chat.ts").clearPendingQueueItemsForRun;
 let removeQueuedMessage: typeof import("./app-chat.ts").removeQueuedMessage;
 let markQueuedChatSendsWaitingForReconnect: typeof import("./app-chat.ts").markQueuedChatSendsWaitingForReconnect;
@@ -64,6 +65,7 @@ async function loadChatHelpers(): Promise<void> {
     hasAbortableSessionRun,
     refreshChat,
     refreshChatAvatar,
+    createChatSessionsLoadOverrides,
     clearPendingQueueItemsForRun,
     removeQueuedMessage,
     markQueuedChatSendsWaitingForReconnect,
@@ -243,6 +245,24 @@ async function raceWithMacrotask(promise: Promise<unknown>): Promise<"resolved" 
     }),
   ]);
 }
+
+describe("createChatSessionsLoadOverrides", () => {
+  beforeAll(async () => {
+    await loadChatHelpers();
+  });
+
+  it("loads permanent favorites with chat session refreshes", () => {
+    expect(createChatSessionsLoadOverrides({ sessionsShowArchived: false })).toMatchObject({
+      activeMinutes: 0,
+      limit: 50,
+      includeGlobal: true,
+      includeUnknown: true,
+      includePermanentFavorites: true,
+      configuredAgentsOnly: true,
+      showArchived: false,
+    });
+  });
+});
 
 describe("refreshChat", () => {
   beforeAll(async () => {

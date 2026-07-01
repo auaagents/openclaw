@@ -28,6 +28,7 @@ vi.mock("./app-chat.ts", () => ({
     limit: 50,
     includeGlobal: true,
     includeUnknown: true,
+    includePermanentFavorites: true,
     showArchived: false,
   }),
   scopedAgentParamsForSession: (state: unknown, sessionKey: string) => {
@@ -822,6 +823,7 @@ describe("createChatSession", () => {
         limit: 50,
         includeGlobal: true,
         includeUnknown: true,
+        includePermanentFavorites: true,
         showArchived: false,
         agentId: "ops",
       },
@@ -866,6 +868,7 @@ describe("createChatSession", () => {
         limit: 50,
         includeGlobal: true,
         includeUnknown: true,
+        includePermanentFavorites: true,
         showArchived: false,
         agentId: "ops",
       },
@@ -904,6 +907,7 @@ describe("createChatSession", () => {
         limit: 50,
         includeGlobal: true,
         includeUnknown: true,
+        includePermanentFavorites: true,
         showArchived: false,
         agentId: "work",
       },
@@ -942,6 +946,7 @@ describe("createChatSession", () => {
         limit: 50,
         includeGlobal: true,
         includeUnknown: true,
+        includePermanentFavorites: true,
         showArchived: false,
       },
     );
@@ -1212,6 +1217,7 @@ describe("switchChatSession", () => {
       limit: 50,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       showArchived: false,
       agentId: "main",
     });

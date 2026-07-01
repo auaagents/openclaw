@@ -72,6 +72,7 @@ export type LoadSessionsOverrides = {
   search?: string;
   includeGlobal?: boolean;
   includeUnknown?: boolean;
+  includePermanentFavorites?: boolean;
   showArchived?: boolean;
   configuredAgentsOnly?: boolean;
   append?: boolean;
@@ -1130,6 +1131,9 @@ async function loadSessionsOnce(
       includeUnknown,
       configuredAgentsOnly,
     };
+    if (overrides?.includePermanentFavorites === true) {
+      params.includePermanentFavorites = true;
+    }
     const agentId = overrides?.agentId?.trim();
     const resultAgentId = agentId ? normalizeAgentId(agentId) : null;
     if (agentId) {

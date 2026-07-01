@@ -963,6 +963,51 @@ describe("loadSessions", () => {
     });
   });
 
+  it("forwards permanent favorite inclusion overrides to sessions.list", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method !== "sessions.list") {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      return {
+        ts: 1,
+        path: "(multiple)",
+        count: 2,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [
+          { key: "agent:main:dashboard:recent", kind: "direct", updatedAt: 3 },
+          {
+            key: "agent:main:dashboard:old-favorite",
+            kind: "direct",
+            updatedAt: 1,
+            permanentFavorite: true,
+            favoriteOrder: 10,
+          },
+        ],
+      };
+    });
+    const state = createState(request);
+
+    await loadSessions(state, {
+      activeMinutes: 0,
+      limit: 1,
+      includeGlobal: true,
+      includeUnknown: true,
+      includePermanentFavorites: true,
+    });
+
+    expect(request).toHaveBeenCalledWith("sessions.list", {
+      limit: 1,
+      includeGlobal: true,
+      includeUnknown: true,
+      includePermanentFavorites: true,
+      configuredAgentsOnly: true,
+    });
+    expect(state.sessionsResult?.sessions.map((session) => session.key)).toEqual([
+      "agent:main:dashboard:recent",
+      "agent:main:dashboard:old-favorite",
+    ]);
+  });
+
   it("appends paged session rows without duplicating existing rows", async () => {
     const request = vi.fn(async (method: string) => {
       if (method !== "sessions.list") {
