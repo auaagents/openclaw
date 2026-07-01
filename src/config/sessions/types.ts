@@ -7,10 +7,7 @@ import type {
   SessionAcpIdentityState,
   SessionAcpMeta,
 } from "@openclaw/acp-core/types";
-import {
-  normalizeOptionalString,
-  type FastMode,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString, type FastMode } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelId } from "../../channels/plugins/channel-id.types.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
@@ -400,6 +397,10 @@ export type SessionEntry = {
   claudeCliSessionId?: string;
   label?: string;
   displayName?: string;
+  /** User-pinned session that must stay visible and survive normal maintenance expiry. */
+  permanentFavorite?: boolean;
+  /** Stable user-controlled favorite sort key; lower values appear first. */
+  favoriteOrder?: number;
   channel?: string;
   groupId?: string;
   subject?: string;

@@ -574,6 +574,40 @@ describe("gateway sessions patch", () => {
     expect(entry.spawnDepth).toBe(2);
   });
 
+  test("sets, preserves, and clears permanent favorite metadata", async () => {
+    const first = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, permanentFavorite: true },
+      }),
+    );
+    expect(first.permanentFavorite).toBe(true);
+    expect(first.favoriteOrder).toEqual(expect.any(Number));
+
+    const reordered = expectPatchOk(
+      await runPatch({
+        store: mainStoreEntry({
+          permanentFavorite: true,
+          favoriteOrder: 42,
+        }),
+        patch: { key: MAIN_SESSION_KEY, favoriteOrder: 7 },
+      }),
+    );
+    expect(reordered.permanentFavorite).toBe(true);
+    expect(reordered.favoriteOrder).toBe(7);
+
+    const cleared = expectPatchOk(
+      await runPatch({
+        store: mainStoreEntry({
+          permanentFavorite: true,
+          favoriteOrder: 7,
+        }),
+        patch: { key: MAIN_SESSION_KEY, permanentFavorite: false },
+      }),
+    );
+    expect(cleared.permanentFavorite).toBeUndefined();
+    expect(cleared.favoriteOrder).toBeUndefined();
+  });
+
   test("validates thinking patches with live catalog reasoning metadata", async () => {
     const registry = createEmptyPluginRegistry();
     registry.providers.push({

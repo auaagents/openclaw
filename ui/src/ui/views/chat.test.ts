@@ -2975,6 +2975,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       search: "telegram",
     });
@@ -3040,6 +3041,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       search: "tele",
     });
@@ -3095,6 +3097,194 @@ describe("chat session controls", () => {
     target.click();
 
     expect(onSwitchSession).toHaveBeenCalledWith(state, targetSessionKey);
+  });
+
+  it("renders permanent favorites first and keeps add/remove actions stable", async () => {
+    const { state } = createChatHeaderState();
+    state.sessionKey = "agent:main:main";
+    state.settings.sessionKey = state.sessionKey;
+    state.sessionsIncludeGlobal = false;
+    state.sessionsIncludeUnknown = false;
+    state.chatSessionPickerOpen = true;
+    state.chatSessionPickerSurface = "desktop";
+    let rows: GatewaySessionRow[] = [
+      { key: "agent:main:main", kind: "direct", label: "Main", updatedAt: 10 },
+      { key: "agent:main:recent", kind: "direct", label: "Recent", updatedAt: 9 },
+      {
+        key: "agent:main:work",
+        kind: "direct",
+        label: "Work",
+        updatedAt: 4,
+        permanentFavorite: true,
+        favoriteOrder: 20,
+      },
+      {
+        key: "agent:main:finance",
+        kind: "direct",
+        label: "Finance",
+        updatedAt: 3,
+        permanentFavorite: true,
+        favoriteOrder: 10,
+      },
+    ];
+    const request = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "sessions.patch") {
+        rows = rows.map((row) => {
+          if (row.key !== params.key) {
+            return row;
+          }
+          const next = { ...row };
+          if (params.permanentFavorite === true) {
+            next.permanentFavorite = true;
+            next.favoriteOrder =
+              typeof params.favoriteOrder === "number" ? params.favoriteOrder : Date.now();
+          } else if (params.permanentFavorite === false || params.permanentFavorite === null) {
+            delete next.permanentFavorite;
+            delete next.favoriteOrder;
+          }
+          return next;
+        });
+        return { ok: true, key: params.key };
+      }
+      if (method === "sessions.list") {
+        return createSessionsResultFromRows(rows);
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    state.client = { request } as unknown as GatewayBrowserClient;
+    state.sessionsResult = createSessionsResultFromRows(rows);
+    state.chatSessionPickerResult = createSessionsResultFromRows(rows);
+    const container = document.createElement("div");
+
+    render(renderChatSessionSelect(state), container);
+
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(".chat-session-picker__section-label"),
+      ).map((node) => node.textContent?.trim()),
+    ).toEqual(["Favorites", "Recent"]);
+    expect(
+      Array.from(container.querySelectorAll<HTMLElement>(".chat-session-picker__option-label")).map(
+        (node) => node.textContent?.trim(),
+      ),
+    ).toEqual(["Finance", "Work", "Main", "Recent"]);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:finance"]',
+      )?.dataset.favoriteAction,
+    ).toBe("remove");
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:recent"]',
+      )?.dataset.favoriteAction,
+    ).toBe("add");
+
+    container
+      .querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:recent"]',
+      )!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "sessions.patch",
+        expect.objectContaining({
+          key: "agent:main:recent",
+          permanentFavorite: true,
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(state.chatSessionFavoriteBusyKey).toBeNull());
+    render(renderChatSessionSelect(state), container);
+
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:recent"]',
+      )?.dataset.favoriteAction,
+    ).toBe("remove");
+
+    container
+      .querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:work"]',
+      )!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "sessions.patch",
+        expect.objectContaining({
+          key: "agent:main:work",
+          permanentFavorite: false,
+          favoriteOrder: null,
+        }),
+      ),
+    );
+  });
+
+  it("renames sessions from the picker and keeps the title after refresh", async () => {
+    const { state } = createChatHeaderState();
+    state.sessionKey = "agent:main:main";
+    state.settings.sessionKey = state.sessionKey;
+    state.chatSessionPickerOpen = true;
+    state.chatSessionPickerSurface = "desktop";
+    let rows: GatewaySessionRow[] = [
+      { key: "agent:main:main", kind: "direct", label: "Main", updatedAt: 10 },
+      {
+        key: "agent:main:finance",
+        kind: "direct",
+        label: "Finance",
+        updatedAt: 3,
+        permanentFavorite: true,
+        favoriteOrder: 10,
+      },
+    ];
+    const request = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "sessions.patch") {
+        rows = rows.map((row) =>
+          row.key === params.key && typeof params.label === "string"
+            ? { ...row, label: params.label }
+            : row,
+        );
+        return { ok: true, key: params.key };
+      }
+      if (method === "sessions.list") {
+        return createSessionsResultFromRows(rows);
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    vi.stubGlobal(
+      "prompt",
+      vi.fn(() => "Finance Ops"),
+    );
+    state.client = { request } as unknown as GatewayBrowserClient;
+    state.sessionsResult = createSessionsResultFromRows(rows);
+    state.chatSessionPickerResult = createSessionsResultFromRows(rows);
+    const container = document.createElement("div");
+
+    render(renderChatSessionSelect(state), container);
+    container
+      .querySelector<HTMLButtonElement>(
+        'button[data-chat-session-rename="true"][data-session-key="agent:main:finance"]',
+      )!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "sessions.patch",
+        expect.objectContaining({
+          key: "agent:main:finance",
+          label: "Finance Ops",
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(state.chatSessionRenameBusyKey).toBeNull());
+    render(renderChatSessionSelect(state), container);
+
+    expect(
+      Array.from(container.querySelectorAll<HTMLElement>(".chat-session-picker__option-label")).map(
+        (node) => node.textContent?.trim(),
+      ),
+    ).toEqual(["Finance Ops", "Main"]);
   });
 
   it("clears applied chat session picker search when the input is cleared", async () => {
@@ -3188,6 +3378,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
     });
   });
@@ -3232,6 +3423,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       search: "tele",
     });
@@ -3244,6 +3436,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       search: "telegram",
     });
@@ -3331,6 +3524,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 50,
       search: "telegram",
@@ -3420,6 +3614,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 2,
     });
@@ -3428,6 +3623,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 4,
     });
@@ -3499,6 +3695,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 11,
     });
@@ -3507,6 +3704,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 12,
     });
@@ -3595,6 +3793,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
     });
     expect(request).toHaveBeenCalledWith("sessions.list", {
@@ -3602,6 +3801,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
       offset: 2,
     });
@@ -3651,6 +3851,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
     });
     expect(request.mock.calls.some(([, params]) => Object.hasOwn(params ?? {}, "agentId"))).toBe(
@@ -3731,6 +3932,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
     });
     expect(request).toHaveBeenCalledWith("sessions.list", {
@@ -3738,6 +3940,7 @@ describe("chat session controls", () => {
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       limit: 50,
     });
   });

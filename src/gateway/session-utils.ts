@@ -2153,6 +2153,14 @@ export function buildGatewaySessionRow(params: {
     kind: classifySessionKey(key, entry),
     label: entry?.label,
     displayName,
+    permanentFavorite: entry?.permanentFavorite === true ? true : undefined,
+    favoriteOrder:
+      entry?.permanentFavorite === true &&
+      typeof entry.favoriteOrder === "number" &&
+      Number.isFinite(entry.favoriteOrder) &&
+      entry.favoriteOrder >= 0
+        ? entry.favoriteOrder
+        : undefined,
     derivedTitle,
     lastMessagePreview,
     channel,
@@ -2481,6 +2489,64 @@ function sortAndLimitSessionEntries(
   return limit === undefined ? sorted : sorted.slice(0, limit);
 }
 
+function resolveFavoriteOrder(entry: SessionEntry): number {
+  const order = entry.favoriteOrder;
+  return typeof order === "number" && Number.isFinite(order) && order >= 0
+    ? order
+    : Number.MAX_SAFE_INTEGER;
+}
+
+function comparePermanentFavoriteSessionEntries(a: SessionEntryPair, b: SessionEntryPair): number {
+  const orderDelta = resolveFavoriteOrder(a[1]) - resolveFavoriteOrder(b[1]);
+  if (orderDelta !== 0) {
+    return orderDelta;
+  }
+  const updatedDelta = compareSessionEntryPairsByUpdatedAt(a, b);
+  if (updatedDelta !== 0) {
+    return updatedDelta;
+  }
+  return a[0].localeCompare(b[0]);
+}
+
+function mergePermanentFavoriteEntries(params: {
+  cfg: OpenClawConfig;
+  store: Record<string, SessionEntry>;
+  opts: SessionsListParams;
+  now: number;
+  selection: SessionEntrySelection;
+  rowContext?: SessionListRowContext;
+  getRowContext?: SessionListRowContextProvider;
+}): SessionEntrySelection {
+  if (params.opts.includePermanentFavorites !== true) {
+    return params.selection;
+  }
+  const selectedKeys = new Set(params.selection.entries.map(([key]) => key));
+  const favoriteOpts: SessionsListParams = {
+    ...params.opts,
+    activeMinutes: undefined,
+    limit: undefined,
+    offset: undefined,
+  };
+  const favorites = filterSessionEntries({
+    cfg: params.cfg,
+    store: params.store,
+    opts: favoriteOpts,
+    now: params.now,
+    rowContext: params.rowContext,
+    getRowContext: params.getRowContext,
+  })
+    .filter(([key, entry]) => entry?.permanentFavorite === true && !selectedKeys.has(key))
+    .toSorted(comparePermanentFavoriteSessionEntries);
+  if (favorites.length === 0) {
+    return params.selection;
+  }
+  return {
+    ...params.selection,
+    entries: [...favorites, ...params.selection.entries],
+    totalCount: params.selection.totalCount + favorites.length,
+  };
+}
+
 function filterSessionEntries(params: {
   cfg: OpenClawConfig;
   store: Record<string, SessionEntry>;
@@ -2631,14 +2697,22 @@ function selectSessionEntries(params: {
     limit === undefined ? sortedWindow.slice(offset) : sortedWindow.slice(offset, offset + limit);
   const nextOffset = offset + entries.length;
   const hasMore = nextOffset < filtered.length;
-  return {
-    entries,
-    totalCount: filtered.length,
-    limitApplied: limit,
-    offset,
-    nextOffset: hasMore ? nextOffset : null,
-    hasMore,
-  };
+  return mergePermanentFavoriteEntries({
+    cfg: params.cfg,
+    store: params.store,
+    opts: params.opts,
+    now: params.now,
+    rowContext: params.rowContext,
+    getRowContext: params.getRowContext,
+    selection: {
+      entries,
+      totalCount: filtered.length,
+      limitApplied: limit,
+      offset,
+      nextOffset: hasMore ? nextOffset : null,
+      hasMore,
+    },
+  });
 }
 
 export function filterAndSortSessionEntries(params: {

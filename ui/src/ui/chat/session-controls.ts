@@ -269,6 +269,8 @@ export function resetChatSessionPickerState(state: AppViewState) {
   state.chatSessionPickerLoading = false;
   state.chatSessionPickerError = null;
   state.chatSessionPickerResult = null;
+  state.chatSessionFavoriteBusyKey = null;
+  state.chatSessionRenameBusyKey = null;
 }
 
 function toggleChatSessionPicker(state: AppViewState, surface: ChatSessionSelectSurface) {
@@ -290,6 +292,7 @@ function createChatSessionPickerRequestParams(
   const params: Record<string, unknown> = {
     includeGlobal: overrides.includeGlobal,
     includeUnknown: overrides.includeUnknown,
+    includePermanentFavorites: true,
     configuredAgentsOnly: overrides.configuredAgentsOnly,
     limit: overrides.limit,
   };
@@ -513,10 +516,44 @@ function resolveChatSessionPickerResult(state: AppViewState): SessionsListResult
   return state.sessionsResult;
 }
 
-function resolveChatSessionPickerRows(
+type ChatSessionPickerRowEntry = {
+  row: SessionsListResult["sessions"][number];
+  label: string;
+};
+
+export type ChatSessionPickerSection = {
+  id: string;
+  label: string;
+  rows: ChatSessionPickerRowEntry[];
+};
+
+function isPermanentFavoriteSessionRow(row: SessionsListResult["sessions"][number]): boolean {
+  return row.permanentFavorite === true;
+}
+
+function resolveFavoriteOrder(row: SessionsListResult["sessions"][number]): number {
+  const order = row.favoriteOrder;
+  return typeof order === "number" && Number.isFinite(order) && order >= 0
+    ? order
+    : Number.MAX_SAFE_INTEGER;
+}
+
+function compareFavoritePickerRows(a: ChatSessionPickerRowEntry, b: ChatSessionPickerRowEntry) {
+  const orderDelta = resolveFavoriteOrder(a.row) - resolveFavoriteOrder(b.row);
+  if (orderDelta !== 0) {
+    return orderDelta;
+  }
+  const updatedDelta = (b.row.updatedAt ?? 0) - (a.row.updatedAt ?? 0);
+  if (updatedDelta !== 0) {
+    return updatedDelta;
+  }
+  return a.row.key.localeCompare(b.row.key);
+}
+
+export function resolveChatSessionPickerRows(
   state: AppViewState,
   result: SessionsListResult | null,
-): { row: SessionsListResult["sessions"][number]; label: string }[] {
+): ChatSessionPickerRowEntry[] {
   const rowsByKey = new Map((result?.sessions ?? []).map((row) => [row.key, row] as const));
   return resolveSessionOptionGroups(state, state.sessionKey, result)
     .flatMap((group) => group.options)
@@ -525,6 +562,26 @@ function resolveChatSessionPickerRows(
       row: rowsByKey.get(option.key)!,
       label: option.label,
     }));
+}
+
+export function resolveChatSessionPickerSections(
+  state: AppViewState,
+  result: SessionsListResult | null,
+): ChatSessionPickerSection[] {
+  const rows = resolveChatSessionPickerRows(state, result);
+  const favorites = rows
+    .filter((entry) => isPermanentFavoriteSessionRow(entry.row))
+    .toSorted(compareFavoritePickerRows);
+  const favoriteKeys = new Set(favorites.map((entry) => entry.row.key));
+  const recent = rows.filter((entry) => !favoriteKeys.has(entry.row.key));
+  const sections: ChatSessionPickerSection[] = [];
+  if (favorites.length > 0) {
+    sections.push({ id: "favorites", label: "Favorites", rows: favorites });
+  }
+  if (recent.length > 0 || favorites.length === 0) {
+    sections.push({ id: "recent", label: "Recent", rows: recent });
+  }
+  return sections;
 }
 
 function resolveSelectedChatSessionLabel(
@@ -554,6 +611,168 @@ function formatChatSessionPickerMeta(row: SessionsListResult["sessions"][number]
     parts.push(updatedAt);
   }
   return parts.join(" · ");
+}
+
+function patchSessionResultRows(
+  result: SessionsListResult | null | undefined,
+  sessionKey: string,
+  patcher: (row: SessionsListResult["sessions"][number]) => SessionsListResult["sessions"][number],
+): SessionsListResult | null | undefined {
+  if (!result) {
+    return result;
+  }
+  let changed = false;
+  const sessions = result.sessions.map((row) => {
+    if (row.key !== sessionKey) {
+      return row;
+    }
+    changed = true;
+    return patcher(row);
+  });
+  return changed ? { ...result, sessions } : result;
+}
+
+function patchChatSessionRows(
+  state: AppViewState,
+  sessionKey: string,
+  patcher: (row: SessionsListResult["sessions"][number]) => SessionsListResult["sessions"][number],
+) {
+  state.sessionsResult = patchSessionResultRows(state.sessionsResult, sessionKey, patcher) ?? null;
+  state.chatSessionPickerResult =
+    patchSessionResultRows(state.chatSessionPickerResult, sessionKey, patcher) ?? null;
+  if (state.chatAgentSessionRowsByAgent) {
+    const nextRowsByAgent: NonNullable<AppViewState["chatAgentSessionRowsByAgent"]> = {};
+    let changed = false;
+    for (const [agentId, rows] of Object.entries(state.chatAgentSessionRowsByAgent)) {
+      const nextRows = rows.map((row) => {
+        if (row.key !== sessionKey) {
+          return row;
+        }
+        changed = true;
+        return patcher(row);
+      });
+      nextRowsByAgent[agentId] = nextRows;
+    }
+    if (changed) {
+      state.chatAgentSessionRowsByAgent = nextRowsByAgent;
+    }
+  }
+}
+
+async function refreshSessionMetadataResults(state: AppViewState) {
+  await refreshSessionOptions(state);
+  if (state.chatSessionPickerOpen) {
+    state.chatSessionPickerResult = null;
+    await loadChatSessionPickerPage(state, {
+      query: state.chatSessionPickerAppliedQuery,
+    });
+  }
+}
+
+async function toggleChatSessionFavorite(
+  state: AppViewState,
+  row: SessionsListResult["sessions"][number],
+) {
+  if (!state.client || !state.connected || state.chatSessionFavoriteBusyKey) {
+    return;
+  }
+  const sessionKey = row.key;
+  const nextFavorite = row.permanentFavorite !== true;
+  const favoriteOrder = nextFavorite ? resolveFavoriteOrder(row) : null;
+  const nextFavoriteOrder =
+    favoriteOrder === Number.MAX_SAFE_INTEGER || favoriteOrder === null
+      ? Date.now()
+      : favoriteOrder;
+  const previousSessionsResult = state.sessionsResult;
+  const previousPickerResult = state.chatSessionPickerResult;
+  const previousRowsByAgent = state.chatAgentSessionRowsByAgent;
+  state.chatSessionFavoriteBusyKey = sessionKey;
+  setChatError(state, null);
+  patchChatSessionRows(state, sessionKey, (current) => {
+    const next = { ...current };
+    if (nextFavorite) {
+      next.permanentFavorite = true;
+      next.favoriteOrder = nextFavoriteOrder;
+    } else {
+      delete next.permanentFavorite;
+      delete next.favoriteOrder;
+    }
+    return next;
+  });
+  requestHostUpdate(state);
+  try {
+    await state.client.request("sessions.patch", {
+      key: sessionKey,
+      ...scopedAgentParamsForSession(state, sessionKey),
+      permanentFavorite: nextFavorite,
+      favoriteOrder: nextFavorite ? nextFavoriteOrder : null,
+    });
+    await refreshSessionMetadataResults(state);
+  } catch (err) {
+    state.sessionsResult = previousSessionsResult;
+    state.chatSessionPickerResult = previousPickerResult;
+    state.chatAgentSessionRowsByAgent = previousRowsByAgent;
+    setChatError(state, `Failed to update favorite: ${String(err)}`);
+  } finally {
+    if (state.chatSessionFavoriteBusyKey === sessionKey) {
+      state.chatSessionFavoriteBusyKey = null;
+    }
+    requestHostUpdate(state);
+  }
+}
+
+async function renameChatSession(state: AppViewState, row: SessionsListResult["sessions"][number]) {
+  if (!state.client || !state.connected || state.chatSessionRenameBusyKey) {
+    return;
+  }
+  const sessionKey = row.key;
+  const currentLabel =
+    normalizeOptionalString(row.label) ?? resolveSessionDisplayName(sessionKey, row);
+  const promptFn = globalThis.prompt;
+  if (typeof promptFn !== "function") {
+    return;
+  }
+  const raw = promptFn("Session name", currentLabel);
+  if (raw === null) {
+    return;
+  }
+  const nextLabel = normalizeOptionalString(raw) ?? "";
+  if (nextLabel === (normalizeOptionalString(row.label) ?? "")) {
+    return;
+  }
+  const previousSessionsResult = state.sessionsResult;
+  const previousPickerResult = state.chatSessionPickerResult;
+  const previousRowsByAgent = state.chatAgentSessionRowsByAgent;
+  state.chatSessionRenameBusyKey = sessionKey;
+  setChatError(state, null);
+  patchChatSessionRows(state, sessionKey, (current) => {
+    const next = { ...current };
+    if (nextLabel) {
+      next.label = nextLabel;
+    } else {
+      delete next.label;
+    }
+    return next;
+  });
+  requestHostUpdate(state);
+  try {
+    await state.client.request("sessions.patch", {
+      key: sessionKey,
+      ...scopedAgentParamsForSession(state, sessionKey),
+      label: nextLabel || null,
+    });
+    await refreshSessionMetadataResults(state);
+  } catch (err) {
+    state.sessionsResult = previousSessionsResult;
+    state.chatSessionPickerResult = previousPickerResult;
+    state.chatAgentSessionRowsByAgent = previousRowsByAgent;
+    setChatError(state, `Failed to rename session: ${String(err)}`);
+  } finally {
+    if (state.chatSessionRenameBusyKey === sessionKey) {
+      state.chatSessionRenameBusyKey = null;
+    }
+    requestHostUpdate(state);
+  }
 }
 
 function renderChatSessionPicker(params: {
@@ -609,7 +828,8 @@ function renderChatSessionPickerPopover(
   pickerId: string,
 ) {
   const result = resolveChatSessionPickerResult(state);
-  const pickerRows = resolveChatSessionPickerRows(state, result);
+  const pickerSections = resolveChatSessionPickerSections(state, result);
+  const pickerRows = pickerSections.flatMap((section) => section.rows);
   const controlsDisabled = !state.connected || !state.client;
   const normalizedQuery = normalizeOptionalString(state.chatSessionPickerQuery) ?? "";
   const searchPending = normalizedQuery !== state.chatSessionPickerAppliedQuery;
@@ -702,42 +922,97 @@ function renderChatSessionPickerPopover(
           ? html`<div class="chat-session-picker__status">${t("sessionsView.noSessions")}</div>`
           : ""}
         ${repeat(
-          pickerRows,
-          (entry) => entry.row.key,
-          (entry) => {
-            const { row, label } = entry;
-            const meta = formatChatSessionPickerMeta(row);
-            const selected = row.key === state.sessionKey;
-            return html`
-              <button
-                class="chat-session-picker__option ${selected
-                  ? "chat-session-picker__option--selected"
-                  : ""}"
-                data-chat-session-picker-option="true"
-                data-session-key=${row.key}
-                role="option"
-                aria-selected=${selected ? "true" : "false"}
-                title=${label}
-                type="button"
-                @click=${() => {
-                  closeChatSessionPicker(state);
-                  if (row.key !== state.sessionKey) {
-                    onSwitchSession(state, row.key);
-                  }
-                }}
-              >
-                <span class="chat-session-picker__option-main">
-                  <span class="chat-session-picker__option-label">${label}</span>
-                  ${meta ? html`<span class="chat-session-picker__option-meta">${meta}</span>` : ""}
-                </span>
-                ${selected
-                  ? html`<span class="chat-session-picker__option-check" aria-hidden="true">
-                      ${icons.check}
-                    </span>`
-                  : ""}
-              </button>
-            `;
-          },
+          pickerSections,
+          (section) => section.id,
+          (section) => html`
+            ${pickerSections.length > 1 || section.id === "favorites"
+              ? html`<div class="chat-session-picker__section-label">${section.label}</div>`
+              : ""}
+            ${repeat(
+              section.rows,
+              (entry) => entry.row.key,
+              (entry) => {
+                const { row, label } = entry;
+                const meta = formatChatSessionPickerMeta(row);
+                const selected = row.key === state.sessionKey;
+                const favorite = row.permanentFavorite === true;
+                const favoriteBusy = state.chatSessionFavoriteBusyKey === row.key;
+                const renameBusy = state.chatSessionRenameBusyKey === row.key;
+                const favoriteTitle = favorite ? "Remove from favorites" : "Add to favorites";
+                return html`
+                  <div class="chat-session-picker__option-row">
+                    <button
+                      class="chat-session-picker__option ${selected
+                        ? "chat-session-picker__option--selected"
+                        : ""}"
+                      data-chat-session-picker-option="true"
+                      data-session-key=${row.key}
+                      role="option"
+                      aria-selected=${selected ? "true" : "false"}
+                      title=${label}
+                      type="button"
+                      @click=${() => {
+                        closeChatSessionPicker(state);
+                        if (row.key !== state.sessionKey) {
+                          onSwitchSession(state, row.key);
+                        }
+                      }}
+                    >
+                      <span class="chat-session-picker__option-main">
+                        <span class="chat-session-picker__option-label">${label}</span>
+                        ${meta
+                          ? html`<span class="chat-session-picker__option-meta">${meta}</span>`
+                          : ""}
+                      </span>
+                      ${selected
+                        ? html`<span class="chat-session-picker__option-check" aria-hidden="true">
+                            ${icons.check}
+                          </span>`
+                        : ""}
+                    </button>
+                    <span class="chat-session-picker__option-actions">
+                      <button
+                        class="btn btn--ghost btn--icon chat-session-picker__row-action"
+                        data-chat-session-rename="true"
+                        data-session-key=${row.key}
+                        type="button"
+                        title="Rename session"
+                        aria-label="Rename session"
+                        ?disabled=${controlsDisabled || renameBusy}
+                        @click=${(event: MouseEvent) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void renameChatSession(state, row);
+                        }}
+                      >
+                        ${icons.edit}
+                      </button>
+                      <button
+                        class="btn btn--ghost btn--icon chat-session-picker__row-action ${favorite
+                          ? "chat-session-picker__row-action--favorite"
+                          : ""}"
+                        data-chat-session-favorite-toggle="true"
+                        data-session-key=${row.key}
+                        data-favorite-action=${favorite ? "remove" : "add"}
+                        type="button"
+                        title=${favoriteTitle}
+                        aria-label=${favoriteTitle}
+                        aria-pressed=${favorite ? "true" : "false"}
+                        ?disabled=${controlsDisabled || favoriteBusy}
+                        @click=${(event: MouseEvent) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void toggleChatSessionFavorite(state, row);
+                        }}
+                      >
+                        ${icons.bookmark}
+                      </button>
+                    </span>
+                  </div>
+                `;
+              },
+            )}
+          `,
         )}
       </div>
       <div class="chat-session-picker__footer">

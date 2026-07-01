@@ -285,7 +285,7 @@ export function pruneStaleModelRunEntries(
   const cutoffMs = Date.now() - overrideMaxAgeMs;
   let pruned = 0;
   for (const [key, entry] of Object.entries(store)) {
-    if (opts.preserveKeys?.has(key) === true) {
+    if (shouldPreserveMaintenanceEntry({ key, entry, preserveKeys: opts.preserveKeys })) {
       continue;
     }
     if (!isGatewayModelRunSessionKey(key)) {
@@ -386,6 +386,9 @@ export function isProtectedSessionMaintenanceEntry(
   sessionKey: string,
   entry: SessionEntry | undefined,
 ): boolean {
+  if (entry?.permanentFavorite === true) {
+    return true;
+  }
   // Human conversation surfaces are protected; synthetic automation sessions are disposable.
   if (isSyntheticSessionMaintenanceKey(sessionKey)) {
     return false;
@@ -410,6 +413,7 @@ export function shouldPreserveMaintenanceEntry(params: {
 }): boolean {
   return (
     params.preserveKeys?.has(params.key) === true ||
+    params.entry?.permanentFavorite === true ||
     isProtectedSessionMaintenanceEntry(params.key, params.entry)
   );
 }

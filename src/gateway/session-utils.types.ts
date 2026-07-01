@@ -51,6 +51,8 @@ export type GatewaySessionRow = {
   kind: "direct" | "group" | "global" | "unknown";
   label?: string;
   displayName?: string;
+  permanentFavorite?: boolean;
+  favoriteOrder?: number;
   derivedTitle?: string;
   lastMessagePreview?: string;
   channel?: string;

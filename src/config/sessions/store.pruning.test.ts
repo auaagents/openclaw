@@ -84,6 +84,27 @@ describe("pruneStaleEntries", () => {
     expect(store).toHaveProperty("agent:main:telegram:group:-100123");
     expect(store).toHaveProperty("agent:main:discord:channel:ops");
   });
+
+  it("preserves permanent favorite sessions", () => {
+    const now = Date.now();
+    const store = makeStore([
+      ["old", makeEntry(now - 31 * DAY_MS)],
+      [
+        "favorite",
+        {
+          ...makeEntry(now - 31 * DAY_MS),
+          permanentFavorite: true,
+          favoriteOrder: 1,
+        },
+      ],
+    ]);
+
+    const pruned = pruneStaleEntries(store, 30 * DAY_MS);
+
+    expect(pruned).toBe(1);
+    expect(store.old).toBeUndefined();
+    expect(store).toHaveProperty("favorite");
+  });
 });
 
 describe("resolveQuotaSuspensionEntryMaintenance", () => {
@@ -315,6 +336,19 @@ describe("pruneStaleModelRunEntries", () => {
     expect(store).toHaveProperty(staleModelRun);
   });
 
+  it("preserves favorite model-run sessions", () => {
+    const staleModelRun = "agent:main:explicit:model-run-123e4567-e89b-12d3-a456-426614174000";
+    const store = makeStore([
+      [
+        staleModelRun,
+        { ...makeEntry(Date.now() - 10 * DAY_MS), permanentFavorite: true, favoriteOrder: 1 },
+      ],
+    ]);
+
+    expect(pruneStaleModelRunEntries(store, DAY_MS)).toBe(0);
+    expect(store).toHaveProperty(staleModelRun);
+  });
+
   it("matches only explicit model-run uuid session keys", () => {
     expect(
       isGatewayModelRunSessionKey(
@@ -423,6 +457,25 @@ describe("capEntryCount", () => {
     expect(store).toHaveProperty("newest");
     expect(store).toHaveProperty("recent");
     expect(store.oldest).toBeUndefined();
+    expect(store.old).toBeUndefined();
+  });
+
+  it("preserves permanent favorite sessions when capping", () => {
+    const now = Date.now();
+    const store = makeStore([
+      ["favorite", { ...makeEntry(now - 10 * DAY_MS), permanentFavorite: true, favoriteOrder: 1 }],
+      ["recent-1", makeEntry(now)],
+      ["recent-2", makeEntry(now - 1)],
+      ["old", makeEntry(now - 2)],
+    ]);
+
+    const evicted = capEntryCount(store, 2);
+
+    expect(evicted).toBe(2);
+    expect(Object.keys(store)).toHaveLength(2);
+    expect(store).toHaveProperty("favorite");
+    expect(store).toHaveProperty("recent-1");
+    expect(store["recent-2"]).toBeUndefined();
     expect(store.old).toBeUndefined();
   });
 

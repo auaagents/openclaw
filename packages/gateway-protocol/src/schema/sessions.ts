@@ -181,6 +181,11 @@ export const SessionsListParamsSchema = Type.Object(
      * Performs a file read per session - use `limit` to bound result set on large stores.
      */
     includeLastMessage: Type.Optional(Type.Boolean()),
+    /**
+     * Include sessions explicitly pinned by the user even when they fall outside
+     * the normal recency/page window.
+     */
+    includePermanentFavorites: Type.Optional(Type.Boolean()),
     label: Type.Optional(SessionLabelString),
     spawnedBy: Type.Optional(NonEmptyString),
     agentId: Type.Optional(NonEmptyString),
@@ -301,6 +306,8 @@ export const SessionsPatchParamsSchema = Type.Object(
     key: NonEmptyString,
     agentId: Type.Optional(NonEmptyString),
     label: Type.Optional(Type.Union([SessionLabelString, Type.Null()])),
+    permanentFavorite: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
+    favoriteOrder: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thinkingLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     fastMode: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto"), Type.Null()])),
     verboseLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),

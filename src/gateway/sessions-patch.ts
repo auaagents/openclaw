@@ -184,6 +184,8 @@ export async function projectSessionsPatchEntry(params: {
   if (existing && !existing.sessionId) {
     delete next.label;
     delete next.displayName;
+    delete next.permanentFavorite;
+    delete next.favoriteOrder;
   }
 
   type PatchError = ReturnType<typeof invalid> | null;
@@ -367,6 +369,39 @@ export async function projectSessionsPatchEntry(params: {
       }
       next.label = parsed.label;
     }
+  }
+
+  if ("permanentFavorite" in patch) {
+    const raw = patch.permanentFavorite;
+    if (raw === true) {
+      next.permanentFavorite = true;
+      if (
+        typeof next.favoriteOrder !== "number" ||
+        !Number.isFinite(next.favoriteOrder) ||
+        next.favoriteOrder < 0
+      ) {
+        next.favoriteOrder = now;
+      }
+    } else if (raw === false || raw === null) {
+      delete next.permanentFavorite;
+      delete next.favoriteOrder;
+    }
+  }
+
+  if ("favoriteOrder" in patch) {
+    const raw = patch.favoriteOrder;
+    if (raw === null) {
+      delete next.favoriteOrder;
+    } else if (raw !== undefined) {
+      if (!Number.isInteger(raw) || raw < 0) {
+        return invalid("invalid favoriteOrder (use an integer >= 0)");
+      }
+      next.favoriteOrder = raw;
+    }
+  }
+
+  if (next.permanentFavorite !== true) {
+    delete next.favoriteOrder;
   }
 
   if ("thinkingLevel" in patch) {

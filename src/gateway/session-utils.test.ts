@@ -809,6 +809,67 @@ describe("gateway session utils", () => {
     expect(row.displayName).toBe("Alice");
   });
 
+  test("buildGatewaySessionRow projects permanent favorite metadata", () => {
+    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const entry = {
+      sessionId: "fav-session",
+      updatedAt: 1,
+      label: "Finance",
+      permanentFavorite: true,
+      favoriteOrder: 17,
+    } as SessionEntry;
+    const row = buildGatewaySessionRow({
+      cfg,
+      storePath: "",
+      store: { "agent:main:finance": entry },
+      key: "agent:main:finance",
+      entry,
+    });
+
+    expect(row.label).toBe("Finance");
+    expect(row.permanentFavorite).toBe(true);
+    expect(row.favoriteOrder).toBe(17);
+  });
+
+  test("listSessionsFromStore includes permanent favorites outside the normal page", () => {
+    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const now = Date.now();
+    const store: Record<string, SessionEntry> = {
+      "agent:main:recent": { sessionId: "recent", updatedAt: now },
+      "agent:main:old-favorite": {
+        sessionId: "favorite",
+        updatedAt: now - 10 * 24 * 60 * 60 * 1000,
+        label: "Old Favorite",
+        permanentFavorite: true,
+        favoriteOrder: 1,
+      } as SessionEntry,
+      "agent:main:older": {
+        sessionId: "older",
+        updatedAt: now - 10 * 24 * 60 * 60 * 1000,
+      } as SessionEntry,
+    };
+
+    const result = listSessionsFromStore({
+      cfg,
+      storePath: "",
+      store,
+      opts: {
+        agentId: "main",
+        activeMinutes: 5,
+        limit: 1,
+        includePermanentFavorites: true,
+      },
+    });
+
+    expect(result.sessions.map((row) => row.key)).toEqual([
+      "agent:main:old-favorite",
+      "agent:main:recent",
+    ]);
+    expect(result.sessions[0]?.permanentFavorite).toBe(true);
+    expect(result.hasMore).toBe(false);
+    expect(result.nextOffset).toBeNull();
+  });
+
   test("buildGatewaySessionRow projects effectiveResponseUsage from a bare config default", () => {
     const cfg = {
       agents: { list: [{ id: "main", default: true }] },
