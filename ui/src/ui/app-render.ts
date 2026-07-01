@@ -528,22 +528,62 @@ function isSidebarSessionForSelectedAgent(
   return isSessionKeyTiedToAgent(row.key, selectedAgentId, resolveSidebarDefaultAgentId(state));
 }
 
-function resolveSidebarRecentSessions(state: AppViewState): GatewaySessionRow[] {
+function isVisibleSidebarSessionRow(
+  state: AppViewState,
+  row: GatewaySessionRow,
+  selectedAgentId: string,
+  shouldFilterByAgent: boolean,
+): boolean {
+  return (
+    !row.archived &&
+    row.kind !== "global" &&
+    row.kind !== "unknown" &&
+    row.kind !== "cron" &&
+    !isCronSessionKey(row.key) &&
+    !isSubagentSessionKey(row.key) &&
+    !row.spawnedBy &&
+    (!shouldFilterByAgent || isSidebarSessionForSelectedAgent(state, row, selectedAgentId))
+  );
+}
+
+function resolveSidebarSessionRows(state: AppViewState): GatewaySessionRow[] {
   const selectedAgentId = resolveSidebarSelectedAgentId(state);
   const shouldFilterByAgent =
     normalizeOptionalString(state.sessionKey)?.toLowerCase() !== "unknown";
-  return (state.sessionsResult?.sessions ?? [])
-    .filter(
-      (row) =>
-        !row.archived &&
-        row.kind !== "global" &&
-        row.kind !== "unknown" &&
-        row.kind !== "cron" &&
-        !isCronSessionKey(row.key) &&
-        !isSubagentSessionKey(row.key) &&
-        !row.spawnedBy &&
-        (!shouldFilterByAgent || isSidebarSessionForSelectedAgent(state, row, selectedAgentId)),
-    )
+  return (state.sessionsResult?.sessions ?? []).filter((row) =>
+    isVisibleSidebarSessionRow(state, row, selectedAgentId, shouldFilterByAgent),
+  );
+}
+
+function compareSidebarFavoriteSessions(a: GatewaySessionRow, b: GatewaySessionRow): number {
+  const orderA =
+    typeof a.favoriteOrder === "number" && Number.isFinite(a.favoriteOrder) && a.favoriteOrder >= 0
+      ? a.favoriteOrder
+      : Number.MAX_SAFE_INTEGER;
+  const orderB =
+    typeof b.favoriteOrder === "number" && Number.isFinite(b.favoriteOrder) && b.favoriteOrder >= 0
+      ? b.favoriteOrder
+      : Number.MAX_SAFE_INTEGER;
+  const orderDelta = orderA - orderB;
+  if (orderDelta !== 0) {
+    return orderDelta;
+  }
+  const updatedDelta = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+  if (updatedDelta !== 0) {
+    return updatedDelta;
+  }
+  return a.key.localeCompare(b.key);
+}
+
+function resolveSidebarFavoriteSessions(state: AppViewState): GatewaySessionRow[] {
+  return resolveSidebarSessionRows(state)
+    .filter((row) => row.permanentFavorite === true)
+    .toSorted(compareSidebarFavoriteSessions);
+}
+
+function resolveSidebarRecentSessions(state: AppViewState): GatewaySessionRow[] {
+  return resolveSidebarSessionRows(state)
+    .filter((row) => row.permanentFavorite !== true)
     .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     .slice(0, 5);
 }
@@ -551,6 +591,7 @@ function resolveSidebarRecentSessions(state: AppViewState): GatewaySessionRow[] 
 function renderSidebarSessions(state: AppViewState) {
   const collapsed = state.settings.navCollapsed;
   const busy = isSidebarSessionBusy(state);
+  const favorites = collapsed ? [] : resolveSidebarFavoriteSessions(state);
   const recent = collapsed ? [] : resolveSidebarRecentSessions(state);
   const newSessionDisabled = !state.connected || state.sessionsLoading || busy || !state.client;
   const newSessionTitle = !state.connected
@@ -590,6 +631,40 @@ function renderSidebarSessions(state: AppViewState) {
           surface: "sidebar",
         })}
       </div>
+      ${collapsed || favorites.length === 0
+        ? nothing
+        : html`
+            <div
+              class="sidebar-recent-sessions sidebar-favorite-sessions ${state.settings
+                .favoriteSessionsCollapsed
+                ? "sidebar-recent-sessions--collapsed sidebar-favorite-sessions--collapsed"
+                : ""}"
+              aria-label="Favorite sessions"
+            >
+              <button
+                class="sidebar-recent-sessions__label sidebar-favorite-sessions__label"
+                type="button"
+                aria-expanded=${String(!state.settings.favoriteSessionsCollapsed)}
+                @click=${() => {
+                  state.applySettings({
+                    ...state.settings,
+                    favoriteSessionsCollapsed: !state.settings.favoriteSessionsCollapsed,
+                  });
+                }}
+              >
+                <span
+                  class="sidebar-recent-sessions__label-text sidebar-favorite-sessions__label-text"
+                  >Favorites</span
+                >
+                <span class="sidebar-recent-sessions__chevron sidebar-favorite-sessions__chevron">
+                  ${icons.chevronDown}
+                </span>
+              </button>
+              <div class="sidebar-recent-sessions__list sidebar-favorite-sessions__list">
+                ${favorites.map((row) => renderSidebarRecentSession(state, row))}
+              </div>
+            </div>
+          `}
       ${collapsed || recent.length === 0
         ? nothing
         : html`

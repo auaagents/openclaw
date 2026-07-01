@@ -146,6 +146,7 @@ describe("loadSettings default gateway URL derivation", () => {
       navCollapsed: false,
       navWidth: 220,
       navGroupsCollapsed: {},
+      favoriteSessionsCollapsed: false,
       recentSessionsCollapsed: false,
       borderRadius: 50,
       textScale: 100,
@@ -278,6 +279,7 @@ describe("loadSettings default gateway URL derivation", () => {
       navCollapsed: false,
       navWidth: 220,
       navGroupsCollapsed: {},
+      favoriteSessionsCollapsed: false,
       recentSessionsCollapsed: false,
       borderRadius: 50,
       textScale: 100,
@@ -291,7 +293,7 @@ describe("loadSettings default gateway URL derivation", () => {
     expect(sessionStorage.length).toBe(1);
   });
 
-  it("persists recent sessions collapse state across save and load", () => {
+  it("persists sidebar session collapse state across save and load", () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
@@ -313,11 +315,13 @@ describe("loadSettings default gateway URL derivation", () => {
       navCollapsed: false,
       navWidth: 220,
       navGroupsCollapsed: {},
+      favoriteSessionsCollapsed: true,
       recentSessionsCollapsed: true,
       borderRadius: 50,
       textScale: 100,
     });
 
+    expect(loadSettings().favoriteSessionsCollapsed).toBe(true);
     expect(loadSettings().recentSessionsCollapsed).toBe(true);
 
     saveSettings({
@@ -334,6 +338,7 @@ describe("loadSettings default gateway URL derivation", () => {
       navCollapsed: false,
       navWidth: 220,
       navGroupsCollapsed: {},
+      favoriteSessionsCollapsed: false,
       recentSessionsCollapsed: false,
       borderRadius: 50,
       textScale: 100,
@@ -344,7 +349,9 @@ describe("loadSettings default gateway URL derivation", () => {
       string,
       unknown
     >;
+    expect(persisted.favoriteSessionsCollapsed).toBe(false);
     expect(persisted.recentSessionsCollapsed).toBe(false);
+    expect(loadSettings().favoriteSessionsCollapsed).toBe(false);
     expect(loadSettings().recentSessionsCollapsed).toBe(false);
   });
 

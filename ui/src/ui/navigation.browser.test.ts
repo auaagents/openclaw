@@ -502,23 +502,63 @@ describe("control UI routing", () => {
         spawnedBy: "agent:main:second",
         updatedAt: Date.now() - 25_000,
       },
+      {
+        key: "agent:main:finance",
+        label: "Finance",
+        permanentFavorite: true,
+        favoriteOrder: 20,
+        updatedAt: Date.now() - 60 * 60_000,
+      },
+      {
+        key: "agent:main:work",
+        label: "Work",
+        permanentFavorite: true,
+        favoriteOrder: 10,
+        updatedAt: Date.now() - 2 * 60 * 60_000,
+      },
       { key: "agent:main:first", label: "First workspace", updatedAt: Date.now() - 5 * 60_000 },
       { key: "agent:main:second", label: "Second workspace", updatedAt: Date.now() - 30_000 },
     ]) as typeof app.sessionsResult;
     await app.updateComplete;
 
-    const recent = Array.from(app.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session"));
+    const sections = Array.from(app.querySelectorAll<HTMLElement>(".sidebar-recent-sessions"));
+    expect(sections.map((entry) => entry.getAttribute("aria-label"))).toEqual([
+      "Favorite sessions",
+      "Recent Sessions",
+    ]);
+    expect(
+      Array.from(
+        sections[0]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
+      ).map((entry) => entry.textContent?.replace(/\s+/g, " ").trim()),
+    ).toEqual(["Work 2h ago", "Finance 1h ago"]);
+    const recent = Array.from(
+      sections[1]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
+    );
     expect(recent.map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "Second workspace just now",
       "First workspace 5m ago",
     ]);
 
-    const recentSection = expectElement(app, ".sidebar-recent-sessions", HTMLElement);
+    const favoritesSection = expectElement(app, ".sidebar-favorite-sessions", HTMLElement);
+    const favoritesToggle = expectElement(
+      favoritesSection,
+      ".sidebar-favorite-sessions__label",
+      HTMLButtonElement,
+    );
     const recentToggle = expectElement(
-      recentSection,
+      sections[1]!,
       ".sidebar-recent-sessions__label",
       HTMLButtonElement,
     );
+    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
+
+    favoritesToggle.click();
+    await app.updateComplete;
+
+    expect(app.settings.favoriteSessionsCollapsed).toBe(true);
+    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("false");
+    expect([...favoritesSection.classList]).toContain("sidebar-favorite-sessions--collapsed");
     expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
 
     recentToggle.click();
@@ -526,14 +566,23 @@ describe("control UI routing", () => {
 
     expect(app.settings.recentSessionsCollapsed).toBe(true);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("false");
-    expect([...recentSection.classList]).toContain("sidebar-recent-sessions--collapsed");
+    expect([...sections[1]!.classList]).toContain("sidebar-recent-sessions--collapsed");
+    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("false");
+
+    favoritesToggle.click();
+    await app.updateComplete;
+
+    expect(app.settings.favoriteSessionsCollapsed).toBe(false);
+    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("true");
+    expect([...favoritesSection.classList]).not.toContain("sidebar-favorite-sessions--collapsed");
+    expect(recentToggle.getAttribute("aria-expanded")).toBe("false");
 
     recentToggle.click();
     await app.updateComplete;
 
     expect(app.settings.recentSessionsCollapsed).toBe(false);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
-    expect([...recentSection.classList]).not.toContain("sidebar-recent-sessions--collapsed");
+    expect([...sections[1]!.classList]).not.toContain("sidebar-recent-sessions--collapsed");
 
     recent[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await app.updateComplete;
