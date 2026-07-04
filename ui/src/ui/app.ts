@@ -86,6 +86,7 @@ import {
   createBrowserSpeechRecognition,
   findLatestSpeechMessage,
   formatDictationTranscript,
+  isDictationSubmitCommand,
   loadHeardSpeechMessageIds,
   loadLocalSpeechSettings,
   rememberHeardSpeechMessageId,
@@ -195,6 +196,17 @@ const bootLocalUserIdentity = loadLocalUserIdentity();
 const bootLocalSpeechSettings = loadLocalSpeechSettings();
 const FULL_MESSAGE_SIDEBAR_MAX_CHARS = 500_000;
 const LOCAL_TTS_NEW_MESSAGE_SKEW_MS = 5_000;
+const LOCAL_TTS_PROVIDER = "microsoft";
+const LOCAL_TTS_VOICE_ID = "en-US-JennyNeural";
+const LOCAL_TTS_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
+
+type TalkSpeakResult = {
+  audioBase64?: string;
+  provider?: string;
+  outputFormat?: string;
+  mimeType?: string;
+  fileExtension?: string;
+};
 
 function isSidebarMarkdownLike(content: SidebarContent | null): content is SidebarContent {
   return Boolean(content && (content.kind === "markdown" || content.kind === "canvas"));
@@ -376,6 +388,8 @@ export class OpenClawApp extends LitElement {
   private localTtsActivatedAtMs = bootLocalSpeechSettings.ttsEnabled ? Date.now() : 0;
   private localTtsHeardMessageIds = loadHeardSpeechMessageIds();
   private localTtsObservedLatestBySession = new Map<string, string>();
+  private localTtsSpeakToken = 0;
+  private localTtsAudio: HTMLAudioElement | null = null;
   private nativeBridgeCleanup: (() => void) | null = null;
   @state() chatManualRefreshInFlight = false;
   @state() chatHeaderControlsHidden = false;
@@ -944,7 +958,8 @@ export class OpenClawApp extends LitElement {
     }
     this.chatMobileControlsTrigger = null;
     this.stopLocalDictation({ persist: false });
-    globalThis.speechSynthesis?.cancel();
+    this.localTtsSpeakToken += 1;
+    this.stopLocalTtsPlayback();
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
     super.disconnectedCallback();
   }
@@ -1446,6 +1461,11 @@ export class OpenClawApp extends LitElement {
       if (!finalText) {
         return;
       }
+      if (isDictationSubmitCommand(finalText)) {
+        this.localDictationInterim = null;
+        void this.handleSendChat();
+        return;
+      }
       const addition = formatDictationTranscript(finalText, this.chatMessage);
       const next = appendDictationText(this.chatMessage, addition);
       this.localDictationInterim = null;
@@ -1527,30 +1547,136 @@ export class OpenClawApp extends LitElement {
 
   private speakLocalText(messageId: string, text: string) {
     if (this.localTtsSpeakingMessageId === messageId) {
-      globalThis.speechSynthesis?.cancel();
+      this.localTtsSpeakToken += 1;
+      this.stopLocalTtsPlayback();
       this.localTtsSpeakingMessageId = null;
       return;
     }
     this.localTtsError = null;
+    const speakToken = this.localTtsSpeakToken + 1;
+    this.localTtsSpeakToken = speakToken;
+    this.localTtsSpeakingMessageId = messageId;
+    void this.speakGatewayText(messageId, text, speakToken);
+  }
+
+  private stopLocalTtsPlayback() {
+    const audio = this.localTtsAudio;
+    this.localTtsAudio = null;
+    if (audio) {
+      try {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      } catch {}
+    }
+    globalThis.speechSynthesis?.cancel();
+  }
+
+  private isActiveLocalTts(messageId: string, speakToken: number): boolean {
+    return this.localTtsSpeakingMessageId === messageId && this.localTtsSpeakToken === speakToken;
+  }
+
+  private speakLocalBrowserFallback(messageId: string, text: string, speakToken: number) {
     const utterance = speakWithLocalVoice({
       text,
+      shouldSpeak: () => this.isActiveLocalTts(messageId, speakToken),
       onEnd: () => {
-        if (this.localTtsSpeakingMessageId === messageId) {
+        if (this.isActiveLocalTts(messageId, speakToken)) {
           this.localTtsSpeakingMessageId = null;
         }
       },
       onError: (error) => {
         this.localTtsError = error;
-        if (this.localTtsSpeakingMessageId === messageId) {
+        if (this.isActiveLocalTts(messageId, speakToken)) {
           this.localTtsSpeakingMessageId = null;
         }
       },
     });
     if (!utterance) {
+      if (this.isActiveLocalTts(messageId, speakToken)) {
+        this.localTtsSpeakingMessageId = null;
+      }
       return;
     }
-    this.localTtsSpeakingMessageId = messageId;
     rememberHeardSpeechMessageId(this.localTtsHeardMessageIds, messageId);
+  }
+
+  private async speakGatewayText(messageId: string, text: string, speakToken: number) {
+    const spokeWithGateway = await this.trySpeakGatewayText(messageId, text, speakToken);
+    if (spokeWithGateway || !this.isActiveLocalTts(messageId, speakToken)) {
+      return;
+    }
+    this.speakLocalBrowserFallback(messageId, text, speakToken);
+  }
+
+  private async trySpeakGatewayText(
+    messageId: string,
+    text: string,
+    speakToken: number,
+  ): Promise<boolean> {
+    if (!this.client || !this.connected || typeof Audio === "undefined") {
+      return false;
+    }
+    let result: TalkSpeakResult;
+    try {
+      result = await this.client.request<TalkSpeakResult>("talk.speak", {
+        text,
+        provider: LOCAL_TTS_PROVIDER,
+        voiceId: LOCAL_TTS_VOICE_ID,
+        outputFormat: LOCAL_TTS_OUTPUT_FORMAT,
+      });
+    } catch {
+      if (this.isActiveLocalTts(messageId, speakToken)) {
+        this.localTtsError = "Jenny Neural read-aloud unavailable; using browser voice.";
+      }
+      return false;
+    }
+    if (!this.isActiveLocalTts(messageId, speakToken)) {
+      return true;
+    }
+    const audioBase64 = result.audioBase64?.trim();
+    if (!audioBase64) {
+      this.localTtsError = "Jenny Neural read-aloud returned no audio; using browser voice.";
+      return false;
+    }
+    const mimeType = result.mimeType?.trim() || "audio/mpeg";
+    const audio = new Audio(`data:${mimeType};base64,${audioBase64}`);
+    this.localTtsAudio = audio;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        audio.addEventListener("ended", () => resolve(), { once: true });
+        audio.addEventListener("pause", () => {
+          if (!this.isActiveLocalTts(messageId, speakToken)) {
+            resolve();
+          }
+        });
+        audio.addEventListener(
+          "error",
+          () => reject(new Error("Jenny Neural read-aloud playback failed.")),
+          { once: true },
+        );
+        const playResult = audio.play();
+        if (playResult && typeof playResult.catch === "function") {
+          playResult.catch(reject);
+        }
+      });
+    } catch {
+      if (this.isActiveLocalTts(messageId, speakToken)) {
+        this.localTtsError = "Jenny Neural read-aloud could not play; using browser voice.";
+      }
+      return false;
+    } finally {
+      if (this.localTtsAudio === audio) {
+        this.localTtsAudio = null;
+      }
+    }
+
+    if (this.isActiveLocalTts(messageId, speakToken)) {
+      this.localTtsSpeakingMessageId = null;
+      rememberHeardSpeechMessageId(this.localTtsHeardMessageIds, messageId);
+    }
+    return true;
   }
 
   private readLatestLocalTtsMessage(options: { force?: boolean } = {}) {
@@ -1574,8 +1700,9 @@ export class OpenClawApp extends LitElement {
     if (this.localTtsEnabled) {
       this.localTtsEnabled = false;
       this.localTtsError = null;
+      this.localTtsSpeakToken += 1;
       this.localTtsSpeakingMessageId = null;
-      globalThis.speechSynthesis?.cancel();
+      this.stopLocalTtsPlayback();
       this.saveLocalSpeechSettings();
       return;
     }

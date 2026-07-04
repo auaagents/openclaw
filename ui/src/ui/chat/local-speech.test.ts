@@ -1,10 +1,12 @@
 // Control UI chat module tests local browser speech helpers.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendDictationText,
   findLatestSpeechMessage,
   formatDictationTranscript,
+  isDictationSubmitCommand,
   selectJennyVoice,
+  speakWithLocalVoice,
 } from "./local-speech.ts";
 
 function voice(name: string, lang: string): SpeechSynthesisVoice {
@@ -16,6 +18,20 @@ function voice(name: string, lang: string): SpeechSynthesisVoice {
     voiceURI: name,
   } as SpeechSynthesisVoice;
 }
+
+const originalSpeechSynthesis = globalThis.speechSynthesis;
+const originalSpeechSynthesisUtterance = globalThis.SpeechSynthesisUtterance;
+
+afterEach(() => {
+  Object.defineProperty(globalThis, "speechSynthesis", {
+    configurable: true,
+    value: originalSpeechSynthesis,
+  });
+  Object.defineProperty(globalThis, "SpeechSynthesisUtterance", {
+    configurable: true,
+    value: originalSpeechSynthesisUtterance,
+  });
+});
 
 describe("local speech dictation formatting", () => {
   it("turns spoken punctuation into readable text", () => {
@@ -36,6 +52,13 @@ describe("local speech dictation formatting", () => {
     expect(appendDictationText("Hello", formatDictationTranscript("there", "Hello"))).toBe(
       "Hello there",
     );
+  });
+
+  it("recognizes strict spoken submit commands", () => {
+    expect(isDictationSubmitCommand("send message")).toBe(true);
+    expect(isDictationSubmitCommand("Send a message.")).toBe(true);
+    expect(isDictationSubmitCommand("submit the prompt")).toBe(true);
+    expect(isDictationSubmitCommand("send message to Bob")).toBe(false);
   });
 });
 
@@ -70,5 +93,51 @@ describe("local speech voice selection", () => {
         voice("Microsoft Jenny Online (Natural) - English (United States)", "en-US"),
       ])?.name,
     ).toContain("Jenny");
+  });
+
+  it("waits for Jenny before speaking when browser voices load late", () => {
+    let voices = [voice("Google US English", "en-US")];
+    const voiceEvents: { voicesChanged?: () => void } = {};
+    const speak = vi.fn();
+    const cancel = vi.fn();
+
+    class FakeSpeechSynthesisUtterance {
+      onend: (() => void) | null = null;
+      onerror: ((event: { error?: string }) => void) | null = null;
+      pitch = 1;
+      rate = 1;
+      voice: SpeechSynthesisVoice | null = null;
+      constructor(public text: string) {}
+      addEventListener() {}
+    }
+
+    Object.defineProperty(globalThis, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: FakeSpeechSynthesisUtterance,
+    });
+    Object.defineProperty(globalThis, "speechSynthesis", {
+      configurable: true,
+      value: {
+        addEventListener: (_event: string, callback: EventListenerOrEventListenerObject) => {
+          voiceEvents.voicesChanged = callback as () => void;
+        },
+        cancel,
+        getVoices: () => voices,
+        removeEventListener: vi.fn(),
+        speak,
+      },
+    });
+
+    speakWithLocalVoice({ text: "hello" });
+
+    expect(speak).not.toHaveBeenCalled();
+
+    voices = [voice("Microsoft Jenny Online (Natural) - English (United States)", "en-US")];
+    voiceEvents.voicesChanged?.();
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(speak).toHaveBeenCalledOnce();
+    const utterance = speak.mock.calls[0]?.[0] as SpeechSynthesisUtterance | undefined;
+    expect(utterance?.voice?.name).toContain("Jenny");
   });
 });

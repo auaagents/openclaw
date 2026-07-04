@@ -168,12 +168,23 @@ function withTalkBaseTtsSpeakerSelectionCompat(
 
 function buildTalkTtsConfig(
   config: OpenClawConfig,
+  params?: TalkSpeakParams,
 ):
   | { cfg: OpenClawConfig; provider: string; providerConfig: TalkProviderConfig }
   | { error: string; reason: TalkSpeakReason } {
+  const requestedProvider = normalizeOptionalString(params?.provider);
+  const requestedCanonicalProvider =
+    requestedProvider == null ? undefined : canonicalizeSpeechProviderId(requestedProvider, config);
+  if (requestedProvider && !requestedCanonicalProvider) {
+    return {
+      error: `talk.speak unavailable: speech provider "${requestedProvider}" does not support Talk mode`,
+      reason: "talk_provider_unsupported",
+    };
+  }
   const resolved = resolveActiveTalkProviderConfig(config.talk);
-  const provider = canonicalizeSpeechProviderId(resolved?.provider, config);
-  if (!resolved || !provider) {
+  const resolvedProvider = canonicalizeSpeechProviderId(resolved?.provider, config);
+  const provider = requestedCanonicalProvider ?? resolvedProvider;
+  if (!provider) {
     return {
       error: "talk.speak unavailable: talk provider not configured",
       reason: "talk_unconfigured",
@@ -191,7 +202,10 @@ function buildTalkTtsConfig(
   const baseTts = withTalkBaseTtsSpeakerSelectionCompat(
     asOptionalRecord(config.messages?.tts) ?? {},
   ) as TtsConfig;
-  const providerConfig = withSpeakerSelectionFallbackCompat(resolved.config);
+  const resolvedMatchesProvider = resolvedProvider === provider;
+  const providerConfig = withSpeakerSelectionFallbackCompat(
+    resolvedMatchesProvider ? (resolved?.config ?? {}) : {},
+  );
   const resolvedProviderConfig =
     speechProvider.resolveTalkConfig?.({
       cfg: config,
@@ -819,7 +833,7 @@ export const talkHandlers: GatewayRequestHandlers = {
 
     try {
       const runtimeConfig = context.getRuntimeConfig();
-      const setup = buildTalkTtsConfig(runtimeConfig);
+      const setup = buildTalkTtsConfig(runtimeConfig, typedParams);
       if ("error" in setup) {
         respond(false, undefined, talkSpeakError(setup.reason, setup.error));
         return;

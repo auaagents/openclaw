@@ -720,6 +720,92 @@ describe("talk.speak handler", () => {
       fileExtension: ".mp3",
     });
   });
+
+  it("allows explicit speech provider requests without a configured Talk section", async () => {
+    const runtimeConfig = {
+      messages: {
+        tts: {
+          providers: {
+            microsoft: {
+              voice: "en-US-MichelleNeural",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    mocks.getSpeechProvider.mockReturnValue({
+      id: "microsoft",
+      label: "Microsoft",
+      resolveTalkConfig: ({
+        baseTtsConfig,
+        talkProviderConfig,
+      }: {
+        baseTtsConfig: Record<string, unknown>;
+        talkProviderConfig: Record<string, unknown>;
+      }) => {
+        expectRecordFields(expectRecordFields(baseTtsConfig.providers, {}).microsoft, {
+          voice: "en-US-MichelleNeural",
+        });
+        expect(talkProviderConfig).toEqual({});
+        return {
+          enabled: true,
+          voice: "en-US-MichelleNeural",
+        };
+      },
+      resolveTalkOverrides: ({ params }: { params: Record<string, unknown> }) => ({
+        voice: params.voiceId,
+      }),
+    });
+    mocks.synthesizeSpeech.mockImplementation(
+      async ({ cfg, overrides }: { cfg: OpenClawConfig; overrides: Record<string, unknown> }) => {
+        expect(cfg.messages?.tts?.provider).toBe("microsoft");
+        expect(cfg.messages?.tts?.auto).toBe("always");
+        expectRecordFields(cfg.messages?.tts?.providers?.microsoft, {
+          enabled: true,
+          voice: "en-US-MichelleNeural",
+        });
+        expectRecordFields(overrides, {
+          provider: "microsoft",
+        });
+        expectRecordFields(
+          expectRecordFields(overrides.providerOverrides, {}).microsoft as Record<string, unknown>,
+          {
+            voice: "en-US-JennyNeural",
+          },
+        );
+        return {
+          success: true,
+          provider: "microsoft",
+          audioBuffer: Buffer.from([4, 5, 6]),
+          outputFormat: "audio-24khz-48kbitrate-mono-mp3",
+          voiceCompatible: false,
+          fileExtension: ".mp3",
+        };
+      },
+    );
+
+    const respond = vi.fn();
+    await talkHandlers["talk.speak"]({
+      req: { type: "req", id: "1", method: "talk.speak" },
+      params: {
+        text: "Hello from Jenny.",
+        provider: "microsoft",
+        voiceId: "en-US-JennyNeural",
+      },
+      client: null,
+      isWebchatConnect: () => false,
+      respond: respond as never,
+      context: { getRuntimeConfig: () => runtimeConfig } as never,
+    });
+
+    expectRespondOk(respond, {
+      provider: "microsoft",
+      audioBase64: Buffer.from([4, 5, 6]).toString("base64"),
+      outputFormat: "audio-24khz-48kbitrate-mono-mp3",
+      mimeType: "audio/mpeg",
+      fileExtension: ".mp3",
+    });
+  });
 });
 
 describe("talk.config handler", () => {

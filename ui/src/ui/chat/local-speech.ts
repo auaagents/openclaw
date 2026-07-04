@@ -6,6 +6,7 @@ import { normalizeRoleForGrouping } from "./role-normalizer.ts";
 const LOCAL_SPEECH_SETTINGS_KEY = "openclaw:control-ui:local-speech:settings:v1";
 const LOCAL_SPEECH_HEARD_KEY = "openclaw:control-ui:local-speech:heard:v1";
 const MAX_HEARD_MESSAGE_IDS = 500;
+const JENNY_VOICE_WAIT_MS = 700;
 
 type SpeechRecognitionAlternativeLike = {
   transcript?: string;
@@ -205,6 +206,15 @@ export function appendDictationText(current: string, addition: string): string {
   return /[\s([{]$/.test(current) ? `${current}${addition}` : `${current} ${addition}`;
 }
 
+export function isDictationSubmitCommand(input: string): boolean {
+  const command = input
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/g, "")
+    .replace(/\s+/g, " ");
+  return /^(?:send|submit)\s+(?:(?:a|the)\s+)?(?:message|prompt)$/.test(command);
+}
+
 function messageRecord(message: unknown): Record<string, unknown> | null {
   return message && typeof message === "object" && !Array.isArray(message)
     ? (message as Record<string, unknown>)
@@ -333,14 +343,28 @@ export function rememberHeardSpeechMessageId(ids: Set<string>, id: string): void
 export function selectJennyVoice(
   voices: readonly SpeechSynthesisVoice[],
 ): SpeechSynthesisVoice | null {
+  const jenny = selectExactJennyVoice(voices);
+  if (jenny) {
+    return jenny;
+  }
+  const englishVoices = voices.filter((voice) => /^en(?:-|_)?/i.test(voice.lang));
+  const candidates = englishVoices.length > 0 ? englishVoices : voices;
+  return (
+    candidates.find((voice) => /microsoft/i.test(voice.name) && /en-us/i.test(voice.lang)) ??
+    candidates.find((voice) => /en-us/i.test(voice.lang)) ??
+    candidates[0] ??
+    null
+  );
+}
+
+function selectExactJennyVoice(
+  voices: readonly SpeechSynthesisVoice[],
+): SpeechSynthesisVoice | null {
   const englishVoices = voices.filter((voice) => /^en(?:-|_)?/i.test(voice.lang));
   const candidates = englishVoices.length > 0 ? englishVoices : voices;
   return (
     candidates.find((voice) => /microsoft/i.test(voice.name) && /jenny/i.test(voice.name)) ??
     candidates.find((voice) => /jenny/i.test(voice.name)) ??
-    candidates.find((voice) => /microsoft/i.test(voice.name) && /en-us/i.test(voice.lang)) ??
-    candidates.find((voice) => /en-us/i.test(voice.lang)) ??
-    candidates[0] ??
     null
   );
 }
@@ -349,6 +373,7 @@ export function speakWithLocalVoice(params: {
   text: string;
   onEnd?: () => void;
   onError?: (error: string) => void;
+  shouldSpeak?: () => boolean;
 }): SpeechSynthesisUtterance | null {
   const synth = globalThis.speechSynthesis;
   if (!synth) {
@@ -356,15 +381,56 @@ export function speakWithLocalVoice(params: {
     return null;
   }
   const utterance = new SpeechSynthesisUtterance(params.text);
-  utterance.voice = selectJennyVoice(synth.getVoices()) ?? null;
   utterance.rate = 1;
   utterance.pitch = 1;
-  utterance.onend = () => params.onEnd?.();
-  utterance.onerror = (event) => {
-    const error = typeof event.error === "string" ? event.error : "Speech synthesis failed.";
+  utterance.addEventListener("end", () => params.onEnd?.());
+  utterance.addEventListener("error", (event) => {
+    const speechEvent = event as SpeechSynthesisErrorEvent;
+    const error =
+      typeof speechEvent.error === "string" ? speechEvent.error : "Speech synthesis failed.";
     params.onError?.(error);
+  });
+
+  let started = false;
+  let fallbackTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  const removeVoiceListener =
+    typeof synth.removeEventListener === "function"
+      ? () => synth.removeEventListener("voiceschanged", handleVoicesChanged)
+      : () => {};
+  const cleanup = () => {
+    if (fallbackTimer !== null) {
+      globalThis.clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+    removeVoiceListener();
   };
-  synth.cancel();
-  synth.speak(utterance);
+  const startSpeaking = () => {
+    if (started) {
+      return;
+    }
+    started = true;
+    cleanup();
+    if (params.shouldSpeak && !params.shouldSpeak()) {
+      params.onEnd?.();
+      return;
+    }
+    utterance.voice = selectJennyVoice(synth.getVoices()) ?? null;
+    synth.cancel();
+    synth.speak(utterance);
+  };
+  function handleVoicesChanged() {
+    if (selectExactJennyVoice(synth.getVoices())) {
+      startSpeaking();
+    }
+  }
+
+  if (selectExactJennyVoice(synth.getVoices())) {
+    startSpeaking();
+  } else if (typeof synth.addEventListener === "function") {
+    synth.addEventListener("voiceschanged", handleVoicesChanged);
+    fallbackTimer = globalThis.setTimeout(startSpeaking, JENNY_VOICE_WAIT_MS);
+  } else {
+    startSpeaking();
+  }
   return utterance;
 }
