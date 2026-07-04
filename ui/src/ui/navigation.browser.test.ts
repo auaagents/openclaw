@@ -522,43 +522,30 @@ describe("control UI routing", () => {
     await app.updateComplete;
 
     const sections = Array.from(app.querySelectorAll<HTMLElement>(".sidebar-recent-sessions"));
-    expect(sections.map((entry) => entry.getAttribute("aria-label"))).toEqual([
-      "Favorite sessions",
-      "Recent Sessions",
-    ]);
-    expect(
-      Array.from(
-        sections[0]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
-      ).map((entry) => entry.textContent?.replace(/\s+/g, " ").trim()),
-    ).toEqual(["Work 2h ago", "Finance 1h ago"]);
+    expect(sections.map((entry) => entry.getAttribute("aria-label"))).toEqual(["Recent Sessions"]);
     const recent = Array.from(
-      sections[1]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
+      sections[0]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
     );
     expect(recent.map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "Second workspace just now",
+      "Work 2h ago",
+      "Finance 1h ago",
       "First workspace 5m ago",
     ]);
+    expect(
+      recent.map((entry) =>
+        entry
+          .closest(".sidebar-recent-session-row")
+          ?.querySelector(".sidebar-session-favorite-toggle")
+          ?.getAttribute("aria-pressed"),
+      ),
+    ).toEqual(["false", "true", "true", "false"]);
 
-    const favoritesSection = expectElement(app, ".sidebar-favorite-sessions", HTMLElement);
-    const favoritesToggle = expectElement(
-      favoritesSection,
-      ".sidebar-favorite-sessions__label",
-      HTMLButtonElement,
-    );
     const recentToggle = expectElement(
-      sections[1]!,
+      sections[0]!,
       ".sidebar-recent-sessions__label",
       HTMLButtonElement,
     );
-    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
-
-    favoritesToggle.click();
-    await app.updateComplete;
-
-    expect(app.settings.favoriteSessionsCollapsed).toBe(true);
-    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("false");
-    expect([...favoritesSection.classList]).toContain("sidebar-favorite-sessions--collapsed");
     expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
 
     recentToggle.click();
@@ -566,31 +553,57 @@ describe("control UI routing", () => {
 
     expect(app.settings.recentSessionsCollapsed).toBe(true);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("false");
-    expect([...sections[1]!.classList]).toContain("sidebar-recent-sessions--collapsed");
-    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("false");
-
-    favoritesToggle.click();
-    await app.updateComplete;
-
-    expect(app.settings.favoriteSessionsCollapsed).toBe(false);
-    expect(favoritesToggle.getAttribute("aria-expanded")).toBe("true");
-    expect([...favoritesSection.classList]).not.toContain("sidebar-favorite-sessions--collapsed");
-    expect(recentToggle.getAttribute("aria-expanded")).toBe("false");
+    expect([...sections[0]!.classList]).toContain("sidebar-recent-sessions--collapsed");
 
     recentToggle.click();
     await app.updateComplete;
 
     expect(app.settings.recentSessionsCollapsed).toBe(false);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
-    expect([...sections[1]!.classList]).not.toContain("sidebar-recent-sessions--collapsed");
+    expect([...sections[0]!.classList]).not.toContain("sidebar-recent-sessions--collapsed");
 
-    recent[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    recent[3]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await app.updateComplete;
 
     expect(app.tab).toBe("chat");
     expect(app.sessionKey).toBe("agent:main:first");
     expect(window.location.pathname).toBe("/chat");
     expect(window.location.search).toBe("?session=agent%3Amain%3Afirst");
+  });
+
+  it("toggles favorites from the sidebar recent section", async () => {
+    const app = mountApp("/overview");
+    app.connected = true;
+    app.sessionKey = "agent:main:second";
+    app.sessionsResult = createSessionsResult([
+      { key: "agent:main:first", label: "First workspace", updatedAt: Date.now() - 5 * 60_000 },
+      { key: "agent:main:second", label: "Second workspace", updatedAt: Date.now() - 30_000 },
+    ]) as typeof app.sessionsResult;
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.patch") {
+        return { ok: true };
+      }
+      if (method === "sessions.list") {
+        return app.sessionsResult;
+      }
+      return null;
+    });
+    app.client = { stop: vi.fn(), request } as unknown as typeof app.client;
+    await app.updateComplete;
+
+    const firstFavorite = app.querySelector<HTMLButtonElement>(
+      '.sidebar-recent-session-row[data-session-key="agent:main:first"] .sidebar-session-favorite-toggle',
+    );
+    expect(firstFavorite).toBeInstanceOf(HTMLButtonElement);
+    firstFavorite!.click();
+    await app.updateComplete;
+    await Promise.resolve();
+
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "agent:main:first",
+      permanentFavorite: true,
+      favoriteOrder: expect.any(Number),
+    });
   });
 
   it("keeps the provider quota pill reachable from the sidebar footer (regression #93041)", async () => {

@@ -66,6 +66,8 @@ export type SessionsProps = {
     key: string,
     patch: {
       label?: string | null;
+      permanentFavorite?: boolean | null;
+      favoriteOrder?: number | null;
       thinkingLevel?: string | null;
       fastMode?: FastMode | null;
       verboseLevel?: string | null;
@@ -258,6 +260,7 @@ function filterRows(
       : row.hasActiveRun === false
         ? "idle"
         : "";
+    const favoriteState = row.permanentFavorite === true ? "favorite bookmarked" : "";
     if (
       key.includes(q) ||
       label.includes(q) ||
@@ -266,7 +269,8 @@ function filterRows(
       runtime.includes(q) ||
       status.includes(q) ||
       goal.includes(q) ||
-      liveState.includes(q)
+      liveState.includes(q) ||
+      favoriteState.includes(q)
     ) {
       return true;
     }
@@ -448,6 +452,10 @@ function sessionDetailItems(params: {
       value: row.archived ? t("common.yes") : t("common.no"),
     });
   }
+  details.push({
+    label: "Favorite",
+    value: row.permanentFavorite === true ? t("common.yes") : t("common.no"),
+  });
   return details;
 }
 
@@ -487,6 +495,23 @@ function renderFilterToggle(params: {
       <span class="session-filter-check__label">${params.label}</span>
     </label>
   `;
+}
+
+function buildSessionFavoritePatch(row: GatewaySessionRow): {
+  permanentFavorite: boolean;
+  favoriteOrder: number | null;
+} {
+  const nextFavorite = row.permanentFavorite !== true;
+  const currentOrder =
+    typeof row.favoriteOrder === "number" &&
+    Number.isFinite(row.favoriteOrder) &&
+    row.favoriteOrder >= 0
+      ? row.favoriteOrder
+      : null;
+  return {
+    permanentFavorite: nextFavorite,
+    favoriteOrder: nextFavorite ? (currentOrder ?? Date.now()) : null,
+  };
 }
 
 export function renderSessions(props: SessionsProps) {
@@ -842,6 +867,8 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
   const canLink = row.kind !== "global";
   const captured = props.workboardSessionKeys?.has(row.key) === true;
   const captureBusy = props.workboardBusySessionKey === row.key;
+  const favorite = row.permanentFavorite === true;
+  const favoriteTitle = favorite ? "Remove from favorites" : "Add to favorites";
   const chatUrl = canLink
     ? `${pathForTab("chat", props.basePath)}?session=${encodeURIComponent(row.key)}`
     : null;
@@ -932,16 +959,38 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
         </div>
       </td>
       <td>
-        <input
-          .value=${row.label ?? ""}
-          ?disabled=${props.loading}
-          placeholder=${t("sessionsView.optionalPlaceholder")}
-          style="width: 100%; max-width: 140px; padding: 6px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm);"
-          @change=${(e: Event) => {
-            const value = normalizeOptionalString((e.target as HTMLInputElement).value) ?? null;
-            props.onPatch(row.key, { label: value });
-          }}
-        />
+        <div class="session-label-cell">
+          <input
+            .value=${row.label ?? ""}
+            ?disabled=${props.loading}
+            placeholder=${t("sessionsView.optionalPlaceholder")}
+            class="session-label-cell__input"
+            @change=${(e: Event) => {
+              const value = normalizeOptionalString((e.target as HTMLInputElement).value) ?? null;
+              props.onPatch(row.key, { label: value });
+            }}
+          />
+          ${canLink
+            ? html`
+                <button
+                  type="button"
+                  class="session-favorite-action ${favorite
+                    ? "session-favorite-action--active"
+                    : ""}"
+                  title=${favoriteTitle}
+                  aria-label=${favoriteTitle}
+                  aria-pressed=${favorite ? "true" : "false"}
+                  ?disabled=${props.loading}
+                  @click=${(event: MouseEvent) => {
+                    event.stopPropagation();
+                    props.onPatch(row.key, buildSessionFavoritePatch(row));
+                  }}
+                >
+                  ${icons.bookmark}
+                </button>
+              `
+            : nothing}
+        </div>
       </td>
       <td>
         <span class="data-table-badge ${badgeClass}">${row.kind}</span>

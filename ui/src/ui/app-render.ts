@@ -580,17 +580,18 @@ function compareSidebarFavoriteSessions(a: GatewaySessionRow, b: GatewaySessionR
   return a.key.localeCompare(b.key);
 }
 
-function resolveSidebarFavoriteSessions(state: AppViewState): GatewaySessionRow[] {
-  return resolveSidebarSessionRows(state)
-    .filter((row) => row.permanentFavorite === true && !isActiveSidebarSessionRow(state, row.key))
-    .toSorted(compareSidebarFavoriteSessions);
-}
-
 function resolveSidebarRecentSessions(state: AppViewState): GatewaySessionRow[] {
-  return resolveSidebarSessionRows(state)
-    .filter((row) => row.permanentFavorite !== true && !isActiveSidebarSessionRow(state, row.key))
+  const rows = resolveSidebarSessionRows(state).filter(
+    (row) => !isActiveSidebarSessionRow(state, row.key),
+  );
+  const favorites = rows
+    .filter((row) => row.permanentFavorite === true)
+    .toSorted(compareSidebarFavoriteSessions);
+  const recent = rows
+    .filter((row) => row.permanentFavorite !== true)
     .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     .slice(0, 9);
+  return [...favorites, ...recent];
 }
 
 // Session keys have alias spellings ("main" vs "agent:<id>:main", and "global"
@@ -666,7 +667,6 @@ function resolveSidebarActiveRow(state: AppViewState): GatewaySessionRow | null 
 // mobile drawer), not the raw setting: an open drawer must show the sessions.
 function renderSidebarSessions(state: AppViewState, collapsed: boolean) {
   const busy = isSidebarSessionBusy(state);
-  const favorites = collapsed ? [] : resolveSidebarFavoriteSessions(state);
   const recent = collapsed ? [] : resolveSidebarRecentSessions(state);
   const activeRow = collapsed ? null : resolveSidebarActiveRow(state);
   const newSessionDisabled = !state.connected || state.sessionsLoading || busy || !state.client;
@@ -700,40 +700,6 @@ function renderSidebarSessions(state: AppViewState, collapsed: boolean) {
               >${t("chat.runControls.newSession")}</span
             >`}
       </button>
-      ${collapsed || favorites.length === 0
-        ? nothing
-        : html`
-            <div
-              class="sidebar-recent-sessions sidebar-favorite-sessions ${state.settings
-                .favoriteSessionsCollapsed
-                ? "sidebar-recent-sessions--collapsed sidebar-favorite-sessions--collapsed"
-                : ""}"
-              aria-label="Favorite sessions"
-            >
-              <button
-                class="sidebar-recent-sessions__label sidebar-favorite-sessions__label"
-                type="button"
-                aria-expanded=${String(!state.settings.favoriteSessionsCollapsed)}
-                @click=${() => {
-                  state.applySettings({
-                    ...state.settings,
-                    favoriteSessionsCollapsed: !state.settings.favoriteSessionsCollapsed,
-                  });
-                }}
-              >
-                <span
-                  class="sidebar-recent-sessions__label-text sidebar-favorite-sessions__label-text"
-                  >Favorites</span
-                >
-                <span class="sidebar-recent-sessions__chevron sidebar-favorite-sessions__chevron">
-                  ${icons.chevronDown}
-                </span>
-              </button>
-              <div class="sidebar-recent-sessions__list sidebar-favorite-sessions__list">
-                ${favorites.map((row) => renderSidebarRecentSession(state, row))}
-              </div>
-            </div>
-          `}
       ${collapsed
         ? nothing
         : html`
@@ -799,39 +765,96 @@ function hasModifierKey(event: MouseEvent): boolean {
   return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 }
 
+function buildSessionFavoritePatch(row: GatewaySessionRow): {
+  permanentFavorite: boolean;
+  favoriteOrder: number | null;
+} {
+  const nextFavorite = row.permanentFavorite !== true;
+  const currentOrder =
+    typeof row.favoriteOrder === "number" &&
+    Number.isFinite(row.favoriteOrder) &&
+    row.favoriteOrder >= 0
+      ? row.favoriteOrder
+      : null;
+  return {
+    permanentFavorite: nextFavorite,
+    favoriteOrder: nextFavorite ? (currentOrder ?? Date.now()) : null,
+  };
+}
+
+function canFavoriteSidebarSession(row: GatewaySessionRow): boolean {
+  return row.kind === "direct" || row.kind === "group";
+}
+
 function renderSidebarRecentSession(state: AppViewState, row: GatewaySessionRow) {
   const active = isActiveSidebarSessionRow(state, row.key);
   const label = resolveSessionDisplayName(row.key, row);
   const meta = row.updatedAt ? formatRelativeTimestamp(row.updatedAt) : "";
   const href = `${pathForTab("chat", state.basePath)}?session=${encodeURIComponent(row.key)}`;
+  const favorite = row.permanentFavorite === true;
+  const canFavorite = canFavoriteSidebarSession(row);
+  const favoriteTitle = favorite ? "Remove from favorites" : "Add to favorites";
   return html`
-    <a
-      href=${href}
-      class="sidebar-recent-session ${active ? "sidebar-recent-session--active" : ""}"
+    <div
+      class="sidebar-recent-session-row ${favorite ? "sidebar-recent-session-row--favorite" : ""}"
       data-session-key=${row.key}
-      title=${`${label} · ${row.key}`}
-      @click=${(event: MouseEvent) => {
-        if (event.defaultPrevented || event.button !== 0 || hasModifierKey(event)) {
-          return;
-        }
-        event.preventDefault();
-        if (!isActiveSidebarSessionRow(state, row.key)) {
-          switchChatSession(state, row.key);
-        }
-        state.setTab("chat" as import("./navigation.ts").Tab);
-      }}
     >
-      <span class="sidebar-recent-session__body">
-        <span class="sidebar-recent-session__name">${label}</span>
-        ${meta ? html`<span class="sidebar-recent-session__meta">${meta}</span>` : nothing}
-      </span>
-      ${row.hasActiveRun
-        ? html`<span
-            class="sidebar-recent-session__live"
-            aria-label=${t("sessions.sessionDetails.activeRun")}
-          ></span>`
+      <a
+        href=${href}
+        class="sidebar-recent-session ${active ? "sidebar-recent-session--active" : ""}"
+        data-session-key=${row.key}
+        title=${`${label} · ${row.key}`}
+        @click=${(event: MouseEvent) => {
+          if (event.defaultPrevented || event.button !== 0 || hasModifierKey(event)) {
+            return;
+          }
+          event.preventDefault();
+          if (!isActiveSidebarSessionRow(state, row.key)) {
+            switchChatSession(state, row.key);
+          }
+          state.setTab("chat" as import("./navigation.ts").Tab);
+        }}
+      >
+        <span class="sidebar-recent-session__body">
+          <span class="sidebar-recent-session__name">${label}</span>
+          ${favorite
+            ? html`
+                <span class="sidebar-recent-session__favorite-tag" title="Favorite">
+                  ${icons.bookmark}
+                </span>
+              `
+            : nothing}
+          ${meta ? html`<span class="sidebar-recent-session__meta">${meta}</span>` : nothing}
+        </span>
+        ${row.hasActiveRun
+          ? html`<span
+              class="sidebar-recent-session__live"
+              aria-label=${t("sessions.sessionDetails.activeRun")}
+            ></span>`
+          : nothing}
+      </a>
+      ${canFavorite
+        ? html`
+            <button
+              type="button"
+              class="sidebar-session-favorite-toggle ${favorite
+                ? "sidebar-session-favorite-toggle--active"
+                : ""}"
+              title=${favoriteTitle}
+              aria-label=${favoriteTitle}
+              aria-pressed=${favorite ? "true" : "false"}
+              ?disabled=${state.sessionsLoading || !state.client || !state.connected}
+              @click=${(event: MouseEvent) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void patchSession(state, row.key, buildSessionFavoritePatch(row));
+              }}
+            >
+              ${icons.bookmark}
+            </button>
+          `
         : nothing}
-    </a>
+    </div>
   `;
 }
 

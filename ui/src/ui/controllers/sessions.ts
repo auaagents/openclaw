@@ -1270,6 +1270,8 @@ export async function patchSession(
   key: string,
   patch: {
     label?: string | null;
+    permanentFavorite?: boolean | null;
+    favoriteOrder?: number | null;
     thinkingLevel?: string | null;
     fastMode?: FastMode | null;
     verboseLevel?: string | null;
@@ -1285,6 +1287,8 @@ export async function patchSession(
   };
   for (const field of [
     "label",
+    "permanentFavorite",
+    "favoriteOrder",
     "thinkingLevel",
     "fastMode",
     "verboseLevel",

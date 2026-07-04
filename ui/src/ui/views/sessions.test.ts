@@ -179,6 +179,60 @@ describe("sessions view", () => {
     expect(container.querySelector('button[title="Open Workboard card"]')).not.toBeNull();
   });
 
+  it("toggles favorite status beside the session label", async () => {
+    const container = document.createElement("div");
+    const onPatch = vi.fn();
+    render(
+      renderSessions({
+        ...buildProps(
+          buildResult({
+            key: "agent:main:dashboard:1",
+            kind: "direct",
+            label: "Sprint plan",
+            updatedAt: Date.now(),
+          }),
+        ),
+        onPatch,
+      }),
+      container,
+    );
+    await Promise.resolve();
+
+    const favorite = container.querySelector<HTMLButtonElement>(".session-favorite-action");
+    expect(favorite).toBeInstanceOf(HTMLButtonElement);
+    expect(favorite?.getAttribute("aria-pressed")).toBe("false");
+    favorite!.click();
+
+    expect(onPatch).toHaveBeenCalledWith("agent:main:dashboard:1", {
+      permanentFavorite: true,
+      favoriteOrder: expect.any(Number),
+    });
+  });
+
+  it("renders favorited sessions as active label actions", async () => {
+    const container = document.createElement("div");
+    render(
+      renderSessions(
+        buildProps(
+          buildResult({
+            key: "agent:main:dashboard:1",
+            kind: "direct",
+            label: "Sprint plan",
+            permanentFavorite: true,
+            favoriteOrder: 10,
+            updatedAt: Date.now(),
+          }),
+        ),
+      ),
+      container,
+    );
+    await Promise.resolve();
+
+    const favorite = container.querySelector<HTMLButtonElement>(".session-favorite-action");
+    expect(favorite?.getAttribute("aria-pressed")).toBe("true");
+    expect(favorite?.getAttribute("title")).toBe("Remove from favorites");
+  });
+
   it("uses one short styled tooltip per session filter", async () => {
     const container = document.createElement("div");
     render(

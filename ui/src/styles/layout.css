@@ -801,11 +801,19 @@
   stroke-linejoin: round;
 }
 
+.sidebar-recent-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 2px;
+}
+
 .sidebar-recent-session {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   min-height: 34px;
   padding: 5px 9px;
   border: 1px solid transparent;
@@ -859,6 +867,74 @@
   font-variant-numeric: tabular-nums;
   color: var(--muted);
   opacity: 0.85;
+}
+
+.sidebar-recent-session__favorite-tag,
+.sidebar-session-favorite-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.sidebar-recent-session__favorite-tag {
+  flex: 0 0 auto;
+  color: var(--warn);
+  opacity: 0.88;
+}
+
+.sidebar-recent-session__favorite-tag svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.8px;
+}
+
+.sidebar-session-favorite-toggle {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.72;
+  transition:
+    background var(--duration-fast) ease,
+    border-color var(--duration-fast) ease,
+    color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
+}
+
+.sidebar-session-favorite-toggle:hover:not(:disabled),
+.sidebar-session-favorite-toggle:focus-visible {
+  background: color-mix(in srgb, var(--bg-hover) 78%, transparent);
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  color: var(--text);
+  opacity: 1;
+}
+
+.sidebar-session-favorite-toggle--active {
+  color: var(--warn);
+  opacity: 1;
+}
+
+.sidebar-session-favorite-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8px;
+}
+
+.sidebar-session-favorite-toggle--active svg {
+  fill: currentColor;
+}
+
+.sidebar-session-favorite-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .sidebar-recent-session__live {
