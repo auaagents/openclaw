@@ -174,6 +174,16 @@ export type AppViewState = {
   resetRealtimeTalkConversation?: () => void;
   updateRealtimeTalkOptions: (next: Partial<AppViewState["realtimeTalkOptions"]>) => void;
   fetchRealtimeTalkCatalog: () => Promise<void>;
+  localDictationEnabled: boolean;
+  localDictationInterim: string | null;
+  localDictationError: string | null;
+  localTtsEnabled: boolean;
+  localTtsSpeakingMessageId: string | null;
+  localTtsError: string | null;
+  toggleLocalDictation: () => void;
+  toggleLocalTts: () => void;
+  readLocalMessageGroup: (group: { key: string; messages: unknown[] }) => void;
+  isReadingLocalMessageGroup: (groupKey: string) => boolean;
   chatManualRefreshInFlight: boolean;
   chatHeaderControlsHidden: boolean;
   chatMobileControlsOpen: boolean;

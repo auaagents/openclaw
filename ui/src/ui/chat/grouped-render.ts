@@ -24,6 +24,7 @@ import { resolveLocalUserName } from "../user-identity.ts";
 export { resolveAssistantTextAvatar } from "../views/agents-utils.ts";
 import { renderChatAvatar } from "./chat-avatar.ts";
 import { renderCopyAsMarkdownButton } from "./copy-as-markdown.ts";
+import { speechTextForMessages } from "./local-speech.ts";
 import { extractThinkingCached, formatReasoningMarkdown } from "./message-extract.ts";
 import { isToolResultMessage, normalizeMessage } from "./message-normalizer.ts";
 import { normalizeRoleForGrouping } from "./role-normalizer.ts";
@@ -568,6 +569,8 @@ type RenderMessageGroupOptions = {
   allowExternalEmbedUrls?: boolean;
   contextWindow?: number | null;
   onDelete?: () => void;
+  onReadMessageGroup?: (group: { key: string; messages: unknown[] }) => void;
+  isReadingMessageGroup?: (groupKey: string) => boolean;
 };
 
 type GroupedMessageRenderOptions = Parameters<typeof renderGroupedMessage>[2];
@@ -629,6 +632,17 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
 
   // Aggregate usage/cost/model across all messages in the group
   const meta = extractGroupMeta(group, opts.contextWindow ?? null);
+  const groupRawMessages = group.messages.map((item) => item.message);
+  const canReadGroup =
+    normalizedRole !== "tool" &&
+    !group.isStreaming &&
+    Boolean(opts.onReadMessageGroup && speechTextForMessages(groupRawMessages));
+  const readButton = canReadGroup
+    ? renderReadButton({
+        active: opts.isReadingMessageGroup?.(group.key) ?? false,
+        onRead: () => opts.onReadMessageGroup?.({ key: group.key, messages: groupRawMessages }),
+      })
+    : nothing;
 
   if (normalizedRole === "tool" && opts.showToolCalls === false) {
     return nothing;
@@ -752,7 +766,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
         )}
         <div class="chat-group-footer">
           <span class="chat-sender-name">${who}</span>
-          ${renderChatTimestamp(group.timestamp)} ${renderMessageMeta(meta)}
+          ${renderChatTimestamp(group.timestamp)} ${renderMessageMeta(meta)} ${readButton}
           ${opts.onDelete
             ? renderDeleteButton(opts.onDelete, normalizedRole === "user" ? "left" : "right")
             : nothing}
@@ -1053,6 +1067,23 @@ function renderDeleteButton(onDelete: () => void, side: DeleteConfirmSide) {
         ${icons.trash ?? icons.x}
       </button>
     </span>
+  `;
+}
+
+function renderReadButton(params: { active: boolean; onRead: () => void }) {
+  const label = params.active ? "Stop reading" : "Read message";
+  return html`
+    <button
+      class="chat-group-read ${params.active ? "chat-group-read--active" : ""}"
+      type="button"
+      title=${label}
+      aria-label=${label}
+      aria-pressed=${params.active ? "true" : "false"}
+      @click=${params.onRead}
+    >
+      ${params.active ? icons.volumeOff : icons.volume2}
+      <span class="chat-group-read__label">Read</span>
+    </button>
   `;
 }
 

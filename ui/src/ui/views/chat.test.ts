@@ -948,6 +948,25 @@ describe("chat goal status", () => {
 });
 
 describe("chat composer workbench", () => {
+  it("renders local dictation and read-aloud toolbar toggles", () => {
+    const onToggleLocalDictation = vi.fn();
+    const onToggleLocalTts = vi.fn();
+    const container = renderChatView({
+      onToggleLocalDictation,
+      onToggleLocalTts,
+    });
+
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Start dictation"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Read aloud"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onToggleLocalDictation).toHaveBeenCalledOnce();
+    expect(onToggleLocalTts).toHaveBeenCalledOnce();
+  });
+
   it("renders session controls in the composer and workspace files in the expanded rail", () => {
     const onToggleCollapsed = vi.fn();
     const onRefresh = vi.fn();

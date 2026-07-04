@@ -78,6 +78,20 @@ import { normalizeAssistantIdentity } from "./assistant-identity.ts";
 import { restoreChatComposerState } from "./chat/composer-persistence.ts";
 import { exportChatMarkdown } from "./chat/export.ts";
 import {
+  appendDictationText,
+  collectSpeechRecognitionText,
+  createBrowserSpeechRecognition,
+  findLatestSpeechMessage,
+  formatDictationTranscript,
+  loadHeardSpeechMessageIds,
+  loadLocalSpeechSettings,
+  rememberHeardSpeechMessageId,
+  saveLocalSpeechSettings,
+  speakWithLocalVoice,
+  speechTextForMessages,
+  type BrowserSpeechRecognition,
+} from "./chat/local-speech.ts";
+import {
   reconcileRealtimeTalkCatalogSelection,
   type RealtimeTalkCatalogProvider,
 } from "./chat/realtime-talk-catalog.ts";
@@ -175,7 +189,9 @@ declare global {
 
 const bootAssistantIdentity = normalizeAssistantIdentity({});
 const bootLocalUserIdentity = loadLocalUserIdentity();
+const bootLocalSpeechSettings = loadLocalSpeechSettings();
 const FULL_MESSAGE_SIDEBAR_MAX_CHARS = 500_000;
+const LOCAL_TTS_NEW_MESSAGE_SKEW_MS = 5_000;
 
 function isSidebarMarkdownLike(content: SidebarContent | null): content is SidebarContent {
   return Boolean(content && (content.kind === "markdown" || content.kind === "canvas"));
@@ -346,6 +362,17 @@ export class OpenClawApp extends LitElement {
   private realtimeTalkSession: RealtimeTalkSession | null = null;
   private realtimeTalkConversationState: RealtimeTalkConversationState =
     createRealtimeTalkConversationState();
+  @state() localDictationEnabled = bootLocalSpeechSettings.dictationEnabled;
+  @state() localDictationInterim: string | null = null;
+  @state() localDictationError: string | null = null;
+  @state() localTtsEnabled = bootLocalSpeechSettings.ttsEnabled;
+  @state() localTtsSpeakingMessageId: string | null = null;
+  @state() localTtsError: string | null = null;
+  private localSpeechRecognition: BrowserSpeechRecognition | null = null;
+  private localSpeechRecognitionRestartTimer: number | null = null;
+  private localTtsActivatedAtMs = bootLocalSpeechSettings.ttsEnabled ? Date.now() : 0;
+  private localTtsHeardMessageIds = loadHeardSpeechMessageIds();
+  private localTtsObservedLatestBySession = new Map<string, string>();
   private nativeBridgeCleanup: (() => void) | null = null;
   @state() chatManualRefreshInFlight = false;
   @state() chatHeaderControlsHidden = false;
@@ -876,6 +903,9 @@ export class OpenClawApp extends LitElement {
 
   protected override firstUpdated() {
     handleFirstUpdated(this as unknown as Parameters<typeof handleFirstUpdated>[0]);
+    if (this.localDictationEnabled) {
+      this.startLocalDictation({ preserveEnabled: true });
+    }
   }
 
   protected override willUpdate() {
@@ -902,6 +932,8 @@ export class OpenClawApp extends LitElement {
       this.sessionSwitchFlashTimer = null;
     }
     this.chatMobileControlsTrigger = null;
+    this.stopLocalDictation({ persist: false });
+    globalThis.speechSynthesis?.cancel();
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
     super.disconnectedCallback();
   }
@@ -919,6 +951,7 @@ export class OpenClawApp extends LitElement {
     ) {
       void loadSkillWorkshopProposals(this, { force: true });
     }
+    this.syncLocalTtsAutoRead(changed);
     if (!changed.has("sessionKey") || this.agentsPanel !== "tools") {
       return;
     }
@@ -1358,6 +1391,229 @@ export class OpenClawApp extends LitElement {
   resetRealtimeTalkConversation() {
     this.realtimeTalkConversationState = createRealtimeTalkConversationState();
     this.realtimeTalkConversation = [];
+  }
+
+  private saveLocalSpeechSettings() {
+    saveLocalSpeechSettings({
+      dictationEnabled: this.localDictationEnabled,
+      ttsEnabled: this.localTtsEnabled,
+    });
+  }
+
+  private clearLocalDictationRestartTimer() {
+    if (this.localSpeechRecognitionRestartTimer !== null) {
+      window.clearTimeout(this.localSpeechRecognitionRestartTimer);
+      this.localSpeechRecognitionRestartTimer = null;
+    }
+  }
+
+  private startLocalDictation(options: { preserveEnabled?: boolean } = {}) {
+    if (this.localSpeechRecognition) {
+      return;
+    }
+    this.clearLocalDictationRestartTimer();
+    const recognition = createBrowserSpeechRecognition();
+    if (!recognition) {
+      this.localDictationEnabled = false;
+      this.localDictationInterim = null;
+      this.localDictationError = "Local dictation needs Chrome or Edge speech recognition support.";
+      this.saveLocalSpeechSettings();
+      return;
+    }
+    recognition.onresult = (event) => {
+      const { finalText, interimText } = collectSpeechRecognitionText(event);
+      this.localDictationInterim = interimText || null;
+      if (!finalText) {
+        return;
+      }
+      const addition = formatDictationTranscript(finalText, this.chatMessage);
+      const next = appendDictationText(this.chatMessage, addition);
+      this.localDictationInterim = null;
+      if (next !== this.chatMessage) {
+        this.handleChatDraftChange(next);
+      }
+    };
+    recognition.onerror = (event) => {
+      const message = event.message?.trim() || event.error?.trim() || "Dictation stopped.";
+      this.localDictationError = message;
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        this.localDictationEnabled = false;
+        this.localSpeechRecognition = null;
+        this.saveLocalSpeechSettings();
+      }
+    };
+    recognition.onend = () => {
+      if (this.localSpeechRecognition !== recognition || !this.localDictationEnabled) {
+        return;
+      }
+      this.localSpeechRecognitionRestartTimer = window.setTimeout(() => {
+        this.localSpeechRecognitionRestartTimer = null;
+        if (this.localSpeechRecognition !== recognition || !this.localDictationEnabled) {
+          return;
+        }
+        try {
+          recognition.start();
+        } catch (error) {
+          this.localDictationError = error instanceof Error ? error.message : String(error);
+          this.localDictationEnabled = false;
+          this.localSpeechRecognition = null;
+          this.saveLocalSpeechSettings();
+        }
+      }, 250);
+    };
+    this.localSpeechRecognition = recognition;
+    this.localDictationError = null;
+    this.localDictationInterim = null;
+    this.localDictationEnabled = true;
+    try {
+      recognition.start();
+      this.saveLocalSpeechSettings();
+    } catch (error) {
+      this.localDictationError = error instanceof Error ? error.message : String(error);
+      this.localSpeechRecognition = null;
+      if (!options.preserveEnabled) {
+        this.localDictationEnabled = false;
+      }
+      this.saveLocalSpeechSettings();
+    }
+  }
+
+  private stopLocalDictation(options: { persist?: boolean } = {}) {
+    this.clearLocalDictationRestartTimer();
+    const recognition = this.localSpeechRecognition;
+    this.localSpeechRecognition = null;
+    this.localDictationEnabled = false;
+    this.localDictationInterim = null;
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try {
+        recognition.stop();
+      } catch {}
+    }
+    if (options.persist !== false) {
+      this.saveLocalSpeechSettings();
+    }
+  }
+
+  toggleLocalDictation() {
+    if (this.localDictationEnabled) {
+      this.stopLocalDictation();
+      return;
+    }
+    this.startLocalDictation();
+  }
+
+  private speakLocalText(messageId: string, text: string) {
+    if (this.localTtsSpeakingMessageId === messageId) {
+      globalThis.speechSynthesis?.cancel();
+      this.localTtsSpeakingMessageId = null;
+      return;
+    }
+    this.localTtsError = null;
+    const utterance = speakWithLocalVoice({
+      text,
+      onEnd: () => {
+        if (this.localTtsSpeakingMessageId === messageId) {
+          this.localTtsSpeakingMessageId = null;
+        }
+      },
+      onError: (error) => {
+        this.localTtsError = error;
+        if (this.localTtsSpeakingMessageId === messageId) {
+          this.localTtsSpeakingMessageId = null;
+        }
+      },
+    });
+    if (!utterance) {
+      return;
+    }
+    this.localTtsSpeakingMessageId = messageId;
+    rememberHeardSpeechMessageId(this.localTtsHeardMessageIds, messageId);
+  }
+
+  private readLatestLocalTtsMessage(options: { force?: boolean } = {}) {
+    const candidate = findLatestSpeechMessage(this.sessionKey, this.chatMessages, {
+      roles: ["assistant"],
+    });
+    if (!candidate) {
+      if (options.force) {
+        this.localTtsError = "No assistant message to read yet.";
+      }
+      return;
+    }
+    this.localTtsObservedLatestBySession.set(this.sessionKey, candidate.id);
+    if (!options.force && this.localTtsHeardMessageIds.has(candidate.id)) {
+      return;
+    }
+    this.speakLocalText(candidate.id, candidate.text);
+  }
+
+  toggleLocalTts() {
+    if (this.localTtsEnabled) {
+      this.localTtsEnabled = false;
+      this.localTtsError = null;
+      this.localTtsSpeakingMessageId = null;
+      globalThis.speechSynthesis?.cancel();
+      this.saveLocalSpeechSettings();
+      return;
+    }
+    this.localTtsEnabled = true;
+    this.localTtsActivatedAtMs = Date.now();
+    this.saveLocalSpeechSettings();
+    this.readLatestLocalTtsMessage({ force: true });
+  }
+
+  readLocalMessageGroup(group: { key: string; messages: unknown[] }) {
+    const text = speechTextForMessages(group.messages);
+    if (!text) {
+      this.localTtsError = "No readable text in this message.";
+      return;
+    }
+    const messageId = `${this.sessionKey}:${group.key}`;
+    this.localTtsObservedLatestBySession.set(this.sessionKey, messageId);
+    this.speakLocalText(messageId, text);
+  }
+
+  isReadingLocalMessageGroup(groupKey: string): boolean {
+    return this.localTtsSpeakingMessageId === `${this.sessionKey}:${groupKey}`;
+  }
+
+  private syncLocalTtsAutoRead(changed: Map<PropertyKey, unknown>) {
+    if (
+      !this.localTtsEnabled ||
+      this.tab !== "chat" ||
+      !(
+        changed.has("chatMessages") ||
+        changed.has("sessionKey") ||
+        changed.has("chatLoading") ||
+        changed.has("tab")
+      )
+    ) {
+      return;
+    }
+    const candidate = findLatestSpeechMessage(this.sessionKey, this.chatMessages, {
+      roles: ["assistant"],
+    });
+    if (!candidate) {
+      return;
+    }
+    const previousObserved = this.localTtsObservedLatestBySession.get(this.sessionKey);
+    if (previousObserved === candidate.id) {
+      return;
+    }
+    this.localTtsObservedLatestBySession.set(this.sessionKey, candidate.id);
+    if (this.localTtsHeardMessageIds.has(candidate.id)) {
+      return;
+    }
+    const isFresh =
+      candidate.timestamp !== null &&
+      candidate.timestamp >= this.localTtsActivatedAtMs - LOCAL_TTS_NEW_MESSAGE_SKEW_MS;
+    if (!isFresh) {
+      return;
+    }
+    this.speakLocalText(candidate.id, candidate.text);
   }
 
   async steerQueuedChatMessage(id: string) {

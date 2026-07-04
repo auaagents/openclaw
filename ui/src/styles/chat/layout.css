@@ -1019,10 +1019,23 @@
   background: color-mix(in srgb, var(--danger, #ef4444) 14%, transparent);
 }
 
+.agent-chat__input-btn--local-speech {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .agent-chat__talk-status {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: var(--text);
+}
+
+.agent-chat__local-speech-status--error {
+  color: var(--danger);
+}
+
+.agent-chat__local-speech-status--listening {
   color: var(--text);
 }
 

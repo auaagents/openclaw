@@ -141,6 +141,16 @@ export type ChatProps = {
     prefixPaddingMs: string;
     reasoningEffort: string;
   };
+  localDictationEnabled?: boolean;
+  localDictationInterim?: string | null;
+  localDictationError?: string | null;
+  localTtsEnabled?: boolean;
+  localTtsSpeakingMessageId?: string | null;
+  localTtsError?: string | null;
+  onToggleLocalDictation?: () => void;
+  onToggleLocalTts?: () => void;
+  onReadMessageGroup?: (group: { key: string; messages: unknown[] }) => void;
+  isReadingMessageGroup?: (groupKey: string) => boolean;
   connected: boolean;
   canSend: boolean;
   disabledReason: string | null;
@@ -2473,6 +2483,8 @@ export function renderChat(props: ChatProps) {
                     embedSandboxMode: props.embedSandboxMode ?? "scripts",
                     allowExternalEmbedUrls: props.allowExternalEmbedUrls ?? false,
                     contextWindow: threadContextWindow,
+                    onReadMessageGroup: props.onReadMessageGroup,
+                    isReadingMessageGroup: props.isReadingMessageGroup,
                     onDelete: () => {
                       deleted.delete(item.key);
                       requestUpdate();
@@ -2701,6 +2713,10 @@ export function renderChat(props: ChatProps) {
   const slashMenuVisible = isSlashMenuVisible();
   const activeSlashMenuOptionId = getActiveSlashMenuOptionId();
   const activeSlashMenuOptionLabel = getActiveSlashMenuOptionLabel();
+  const localSpeechStatus =
+    props.localDictationInterim ?? props.localDictationError ?? props.localTtsError ?? null;
+  const localSpeechStatusTone =
+    props.localDictationError || props.localTtsError ? "error" : "listening";
   const chatColumnFooter = html`
     ${renderChatQueue({
       queue: props.queue,
@@ -2795,6 +2811,16 @@ export function renderChat(props: ChatProps) {
             </div>
           `
         : nothing}
+      ${localSpeechStatus
+        ? html`
+            <div
+              class="agent-chat__stt-interim agent-chat__local-speech-status agent-chat__local-speech-status--${localSpeechStatusTone}"
+              role=${localSpeechStatusTone === "error" ? "alert" : "status"}
+            >
+              <span>${localSpeechStatus}</span>
+            </div>
+          `
+        : nothing}
 
       <div class="agent-chat__composer-combobox">
         <textarea
@@ -2847,6 +2873,45 @@ export function renderChat(props: ChatProps) {
             <span class="agent-chat__control-label">${t("chat.composer.attachFile")}</span>
           </button>
 
+          ${props.onToggleLocalDictation
+            ? html`
+                <button
+                  type="button"
+                  class="agent-chat__input-btn ${props.localDictationEnabled
+                    ? "agent-chat__input-btn--local-speech"
+                    : ""}"
+                  @click=${props.onToggleLocalDictation}
+                  title=${props.localDictationEnabled ? "Stop dictation" : "Start dictation"}
+                  aria-label=${props.localDictationEnabled ? "Stop dictation" : "Start dictation"}
+                  aria-pressed=${props.localDictationEnabled ? "true" : "false"}
+                  ?disabled=${!props.connected}
+                >
+                  ${props.localDictationEnabled ? icons.micOff : icons.mic}
+                  <span class="agent-chat__control-label"
+                    >${props.localDictationEnabled ? "Stop dictation" : "Dictate"}</span
+                  >
+                </button>
+              `
+            : nothing}
+          ${props.onToggleLocalTts
+            ? html`
+                <button
+                  type="button"
+                  class="agent-chat__input-btn ${props.localTtsEnabled
+                    ? "agent-chat__input-btn--local-speech"
+                    : ""}"
+                  @click=${props.onToggleLocalTts}
+                  title=${props.localTtsEnabled ? "Stop read aloud" : "Read aloud"}
+                  aria-label=${props.localTtsEnabled ? "Stop read aloud" : "Read aloud"}
+                  aria-pressed=${props.localTtsEnabled ? "true" : "false"}
+                >
+                  ${props.localTtsEnabled ? icons.volume2 : icons.volumeOff}
+                  <span class="agent-chat__control-label"
+                    >${props.localTtsEnabled ? "Stop read aloud" : "Read aloud"}</span
+                  >
+                </button>
+              `
+            : nothing}
           ${props.onToggleRealtimeTalk
             ? html`
                 <button

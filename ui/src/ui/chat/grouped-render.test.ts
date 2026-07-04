@@ -986,6 +986,32 @@ describe("grouped chat rendering", () => {
     expect(container.querySelector(".chat-group-footer")).toBeNull();
   });
 
+  it("renders a footer Read button for readable message groups", () => {
+    const container = document.createElement("div");
+    const onReadMessageGroup = vi.fn();
+    const message = { role: "assistant", content: "Read this reply", timestamp: 1000 };
+
+    renderAssistantMessages(container, [message], { onReadMessageGroup });
+
+    const button = expectElement(container, ".chat-group-read", HTMLButtonElement);
+    expect(button.textContent?.trim()).toBe("Read");
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onReadMessageGroup).toHaveBeenCalledWith({
+      key: "assistant-group",
+      messages: [message],
+    });
+
+    renderAssistantMessages(container, [message], {
+      onReadMessageGroup,
+      isReadingMessageGroup: (key) => key === "assistant-group",
+    });
+
+    expect(container.querySelector(".chat-group-read")?.getAttribute("aria-label")).toBe(
+      "Stop reading",
+    );
+  });
+
   it("renders configured local user names", () => {
     const renderUser = (opts: Partial<RenderMessageGroupOptions>) => {
       const container = document.createElement("div");
