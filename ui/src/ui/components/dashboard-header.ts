@@ -11,6 +11,7 @@ export class DashboardHeader extends LitElement {
   @property() tab: Tab = "overview";
   @property() basePath = "";
   @property() agentLabel = "";
+  @property() pageLabel = "";
 
   private readonly handleOverviewClick = (event: MouseEvent) => {
     if (
@@ -30,7 +31,7 @@ export class DashboardHeader extends LitElement {
   };
 
   override render() {
-    const label = titleForTab(this.tab);
+    const label = this.pageLabel.trim() || titleForTab(this.tab);
     const rawAgentLabel = this.agentLabel.trim();
     // Skip the agent crumb when it repeats the brand crumb ("OpenClaw › OpenClaw › …").
     const agentLabel = rawAgentLabel.toLowerCase() === "openclaw" ? "" : rawAgentLabel;

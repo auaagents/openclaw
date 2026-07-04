@@ -34,6 +34,7 @@ import { icons } from "./icons.ts";
 import { iconForTab, isSettingsTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import { isCronSessionKey, parseSessionKey, resolveSessionDisplayName } from "./session-display.ts";
 import {
+  uiSessionRowMatchesSelectedChat,
   isSessionKeyTiedToAgent,
   normalizeAgentId,
   parseAgentSessionKey,
@@ -94,8 +95,16 @@ export function resolveAssistantAttachmentAuthToken(
 }
 
 export function resolveDashboardHeaderContext(
-  state: Pick<AppViewState, "agentsList" | "sessionKey">,
-): { agentLabel: string } {
+  state: Pick<
+    AppViewState,
+    | "agentsList"
+    | "chatAgentSessionRowsByAgent"
+    | "chatSessionPickerResult"
+    | "sessionKey"
+    | "sessionsResult"
+    | "tab"
+  >,
+): { agentLabel: string; pageLabel: string } {
   const agentId = resolveAgentIdFromSessionKey(state.sessionKey);
   const agent = state.agentsList?.agents.find(
     (entry) => normalizeLowercaseStringOrEmpty(entry.id) === agentId,
@@ -104,7 +113,76 @@ export function resolveDashboardHeaderContext(
     normalizeOptionalString(agent?.identity?.name) ??
     normalizeOptionalString(agent?.name) ??
     agentId;
-  return { agentLabel };
+  return { agentLabel, pageLabel: resolveActivePageLabel(state) };
+}
+
+function findActiveSessionRow(
+  state: Pick<
+    AppViewState,
+    | "agentsList"
+    | "chatAgentSessionRowsByAgent"
+    | "chatSessionPickerResult"
+    | "sessionKey"
+    | "sessionsResult"
+  >,
+): SessionsListResult["sessions"][number] | null {
+  const rows = [
+    ...(state.sessionsResult?.sessions ?? []),
+    ...(state.chatSessionPickerResult?.sessions ?? []),
+    ...Object.values(state.chatAgentSessionRowsByAgent ?? {}).flat(),
+  ];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.key)) {
+      continue;
+    }
+    seen.add(row.key);
+    if (uiSessionRowMatchesSelectedChat(state, row.key, state.sessionKey)) {
+      return row;
+    }
+  }
+  return null;
+}
+
+export function resolveActivePageLabel(
+  state: Pick<
+    AppViewState,
+    | "agentsList"
+    | "chatAgentSessionRowsByAgent"
+    | "chatSessionPickerResult"
+    | "sessionKey"
+    | "sessionsResult"
+    | "tab"
+  >,
+): string {
+  if (state.tab !== "chat") {
+    return titleForTab(state.tab);
+  }
+  const row = findActiveSessionRow(state);
+  if (!row) {
+    return titleForTab(state.tab);
+  }
+  const label = resolveSessionDisplayName(state.sessionKey, row);
+  const fallback = resolveSessionDisplayName(state.sessionKey);
+  if (!label || label === fallback || label === state.sessionKey) {
+    return titleForTab(state.tab);
+  }
+  return label;
+}
+
+export function resolveControlUiDocumentTitle(
+  state: Pick<
+    AppViewState,
+    | "agentsList"
+    | "chatAgentSessionRowsByAgent"
+    | "chatSessionPickerResult"
+    | "sessionKey"
+    | "sessionsResult"
+    | "tab"
+  >,
+): string {
+  const label = resolveActivePageLabel(state);
+  return label ? `${label} · OpenClaw` : "OpenClaw Control";
 }
 
 function resolveSidebarChatSessionKey(state: AppViewState): string {

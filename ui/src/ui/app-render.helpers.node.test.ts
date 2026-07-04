@@ -78,6 +78,7 @@ import {
   handleChatManualRefresh,
   isCronSessionKey,
   parseSessionKey,
+  resolveControlUiDocumentTitle,
   resolveAssistantAttachmentAuthToken,
   resolveDashboardHeaderContext,
   resolveSessionOptionGroups,
@@ -500,6 +501,7 @@ describe("resolveDashboardHeaderContext", () => {
   it("uses the active agent identity name", () => {
     expect(
       resolveDashboardHeaderContext({
+        tab: "channels",
         sessionKey: "agent:deep-chat:imessage:sample-thread",
         agentsList: {
           defaultId: "deep-chat",
@@ -508,12 +510,13 @@ describe("resolveDashboardHeaderContext", () => {
           agents: [{ id: "deep-chat", identity: { name: "Deep Chat" } }],
         },
       } as unknown as AppViewState),
-    ).toEqual({ agentLabel: "Deep Chat" });
+    ).toEqual({ agentLabel: "Deep Chat", pageLabel: "Channels" });
   });
 
   it("falls back to the configured agent name", () => {
     expect(
       resolveDashboardHeaderContext({
+        tab: "channels",
         sessionKey: "agent:beta:main",
         agentsList: {
           defaultId: "beta",
@@ -522,12 +525,13 @@ describe("resolveDashboardHeaderContext", () => {
           agents: [{ id: "beta", name: "Coding" }],
         },
       } as unknown as AppViewState),
-    ).toEqual({ agentLabel: "Coding" });
+    ).toEqual({ agentLabel: "Coding", pageLabel: "Channels" });
   });
 
   it("falls back to the agent id", () => {
     expect(
       resolveDashboardHeaderContext({
+        tab: "channels",
         sessionKey: "agent:beta:subagent:maintainer-v2",
         agentsList: {
           defaultId: "main",
@@ -536,7 +540,91 @@ describe("resolveDashboardHeaderContext", () => {
           agents: [],
         },
       } as unknown as AppViewState),
-    ).toEqual({ agentLabel: "beta" });
+    ).toEqual({ agentLabel: "beta", pageLabel: "Channels" });
+  });
+
+  it("uses the active chat label for the page label", () => {
+    expect(
+      resolveDashboardHeaderContext({
+        tab: "chat",
+        sessionKey: "agent:beta:main",
+        agentsList: {
+          defaultId: "beta",
+          mainKey: "main",
+          scope: "user",
+          agents: [{ id: "beta", name: "Coding" }],
+        },
+        sessionsResult: {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: { modelProvider: "openai", model: "gpt-5", contextTokens: null },
+          sessions: [row({ key: "agent:beta:main", label: "Launch plan" })],
+        },
+      } as unknown as AppViewState),
+    ).toEqual({ agentLabel: "Coding", pageLabel: "Launch plan" });
+  });
+
+  it("keeps the chat page label generic when only the raw key is available", () => {
+    expect(
+      resolveDashboardHeaderContext({
+        tab: "chat",
+        sessionKey: "agent:beta:subagent:550e8400-e29b-41d4-a716-446655440000",
+        agentsList: {
+          defaultId: "beta",
+          mainKey: "main",
+          scope: "user",
+          agents: [{ id: "beta", name: "Coding" }],
+        },
+        sessionsResult: {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: { modelProvider: "openai", model: "gpt-5", contextTokens: null },
+          sessions: [
+            row({
+              key: "agent:beta:subagent:550e8400-e29b-41d4-a716-446655440000",
+            }),
+          ],
+        },
+      } as unknown as AppViewState),
+    ).toEqual({ agentLabel: "Coding", pageLabel: "Chat" });
+  });
+});
+
+describe("resolveControlUiDocumentTitle", () => {
+  it("uses the active chat label for the browser tab title", () => {
+    expect(
+      resolveControlUiDocumentTitle({
+        tab: "chat",
+        sessionKey: "agent:beta:main",
+        agentsList: null,
+        sessionsResult: {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: { modelProvider: "openai", model: "gpt-5", contextTokens: null },
+          sessions: [row({ key: "agent:beta:main", label: "Launch plan" })],
+        },
+      } as unknown as AppViewState),
+    ).toBe("Launch plan · OpenClaw");
+  });
+
+  it("falls back to the tab title when the chat has no label", () => {
+    expect(
+      resolveControlUiDocumentTitle({
+        tab: "chat",
+        sessionKey: "agent:beta:main",
+        agentsList: null,
+        sessionsResult: {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: { modelProvider: "openai", model: "gpt-5", contextTokens: null },
+          sessions: [row({ key: "agent:beta:main" })],
+        },
+      } as unknown as AppViewState),
+    ).toBe("Chat · OpenClaw");
   });
 });
 

@@ -42,7 +42,10 @@ import {
   handleUpdated,
 } from "./app-lifecycle.ts";
 import { initNativeBridge } from "./app-native-bridge.ts";
-import { createChatSession as createChatSessionInternal } from "./app-render.helpers.ts";
+import {
+  createChatSession as createChatSessionInternal,
+  resolveControlUiDocumentTitle,
+} from "./app-render.helpers.ts";
 import {
   loadSkillWorkshopMode,
   loadSkillWorkshopUseCurrentChatForRevisions,
@@ -873,6 +876,13 @@ export class OpenClawApp extends LitElement {
     return this;
   }
 
+  private syncDocumentTitle() {
+    if (typeof document === "undefined") {
+      return;
+    }
+    document.title = resolveControlUiDocumentTitle(this as unknown as AppViewState);
+  }
+
   override connectedCallback() {
     super.connectedCallback();
     this.onSlashAction = async (action: string) => {
@@ -898,6 +908,7 @@ export class OpenClawApp extends LitElement {
     this.addEventListener("focusout", this.nativeTitleTooltipFocusOutHandler);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
     this.nativeBridgeCleanup = initNativeBridge(this);
+    this.syncDocumentTitle();
     void this.initWebPushState();
   }
 
@@ -941,6 +952,15 @@ export class OpenClawApp extends LitElement {
   protected override updated(changed: Map<PropertyKey, unknown>) {
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
     refreshActiveFloatingTooltip(this);
+    if (
+      changed.has("tab") ||
+      changed.has("sessionKey") ||
+      changed.has("sessionsResult") ||
+      changed.has("chatSessionPickerResult") ||
+      changed.has("chatAgentSessionRowsByAgent")
+    ) {
+      this.syncDocumentTitle();
+    }
     // Some render callbacks assign tab directly while preparing nested panel state.
     if (changed.has("tab") && this.tab !== "chat" && this.chatMobileControlsOpen) {
       this.setChatMobileControlsOpen(false);

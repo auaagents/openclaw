@@ -2733,6 +2733,7 @@ export function renderApp(state: AppViewState) {
               .tab=${state.tab}
               .basePath=${state.basePath}
               .agentLabel=${dashboardHeaderContext.agentLabel}
+              .pageLabel=${dashboardHeaderContext.pageLabel}
               @navigate=${(event: CustomEvent<Tab>) => {
                 state.setTab(event.detail);
               }}

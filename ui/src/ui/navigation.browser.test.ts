@@ -105,6 +105,29 @@ describe("control UI routing", () => {
     expect(breadcrumb.getAttribute("href")).toBe("/ui/overview");
   });
 
+  it("uses the active chat label in breadcrumbs and the browser tab title", async () => {
+    const app = mountApp("/chat");
+    app.sessionKey = "agent:main:launch";
+    app.sessionsResult = createSessionsResult([
+      {
+        key: "agent:main:launch",
+        label: "Launch plan",
+        displayName: "agent:main:launch",
+        updatedAt: Date.now(),
+      },
+    ]) as typeof app.sessionsResult;
+    await app.updateComplete;
+
+    expect(
+      expectElement(
+        app,
+        "dashboard-header .dashboard-header__breadcrumb-current",
+        HTMLElement,
+      ).textContent?.trim(),
+    ).toBe("Launch plan");
+    expect(document.title).toBe("Launch plan · OpenClaw");
+  });
+
   it("renders the dreaming view on the /dreaming route", async () => {
     const app = mountApp("/dreaming");
     app.dreamingStatus = {
