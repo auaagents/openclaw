@@ -176,6 +176,15 @@ import {
 import { isPluginEnabledInConfigSnapshot } from "./plugin-activation.ts";
 import { isCronSessionKey, resolveSessionDisplayName } from "./session-display.ts";
 import {
+  applyLocalFavoritePatch,
+  buildSessionFavoritePatch,
+  compareFavoriteSessions,
+  findLocalFavoriteSession,
+  isFavoriteSession,
+  rowFromLocalFavoriteSession,
+  type SessionFavoritePatch,
+} from "./session-favorites.ts";
+import {
   areUiSessionKeysEquivalent,
   buildAgentMainSessionKey,
   isSessionKeyTiedToAgent,
@@ -560,38 +569,36 @@ function resolveSidebarSessionRows(state: AppViewState): GatewaySessionRow[] {
   );
 }
 
-function compareSidebarFavoriteSessions(a: GatewaySessionRow, b: GatewaySessionRow): number {
-  const orderA =
-    typeof a.favoriteOrder === "number" && Number.isFinite(a.favoriteOrder) && a.favoriteOrder >= 0
-      ? a.favoriteOrder
-      : Number.MAX_SAFE_INTEGER;
-  const orderB =
-    typeof b.favoriteOrder === "number" && Number.isFinite(b.favoriteOrder) && b.favoriteOrder >= 0
-      ? b.favoriteOrder
-      : Number.MAX_SAFE_INTEGER;
-  const orderDelta = orderA - orderB;
-  if (orderDelta !== 0) {
-    return orderDelta;
+function resolveSidebarFavoriteSessions(state: AppViewState): GatewaySessionRow[] {
+  const selectedAgentId = resolveSidebarSelectedAgentId(state);
+  const shouldFilterByAgent =
+    normalizeOptionalString(state.sessionKey)?.toLowerCase() !== "unknown";
+  const rows = resolveSidebarSessionRows(state);
+  const rowsByKey = new Map(rows.map((row) => [row.key, row]));
+  const favoritesByKey = new Map<string, GatewaySessionRow>();
+  for (const row of rows) {
+    if (isFavoriteSession(row, state.settings.favoriteSessions)) {
+      const local = findLocalFavoriteSession(state.settings.favoriteSessions, row.key);
+      favoritesByKey.set(row.key, local ? rowFromLocalFavoriteSession(local, row) : row);
+    }
   }
-  const updatedDelta = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-  if (updatedDelta !== 0) {
-    return updatedDelta;
+  for (const local of state.settings.favoriteSessions ?? []) {
+    const row = rowFromLocalFavoriteSession(local, rowsByKey.get(local.key));
+    if (isVisibleSidebarSessionRow(state, row, selectedAgentId, shouldFilterByAgent)) {
+      favoritesByKey.set(row.key, row);
+    }
   }
-  return a.key.localeCompare(b.key);
+  return [...favoritesByKey.values()].toSorted((a, b) =>
+    compareFavoriteSessions(a, b, state.settings.favoriteSessions),
+  );
 }
 
 function resolveSidebarRecentSessions(state: AppViewState): GatewaySessionRow[] {
-  const rows = resolveSidebarSessionRows(state).filter(
-    (row) => !isActiveSidebarSessionRow(state, row.key),
-  );
-  const favorites = rows
-    .filter((row) => row.permanentFavorite === true)
-    .toSorted(compareSidebarFavoriteSessions);
-  const recent = rows
-    .filter((row) => row.permanentFavorite !== true)
+  return resolveSidebarSessionRows(state)
+    .filter((row) => !isActiveSidebarSessionRow(state, row.key))
+    .filter((row) => !isFavoriteSession(row, state.settings.favoriteSessions))
     .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     .slice(0, 9);
-  return [...favorites, ...recent];
 }
 
 // Session keys have alias spellings ("main" vs "agent:<id>:main", and "global"
@@ -667,6 +674,7 @@ function resolveSidebarActiveRow(state: AppViewState): GatewaySessionRow | null 
 // mobile drawer), not the raw setting: an open drawer must show the sessions.
 function renderSidebarSessions(state: AppViewState, collapsed: boolean) {
   const busy = isSidebarSessionBusy(state);
+  const favorites = collapsed ? [] : resolveSidebarFavoriteSessions(state);
   const recent = collapsed ? [] : resolveSidebarRecentSessions(state);
   const activeRow = collapsed ? null : resolveSidebarActiveRow(state);
   const newSessionDisabled = !state.connected || state.sessionsLoading || busy || !state.client;
@@ -703,6 +711,40 @@ function renderSidebarSessions(state: AppViewState, collapsed: boolean) {
       ${collapsed
         ? nothing
         : html`
+            ${favorites.length === 0
+              ? nothing
+              : html`
+                  <div
+                    class="sidebar-favorite-sessions ${state.settings.favoriteSessionsCollapsed
+                      ? "sidebar-favorite-sessions--collapsed"
+                      : ""}"
+                    aria-label="Favorite Sessions"
+                  >
+                    <div class="sidebar-recent-sessions__head">
+                      <button
+                        class="sidebar-recent-sessions__label"
+                        type="button"
+                        aria-expanded=${String(!state.settings.favoriteSessionsCollapsed)}
+                        @click=${() => {
+                          state.applySettings({
+                            ...state.settings,
+                            favoriteSessionsCollapsed: !state.settings.favoriteSessionsCollapsed,
+                          });
+                        }}
+                      >
+                        <span class="sidebar-recent-sessions__label-text">Favorites</span>
+                        <span class="sidebar-recent-sessions__chevron"> ${icons.chevronDown} </span>
+                      </button>
+                    </div>
+                    ${state.settings.favoriteSessionsCollapsed
+                      ? nothing
+                      : html`
+                          <div class="sidebar-recent-sessions__list">
+                            ${favorites.map((row) => renderSidebarRecentSession(state, row))}
+                          </div>
+                        `}
+                  </div>
+                `}
             <div
               class="sidebar-recent-sessions ${state.settings.recentSessionsCollapsed
                 ? "sidebar-recent-sessions--collapsed"
@@ -765,25 +807,18 @@ function hasModifierKey(event: MouseEvent): boolean {
   return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 }
 
-function buildSessionFavoritePatch(row: GatewaySessionRow): {
-  permanentFavorite: boolean;
-  favoriteOrder: number | null;
-} {
-  const nextFavorite = row.permanentFavorite !== true;
-  const currentOrder =
-    typeof row.favoriteOrder === "number" &&
-    Number.isFinite(row.favoriteOrder) &&
-    row.favoriteOrder >= 0
-      ? row.favoriteOrder
-      : null;
-  return {
-    permanentFavorite: nextFavorite,
-    favoriteOrder: nextFavorite ? (currentOrder ?? Date.now()) : null,
-  };
-}
-
 function canFavoriteSidebarSession(row: GatewaySessionRow): boolean {
   return row.kind === "direct" || row.kind === "group";
+}
+
+function toggleFavoriteSession(
+  state: AppViewState,
+  row: GatewaySessionRow,
+  patch: SessionFavoritePatch = buildSessionFavoritePatch(row, state.settings.favoriteSessions),
+) {
+  state.applySettings(applyLocalFavoritePatch(state.settings, row, patch));
+  (state as AppViewState & { requestUpdate?: () => void }).requestUpdate?.();
+  void patchSession(state, row.key, patch);
 }
 
 function renderSidebarRecentSession(state: AppViewState, row: GatewaySessionRow) {
@@ -791,7 +826,7 @@ function renderSidebarRecentSession(state: AppViewState, row: GatewaySessionRow)
   const label = resolveSessionDisplayName(row.key, row);
   const meta = row.updatedAt ? formatRelativeTimestamp(row.updatedAt) : "";
   const href = `${pathForTab("chat", state.basePath)}?session=${encodeURIComponent(row.key)}`;
-  const favorite = row.permanentFavorite === true;
+  const favorite = isFavoriteSession(row, state.settings.favoriteSessions);
   const canFavorite = canFavoriteSidebarSession(row);
   const favoriteTitle = favorite ? "Remove from favorites" : "Add to favorites";
   return html`
@@ -847,7 +882,7 @@ function renderSidebarRecentSession(state: AppViewState, row: GatewaySessionRow)
               @click=${(event: MouseEvent) => {
                 event.preventDefault();
                 event.stopPropagation();
-                void patchSession(state, row.key, buildSessionFavoritePatch(row));
+                toggleFavoriteSession(state, row);
               }}
             >
               ${icons.bookmark}
@@ -3066,6 +3101,7 @@ export function renderApp(state: AppViewState) {
                 basePath: state.basePath,
                 searchQuery: state.sessionsSearchQuery,
                 agentIdentityById: state.agentIdentityById,
+                favoriteSessions: state.settings.favoriteSessions,
                 sortColumn: state.sessionsSortColumn,
                 sortDir: state.sessionsSortDir,
                 page: state.sessionsPage,
@@ -3136,6 +3172,7 @@ export function renderApp(state: AppViewState) {
                 },
                 onRefresh: () => void loadSessions(state),
                 onPatch: (key, patch) => void patchSession(state, key, patch),
+                onToggleFavorite: (row, patch) => toggleFavoriteSession(state, row, patch),
                 onToggleSelect: (key) => {
                   const next = new Set(state.sessionsSelectedKeys);
                   if (next.has(key)) {

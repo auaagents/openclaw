@@ -233,6 +233,40 @@ describe("sessions view", () => {
     expect(favorite?.getAttribute("title")).toBe("Remove from favorites");
   });
 
+  it("renders locally pinned favorites as active label actions", async () => {
+    const container = document.createElement("div");
+    const onToggleFavorite = vi.fn();
+    render(
+      renderSessions({
+        ...buildProps(
+          buildResult({
+            key: "agent:main:dashboard:1",
+            kind: "direct",
+            label: "Sprint plan",
+            updatedAt: Date.now(),
+          }),
+        ),
+        favoriteSessions: [{ key: "agent:main:dashboard:1", favoriteOrder: 5 }],
+        searchQuery: "favorite",
+        onToggleFavorite,
+      }),
+      container,
+    );
+    await Promise.resolve();
+
+    const favorite = container.querySelector<HTMLButtonElement>(".session-favorite-action");
+    expect(favorite?.getAttribute("aria-pressed")).toBe("true");
+    expect(favorite?.getAttribute("title")).toBe("Remove from favorites");
+    expect(container.querySelectorAll("tbody tr.session-data-row")).toHaveLength(1);
+
+    favorite!.click();
+
+    expect(onToggleFavorite).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "agent:main:dashboard:1" }),
+      { permanentFavorite: false, favoriteOrder: null },
+    );
+  });
+
   it("uses one short styled tooltip per session filter", async () => {
     const container = document.createElement("div");
     render(

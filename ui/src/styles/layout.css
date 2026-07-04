@@ -603,6 +603,7 @@
   stroke-linejoin: round;
 }
 
+.sidebar-favorite-sessions,
 .sidebar-recent-sessions {
   display: grid;
   gap: 6px;
@@ -747,10 +748,12 @@
   stroke-linejoin: round;
 }
 
+.sidebar-favorite-sessions--collapsed .sidebar-recent-sessions__chevron,
 .sidebar-recent-sessions--collapsed .sidebar-recent-sessions__chevron {
   transform: rotate(-90deg);
 }
 
+.sidebar-favorite-sessions--collapsed .sidebar-recent-sessions__list,
 .sidebar-recent-sessions--collapsed .sidebar-recent-sessions__list {
   display: none;
 }

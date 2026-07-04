@@ -521,28 +521,56 @@ describe("control UI routing", () => {
     ]) as typeof app.sessionsResult;
     await app.updateComplete;
 
-    const sections = Array.from(app.querySelectorAll<HTMLElement>(".sidebar-recent-sessions"));
-    expect(sections.map((entry) => entry.getAttribute("aria-label"))).toEqual(["Recent Sessions"]);
+    const favoritesSection = expectElement(app, ".sidebar-favorite-sessions", HTMLElement);
+    expect(favoritesSection.getAttribute("aria-label")).toBe("Favorite Sessions");
+    const favorites = Array.from(
+      favoritesSection.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session"),
+    );
+    expect(favorites.map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())).toEqual([
+      "Work 2h ago",
+      "Finance 1h ago",
+    ]);
+    const recentSection = expectElement(app, ".sidebar-recent-sessions", HTMLElement);
+    expect(recentSection.getAttribute("aria-label")).toBe("Recent Sessions");
     const recent = Array.from(
-      sections[0]?.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session") ?? [],
+      recentSection.querySelectorAll<HTMLAnchorElement>(".sidebar-recent-session"),
     );
     expect(recent.map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "Second workspace just now",
-      "Work 2h ago",
-      "Finance 1h ago",
       "First workspace 5m ago",
     ]);
     expect(
-      recent.map((entry) =>
+      favorites.map((entry) =>
         entry
           .closest(".sidebar-recent-session-row")
           ?.querySelector(".sidebar-session-favorite-toggle")
           ?.getAttribute("aria-pressed"),
       ),
-    ).toEqual(["false", "true", "true", "false"]);
+    ).toEqual(["true", "true"]);
+
+    const favoriteToggle = expectElement(
+      favoritesSection,
+      ".sidebar-recent-sessions__label",
+      HTMLButtonElement,
+    );
+    expect(favoriteToggle.getAttribute("aria-expanded")).toBe("true");
+
+    favoriteToggle.click();
+    await app.updateComplete;
+
+    expect(app.settings.favoriteSessionsCollapsed).toBe(true);
+    expect(favoriteToggle.getAttribute("aria-expanded")).toBe("false");
+    expect([...favoritesSection.classList]).toContain("sidebar-favorite-sessions--collapsed");
+
+    favoriteToggle.click();
+    await app.updateComplete;
+
+    expect(app.settings.favoriteSessionsCollapsed).toBe(false);
+    expect(favoriteToggle.getAttribute("aria-expanded")).toBe("true");
+    expect([...favoritesSection.classList]).not.toContain("sidebar-favorite-sessions--collapsed");
 
     const recentToggle = expectElement(
-      sections[0]!,
+      recentSection,
       ".sidebar-recent-sessions__label",
       HTMLButtonElement,
     );
@@ -553,16 +581,16 @@ describe("control UI routing", () => {
 
     expect(app.settings.recentSessionsCollapsed).toBe(true);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("false");
-    expect([...sections[0]!.classList]).toContain("sidebar-recent-sessions--collapsed");
+    expect([...recentSection.classList]).toContain("sidebar-recent-sessions--collapsed");
 
     recentToggle.click();
     await app.updateComplete;
 
     expect(app.settings.recentSessionsCollapsed).toBe(false);
     expect(recentToggle.getAttribute("aria-expanded")).toBe("true");
-    expect([...sections[0]!.classList]).not.toContain("sidebar-recent-sessions--collapsed");
+    expect([...recentSection.classList]).not.toContain("sidebar-recent-sessions--collapsed");
 
-    recent[3]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    recent[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await app.updateComplete;
 
     expect(app.tab).toBe("chat");
@@ -571,7 +599,7 @@ describe("control UI routing", () => {
     expect(window.location.search).toBe("?session=agent%3Amain%3Afirst");
   });
 
-  it("toggles favorites from the sidebar recent section", async () => {
+  it("toggles favorites from the sidebar recent section and persists a local pin", async () => {
     const app = mountApp("/overview");
     app.connected = true;
     app.sessionKey = "agent:main:second";
@@ -604,6 +632,55 @@ describe("control UI routing", () => {
       permanentFavorite: true,
       favoriteOrder: expect.any(Number),
     });
+    expect(app.settings.favoriteSessions?.map((entry) => entry.key)).toEqual(["agent:main:first"]);
+    expect(
+      JSON.parse(localStorage.getItem("openclaw.control.settings.v1") ?? "{}").favoriteSessions,
+    ).toEqual([
+      expect.objectContaining({
+        key: "agent:main:first",
+        label: "First workspace",
+        kind: "direct",
+      }),
+    ]);
+
+    await app.updateComplete;
+    const favoriteLink = app.querySelector<HTMLAnchorElement>(
+      '.sidebar-favorite-sessions .sidebar-recent-session[data-session-key="agent:main:first"]',
+    );
+    expect(favoriteLink?.textContent?.replace(/\s+/g, " ").trim()).toBe("First workspace 5m ago");
+  });
+
+  it("keeps locally pinned favorites even when they are absent from recent sessions", async () => {
+    const app = mountApp("/overview");
+    app.sessionKey = "agent:main:second";
+    app.applySettings({
+      ...app.settings,
+      favoriteSessions: [
+        {
+          key: "agent:main:pinned",
+          label: "Pinned plan",
+          kind: "direct",
+          favoriteOrder: 1,
+          updatedAt: Date.now() - 3 * 60_000,
+        },
+      ],
+    });
+    app.sessionsResult = createSessionsResult([
+      { key: "agent:main:first", label: "First workspace", updatedAt: Date.now() - 5 * 60_000 },
+      { key: "agent:main:second", label: "Second workspace", updatedAt: Date.now() - 30_000 },
+    ]) as typeof app.sessionsResult;
+    await app.updateComplete;
+
+    const favoriteLink = expectElement(
+      app,
+      '.sidebar-favorite-sessions .sidebar-recent-session[data-session-key="agent:main:pinned"]',
+      HTMLAnchorElement,
+    );
+    expect(favoriteLink.textContent?.replace(/\s+/g, " ").trim()).toBe("Pinned plan 3m ago");
+    const recentKeys = Array.from(
+      app.querySelectorAll<HTMLElement>(".sidebar-recent-sessions .sidebar-recent-session"),
+    ).map((entry) => entry.getAttribute("data-session-key"));
+    expect(recentKeys).toEqual(["agent:main:second", "agent:main:first"]);
   });
 
   it("keeps the provider quota pill reachable from the sidebar footer (regression #93041)", async () => {

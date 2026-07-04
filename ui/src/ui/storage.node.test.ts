@@ -316,12 +316,30 @@ describe("loadSettings default gateway URL derivation", () => {
       navWidth: 220,
       navGroupsCollapsed: {},
       favoriteSessionsCollapsed: true,
+      favoriteSessions: [
+        {
+          key: "agent:main:fav",
+          label: "Favorite project",
+          kind: "direct",
+          favoriteOrder: 12,
+          updatedAt: 1234,
+        },
+      ],
       recentSessionsCollapsed: true,
       borderRadius: 50,
       textScale: 100,
     });
 
     expect(loadSettings().favoriteSessionsCollapsed).toBe(true);
+    expect(loadSettings().favoriteSessions).toEqual([
+      {
+        key: "agent:main:fav",
+        label: "Favorite project",
+        kind: "direct",
+        favoriteOrder: 12,
+        updatedAt: 1234,
+      },
+    ]);
     expect(loadSettings().recentSessionsCollapsed).toBe(true);
 
     saveSettings({
@@ -339,6 +357,7 @@ describe("loadSettings default gateway URL derivation", () => {
       navWidth: 220,
       navGroupsCollapsed: {},
       favoriteSessionsCollapsed: false,
+      favoriteSessions: [{ key: "agent:main:legacy-fav" }],
       recentSessionsCollapsed: false,
       borderRadius: 50,
       textScale: 100,
@@ -350,8 +369,10 @@ describe("loadSettings default gateway URL derivation", () => {
       unknown
     >;
     expect(persisted.favoriteSessionsCollapsed).toBe(false);
+    expect(persisted.favoriteSessions).toEqual([{ key: "agent:main:legacy-fav" }]);
     expect(persisted.recentSessionsCollapsed).toBe(false);
     expect(loadSettings().favoriteSessionsCollapsed).toBe(false);
+    expect(loadSettings().favoriteSessions).toEqual([{ key: "agent:main:legacy-fav" }]);
     expect(loadSettings().recentSessionsCollapsed).toBe(false);
   });
 

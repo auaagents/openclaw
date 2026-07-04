@@ -16,6 +16,15 @@ type ScopedSessionSelection = {
   lastActiveSessionKey: string;
 };
 
+export type LocalFavoriteSession = {
+  key: string;
+  label?: string;
+  displayName?: string;
+  kind?: "cron" | "direct" | "group" | "global" | "unknown";
+  favoriteOrder?: number;
+  updatedAt?: number | null;
+};
+
 type PersistedUiSettings = Omit<UiSettings, "token" | "sessionKey" | "lastActiveSessionKey"> & {
   token?: never;
   sessionKey?: string;
@@ -95,6 +104,7 @@ export type UiSettings = {
   navWidth: number; // Sidebar width when expanded (240–400px)
   navGroupsCollapsed: Record<string, boolean>; // Which nav groups are collapsed
   favoriteSessionsCollapsed?: boolean; // Collapse favorite sessions list in sidebar
+  favoriteSessions?: LocalFavoriteSession[]; // Browser-local favorite session pins
   recentSessionsCollapsed?: boolean; // Collapse recent sessions list in sidebar
   borderRadius: number; // Corner roundness (0–100, default 50)
   textScale?: TextScaleStop; // Browser-local text scale percentage
@@ -187,6 +197,70 @@ function resolveScopedSessionSelection(
   };
 }
 
+function normalizeFavoriteKind(value: unknown): LocalFavoriteSession["kind"] | undefined {
+  return value === "cron" ||
+    value === "direct" ||
+    value === "group" ||
+    value === "global" ||
+    value === "unknown"
+    ? value
+    : undefined;
+}
+
+function normalizeFavoriteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function normalizeFavoriteSessions(value: unknown): LocalFavoriteSession[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const favorites: LocalFavoriteSession[] = [];
+  for (const item of value) {
+    const key =
+      typeof item === "string"
+        ? normalizeOptionalString(item)
+        : item && typeof item === "object"
+          ? normalizeOptionalString((item as { key?: unknown }).key)
+          : null;
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (typeof item === "string") {
+      favorites.push({ key });
+      continue;
+    }
+    const candidate = item as {
+      label?: unknown;
+      displayName?: unknown;
+      kind?: unknown;
+      favoriteOrder?: unknown;
+      updatedAt?: unknown;
+    };
+    const label = normalizeOptionalString(candidate.label);
+    const displayName = normalizeOptionalString(candidate.displayName);
+    const kind = normalizeFavoriteKind(candidate.kind);
+    const favoriteOrder = normalizeFavoriteNumber(candidate.favoriteOrder);
+    const updatedAt =
+      candidate.updatedAt === null
+        ? null
+        : typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt)
+          ? candidate.updatedAt
+          : undefined;
+    favorites.push({
+      key,
+      ...(label ? { label } : {}),
+      ...(displayName ? { displayName } : {}),
+      ...(kind ? { kind } : {}),
+      ...(favoriteOrder != null ? { favoriteOrder } : {}),
+      ...(updatedAt !== undefined ? { updatedAt } : {}),
+    });
+  }
+  return favorites;
+}
+
 function loadSessionToken(gatewayUrl: string): string {
   try {
     const storage = getSessionStorage();
@@ -255,6 +329,7 @@ export function loadSettings(): UiSettings {
     navWidth: 220,
     navGroupsCollapsed: {},
     favoriteSessionsCollapsed: false,
+    favoriteSessions: [],
     recentSessionsCollapsed: false,
     borderRadius: 50,
     textScale: 100,
@@ -320,6 +395,7 @@ export function loadSettings(): UiSettings {
         typeof parsed.favoriteSessionsCollapsed === "boolean"
           ? parsed.favoriteSessionsCollapsed
           : defaults.favoriteSessionsCollapsed,
+      favoriteSessions: normalizeFavoriteSessions(parsed.favoriteSessions),
       recentSessionsCollapsed:
         typeof parsed.recentSessionsCollapsed === "boolean"
           ? parsed.recentSessionsCollapsed
@@ -468,6 +544,7 @@ function persistSettings(next: UiSettings) {
   const storage = getSafeLocalStorage();
   const scope = normalizeGatewayTokenScope(next.gatewayUrl);
   const scopedKey = settingsKeyForGateway(next.gatewayUrl);
+  const favoriteSessions = normalizeFavoriteSessions(next.favoriteSessions);
   let existingSessionsByGateway: Record<string, ScopedSessionSelection> = {};
   try {
     // Try to migrate from legacy key or other scopes
@@ -509,6 +586,7 @@ function persistSettings(next: UiSettings) {
     navWidth: next.navWidth,
     navGroupsCollapsed: next.navGroupsCollapsed,
     favoriteSessionsCollapsed: next.favoriteSessionsCollapsed ?? false,
+    ...(favoriteSessions.length > 0 ? { favoriteSessions } : {}),
     recentSessionsCollapsed: next.recentSessionsCollapsed ?? false,
     borderRadius: next.borderRadius,
     textScale: normalizeTextScale(next.textScale),

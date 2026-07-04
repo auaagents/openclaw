@@ -5,9 +5,15 @@ import { formatRelativeTimestamp, parseSessionKeyParts } from "../format.ts";
 import { icons } from "../icons.ts";
 import { pathForTab } from "../navigation.ts";
 import { formatSessionTokens } from "../presenter.ts";
+import {
+  buildSessionFavoritePatch,
+  isFavoriteSession,
+  type SessionFavoritePatch,
+} from "../session-favorites.ts";
 import { formatGoalDetail, formatGoalSummary } from "../session-goal.ts";
 import { sessionModelMatchesDefaults } from "../session-model-defaults.ts";
 import { isSessionRunActive } from "../session-run-state.ts";
+import type { LocalFavoriteSession } from "../storage.ts";
 import { normalizeLowercaseStringOrEmpty, normalizeOptionalString } from "../string-coerce.ts";
 import {
   formatInheritedThinkingLabel,
@@ -38,6 +44,7 @@ export type SessionsProps = {
   basePath: string;
   searchQuery: string;
   agentIdentityById: Record<string, AgentIdentityResult>;
+  favoriteSessions?: readonly LocalFavoriteSession[];
   sortColumn: "key" | "kind" | "updated" | "tokens";
   sortDir: "asc" | "desc";
   page: number;
@@ -74,6 +81,7 @@ export type SessionsProps = {
       reasoningLevel?: string | null;
     },
   ) => void;
+  onToggleFavorite?: (row: GatewaySessionRow, patch: SessionFavoritePatch) => void;
   onToggleSelect: (key: string) => void;
   onSelectPage: (keys: string[]) => void;
   onDeselectPage: (keys: string[]) => void;
@@ -236,6 +244,7 @@ function filterRows(
   rows: GatewaySessionRow[],
   query: string,
   agentIdentityById: Record<string, AgentIdentityResult>,
+  favoriteSessions: readonly LocalFavoriteSession[] | undefined,
 ): GatewaySessionRow[] {
   const q = normalizeLowercaseStringOrEmpty(query);
   if (!q) {
@@ -260,7 +269,7 @@ function filterRows(
       : row.hasActiveRun === false
         ? "idle"
         : "";
-    const favoriteState = row.permanentFavorite === true ? "favorite bookmarked" : "";
+    const favoriteState = isFavoriteSession(row, favoriteSessions) ? "favorite bookmarked" : "";
     if (
       key.includes(q) ||
       label.includes(q) ||
@@ -412,8 +421,9 @@ function sessionDetailItems(params: {
   row: GatewaySessionRow;
   updated: string;
   checkpointCount: number;
+  favorite: boolean;
 }): Array<{ label: string; value: string }> {
-  const { row, updated, checkpointCount } = params;
+  const { row, updated, checkpointCount, favorite } = params;
   const details: Array<{ label: string; value: string }> = [
     { label: t("sessionsView.key"), value: row.key },
     { label: t("sessionsView.kind"), value: row.kind },
@@ -454,7 +464,7 @@ function sessionDetailItems(params: {
   }
   details.push({
     label: "Favorite",
-    value: row.permanentFavorite === true ? t("common.yes") : t("common.no"),
+    value: favorite ? t("common.yes") : t("common.no"),
   });
   return details;
 }
@@ -497,26 +507,14 @@ function renderFilterToggle(params: {
   `;
 }
 
-function buildSessionFavoritePatch(row: GatewaySessionRow): {
-  permanentFavorite: boolean;
-  favoriteOrder: number | null;
-} {
-  const nextFavorite = row.permanentFavorite !== true;
-  const currentOrder =
-    typeof row.favoriteOrder === "number" &&
-    Number.isFinite(row.favoriteOrder) &&
-    row.favoriteOrder >= 0
-      ? row.favoriteOrder
-      : null;
-  return {
-    permanentFavorite: nextFavorite,
-    favoriteOrder: nextFavorite ? (currentOrder ?? Date.now()) : null,
-  };
-}
-
 export function renderSessions(props: SessionsProps) {
   const rawRows = props.result?.sessions ?? [];
-  const filtered = filterRows(rawRows, props.searchQuery, props.agentIdentityById);
+  const filtered = filterRows(
+    rawRows,
+    props.searchQuery,
+    props.agentIdentityById,
+    props.favoriteSessions,
+  );
   const sorted = sortRows(filtered, props.sortColumn, props.sortDir);
   const totalRows = sorted.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / props.pageSize));
@@ -843,10 +841,12 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
   const checkpointError = props.checkpointErrorByKey[row.key];
   const detailsId = `session-checkpoints-${encodeURIComponent(row.key)}`;
   const checkpointLabel = formatCheckpointCount(visibleCheckpointCount);
+  const favorite = isFavoriteSession(row, props.favoriteSessions);
   const sessionDetails = sessionDetailItems({
     row,
     updated,
     checkpointCount: visibleCheckpointCount,
+    favorite,
   });
   const displayName = normalizeOptionalString(row.displayName) ?? null;
   const trimmedLabel = normalizeOptionalString(row.label) ?? "";
@@ -867,7 +867,6 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
   const canLink = row.kind !== "global";
   const captured = props.workboardSessionKeys?.has(row.key) === true;
   const captureBusy = props.workboardBusySessionKey === row.key;
-  const favorite = row.permanentFavorite === true;
   const favoriteTitle = favorite ? "Remove from favorites" : "Add to favorites";
   const chatUrl = canLink
     ? `${pathForTab("chat", props.basePath)}?session=${encodeURIComponent(row.key)}`
@@ -983,7 +982,12 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
                   ?disabled=${props.loading}
                   @click=${(event: MouseEvent) => {
                     event.stopPropagation();
-                    props.onPatch(row.key, buildSessionFavoritePatch(row));
+                    const patch = buildSessionFavoritePatch(row, props.favoriteSessions);
+                    if (props.onToggleFavorite) {
+                      props.onToggleFavorite(row, patch);
+                    } else {
+                      props.onPatch(row.key, patch);
+                    }
                   }}
                 >
                   ${icons.bookmark}
