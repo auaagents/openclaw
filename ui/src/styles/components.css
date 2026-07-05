@@ -6329,6 +6329,16 @@ td.data-table-key-col {
   color: var(--danger);
 }
 
+/* Per-provider quota lines in the Usage card — one line per provider keeps
+   Claude and OpenAI quotas visually separate. */
+.ov-card__hint-line {
+  display: block;
+}
+
+.ov-card__hint-line + .ov-card__hint-line {
+  margin-top: 2px;
+}
+
 /* Stagger entrance */
 .ov-cards .ov-card:nth-child(1) {
   animation-delay: 0ms;

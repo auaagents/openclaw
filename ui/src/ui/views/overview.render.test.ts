@@ -219,6 +219,6 @@ describe("overview view rendering", () => {
     await Promise.resolve();
 
     const quota = container.querySelector('[data-kind="quota"]');
-    expect(compactText(quota)).toBe("Usage 28% left Codex · Week · Claude · 5h 40% left");
+    expect(compactText(quota)).toBe("Usage Codex 28% left Codex · Week Claude · 5h · 40% left");
   });
 });

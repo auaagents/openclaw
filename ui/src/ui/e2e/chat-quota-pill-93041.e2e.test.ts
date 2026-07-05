@@ -97,7 +97,7 @@ describeE2e("Control UI #93041 desktop chat quota pill (mocked Gateway E2E)", ()
       });
 
       const text = (await pill.textContent())?.replace(/\s+/g, " ").trim();
-      expect(text).toContain("Usage");
+      expect(text).toContain("Codex");
       expect(await pill.getAttribute("href")).toBe("/usage");
       expect(await pill.getAttribute("title")).toContain("Codex");
     } finally {

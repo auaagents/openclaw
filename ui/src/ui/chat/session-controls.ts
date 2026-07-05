@@ -19,7 +19,11 @@ import { formatDateTimeMs } from "../format.ts";
 import { icons } from "../icons.ts";
 import { isMonitoredAuthProvider } from "../model-auth-helpers.ts";
 import { pathForTab } from "../navigation.ts";
-import { collectQuotaWindowsFromAuthStatus, formatQuotaReset } from "../provider-quota-summary.ts";
+import {
+  collectQuotaWindowsFromAuthStatus,
+  formatQuotaReset,
+  groupQuotaWindowsByProvider,
+} from "../provider-quota-summary.ts";
 import { pushUniqueTrimmedSelectOption } from "../select-options.ts";
 import { isCronSessionKey, resolveSessionDisplayName } from "../session-display.ts";
 import {
@@ -1093,22 +1097,31 @@ export function renderChatQuotaPill(state: AppViewState) {
     state.modelAuthStatusResult,
     isMonitoredAuthProvider,
   );
-  const primary = windows[0];
+  const providers = groupQuotaWindowsByProvider(windows);
+  const primary = providers[0];
   if (!primary) {
     return "";
   }
-  const secondary = windows.find(
-    (entry) => entry.displayName !== primary.displayName || entry.label !== primary.label,
-  );
-  const reset = formatQuotaReset(primary.resetAt);
-  const detail = [primary.displayName, primary.label, reset ? `resets ${reset}` : null]
-    .filter(Boolean)
-    .join(" · ");
-  const secondaryDetail = secondary
-    ? `${secondary.displayName}${secondary.label ? ` ${secondary.label}` : ""} ${secondary.remaining}% left`
-    : null;
-  const title = [detail, secondaryDetail].filter(Boolean).join(" · ");
-  const severity = primary.remaining <= 10 ? "danger" : primary.remaining <= 25 ? "warn" : "ok";
+  // One named segment per provider (worst-first) so quotas for different
+  // providers (e.g. Claude vs OpenAI) never blend into one number.
+  const shown = providers.slice(0, 3);
+  const severityOf = (remaining: number) =>
+    remaining <= 10 ? "danger" : remaining <= 25 ? "warn" : "ok";
+  const title = providers
+    .map((provider) => {
+      const window = provider.windows[0];
+      const reset = formatQuotaReset(window?.resetAt);
+      return [
+        provider.displayName,
+        window?.label,
+        `${provider.remaining}% left`,
+        reset ? `resets ${reset}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    })
+    .join(" — ");
+  const severity = severityOf(primary.remaining);
 
   return html`
     <a
@@ -1132,8 +1145,20 @@ export function renderChatQuotaPill(state: AppViewState) {
         state.setTab("usage");
       }}
     >
-      <span class="chat-controls__quota-label">${t("tabs.usage")}</span>
-      <span class="chat-controls__quota-value">${primary.remaining}%</span>
+      ${shown.map(
+        (provider, index) => html`
+          ${index > 0
+            ? html`<span class="chat-controls__quota-sep" aria-hidden="true"></span>`
+            : ""}
+          <span class="chat-controls__quota-label">${provider.displayName}</span>
+          <span
+            class="chat-controls__quota-value chat-controls__quota-value--${severityOf(
+              provider.remaining,
+            )}"
+            >${provider.remaining}%</span
+          >
+        `,
+      )}
     </a>
   `;
 }

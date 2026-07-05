@@ -2506,12 +2506,21 @@
   font-variant-numeric: tabular-nums;
 }
 
-.chat-controls__quota--warn .chat-controls__quota-value {
+/* Severity is per provider segment, not on the whole pill — a Claude segment
+   in the red must not tint the OpenAI segment next to it. */
+.chat-controls__quota-value--warn {
   color: var(--warn);
 }
 
-.chat-controls__quota--danger .chat-controls__quota-value {
+.chat-controls__quota-value--danger {
   color: var(--danger);
+}
+
+.chat-controls__quota-sep {
+  flex: 0 0 1px;
+  width: 1px;
+  height: 14px;
+  background: color-mix(in srgb, var(--border) 90%, transparent);
 }
 
 .chat-controls__thinking {

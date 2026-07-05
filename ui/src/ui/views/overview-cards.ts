@@ -10,6 +10,7 @@ import { formatNextRun } from "../presenter.ts";
 import {
   collectQuotaWindows,
   formatQuotaReset,
+  groupQuotaWindowsByProvider,
   type QuotaWindowSummary,
 } from "../provider-quota-summary.ts";
 import { resolveSessionDisplayName } from "../session-display.ts";
@@ -60,35 +61,39 @@ function renderStatCard(card: StatCard, onNavigate: (tab: string) => void) {
 }
 
 function renderProviderQuotaCard(windows: QuotaWindowSummary[]): StatCard | null {
-  const primary = windows[0];
+  const providers = groupQuotaWindowsByProvider(windows);
+  const primary = providers[0];
   if (!primary) {
     return null;
   }
-  const reset = formatQuotaReset(primary.resetAt);
-  const primaryHint = [primary.displayName, primary.label, reset ? `reset ${reset}` : null].filter(
-    Boolean,
-  );
-  const secondary = windows.find(
-    (entry) => entry.displayName !== primary.displayName || entry.label !== primary.label,
-  );
-  const secondaryHint = secondary
-    ? `${[secondary.displayName, secondary.label].filter(Boolean).join(" · ")} ${t(
-        "overview.cards.modelAuthUsageLeft",
-        {
-          pct: String(secondary.remaining),
-        },
-      )}`
-    : null;
   const valueClass = primary.remaining <= 10 ? "danger" : primary.remaining <= 25 ? "warn" : "";
+  // One hint line per provider so quotas for different providers (e.g. Claude
+  // vs OpenAI) stay visually separate. The primary provider's percentage
+  // already sits in the card value, so its line carries only window details.
+  const hintLines = providers.slice(0, 3).map((provider) => {
+    const window = provider.windows[0];
+    const reset = formatQuotaReset(window?.resetAt);
+    return [
+      provider.displayName,
+      window?.label,
+      provider === primary
+        ? null
+        : t("overview.cards.modelAuthUsageLeft", { pct: String(provider.remaining) }),
+      reset ? `resets ${reset}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  });
 
   return {
     kind: "quota",
     tab: "usage",
     label: t("tabs.usage"),
-    value: html`<span class=${valueClass}
-      >${t("overview.cards.modelAuthUsageLeft", { pct: String(primary.remaining) })}</span
-    >`,
-    hint: [primaryHint.join(" · "), secondaryHint].filter(Boolean).join(" · "),
+    value: html`${primary.displayName}
+      <span class=${valueClass}
+        >${t("overview.cards.modelAuthUsageLeft", { pct: String(primary.remaining) })}</span
+      >`,
+    hint: html`${hintLines.map((line) => html`<span class="ov-card__hint-line">${line}</span> `)}`,
   };
 }
 
