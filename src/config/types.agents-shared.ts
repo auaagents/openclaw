@@ -34,6 +34,34 @@ export type AgentRuntimePolicyConfig = {
   id?: string;
 };
 
+/** Local specialist orchestration policy attached to providers or model entries. */
+export type LocalOrchestrationConfig = {
+  /**
+   * For non-local primary models: allow the visible session to delegate suitable
+   * substeps to a local helper agent/model.
+   */
+  localAssist?: {
+    /** Default session value when the user has not overridden Local. */
+    default?: boolean;
+    /** Preferred local helper agent id. */
+    targetAgent?: string;
+    /** Preferred local helper model alias or provider/model ref. */
+    targetModel?: string;
+  };
+  /**
+   * For local primary models: allow the visible session to call a local sibling
+   * model as a temporary specialist while preserving the selected primary model.
+   */
+  moe?: {
+    /** Default session value when the user has not overridden MoE. */
+    default?: boolean;
+    /** Preferred sibling local model alias or provider/model ref. */
+    companionModel?: string;
+    /** Preferred local helper agent id. */
+    companionAgent?: string;
+  };
+};
+
 /** Per-agent sandbox policy shared by embedded agents and sandbox backends. */
 export type AgentSandboxConfig = {
   /** Sandbox activation mode for this agent. */

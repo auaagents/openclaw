@@ -358,6 +358,28 @@ describe("gateway sessions patch", () => {
     expect(entry.fastMode).toBe("auto");
   });
 
+  test("persists localAssist=false and localMoe=true", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, localAssist: false, localMoe: true },
+      }),
+    );
+    expect(entry.localAssist).toBe(false);
+    expect(entry.localMoe).toBe(true);
+  });
+
+  test("clears local orchestration overrides when patch sets null", async () => {
+    const store = mainStoreEntry({ localAssist: true, localMoe: false });
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, localAssist: null, localMoe: null },
+      }),
+    );
+    expect(entry.localAssist).toBeUndefined();
+    expect(entry.localMoe).toBeUndefined();
+  });
+
   test("persists verboseLevel=full", async () => {
     const entry = expectPatchOk(
       await runPatch({

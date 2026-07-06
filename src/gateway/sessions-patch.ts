@@ -437,6 +437,30 @@ export async function projectSessionsPatchEntry(params: {
     }
   }
 
+  if ("localAssist" in patch) {
+    const raw = patch.localAssist;
+    if (raw === null) {
+      delete next.localAssist;
+    } else if (raw !== undefined) {
+      if (typeof raw !== "boolean") {
+        return invalid("invalid localAssist (use true, false, or null)");
+      }
+      next.localAssist = raw;
+    }
+  }
+
+  if ("localMoe" in patch) {
+    const raw = patch.localMoe;
+    if (raw === null) {
+      delete next.localMoe;
+    } else if (raw !== undefined) {
+      if (typeof raw !== "boolean") {
+        return invalid("invalid localMoe (use true, false, or null)");
+      }
+      next.localMoe = raw;
+    }
+  }
+
   if ("verboseLevel" in patch) {
     const raw = patch.verboseLevel;
     const parsed = parseVerboseOverride(raw);

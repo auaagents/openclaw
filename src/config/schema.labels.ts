@@ -113,6 +113,18 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.list.*.models": "Agent Model Overrides",
   "agents.list.*.models.*.agentRuntime": "Agent Model Runtime",
   "agents.list.*.models.*.agentRuntime.id": "Agent Model Runtime ID",
+  "agents.list.*.models.*.localOrchestration": "Agent Model Local Orchestration",
+  "agents.list.*.models.*.localOrchestration.localAssist": "Agent Model Local Assist",
+  "agents.list.*.models.*.localOrchestration.localAssist.default":
+    "Agent Model Local Assist Default",
+  "agents.list.*.models.*.localOrchestration.localAssist.targetAgent":
+    "Agent Model Local Assist Target Agent",
+  "agents.list.*.models.*.localOrchestration.localAssist.targetModel":
+    "Agent Model Local Assist Target Model",
+  "agents.list.*.models.*.localOrchestration.moe": "Agent Model MoE",
+  "agents.list.*.models.*.localOrchestration.moe.default": "Agent Model MoE Default",
+  "agents.list.*.models.*.localOrchestration.moe.companionModel": "Agent Model MoE Companion Model",
+  "agents.list.*.models.*.localOrchestration.moe.companionAgent": "Agent Model MoE Companion Agent",
   "agents.list.*.agentRuntime": "Legacy Agent Runtime",
   "agents.list.*.agentRuntime.id": "Legacy Agent Runtime ID",
   gateway: "Gateway",
@@ -592,6 +604,18 @@ export const FIELD_LABELS: Record<string, string> = {
   "models.providers.*.authHeader": "Model Provider Authorization Header",
   "models.providers.*.agentRuntime": "Model Provider Runtime",
   "models.providers.*.agentRuntime.id": "Model Provider Runtime ID",
+  "models.providers.*.localOrchestration": "Model Provider Local Orchestration",
+  "models.providers.*.localOrchestration.localAssist": "Model Provider Local Assist",
+  "models.providers.*.localOrchestration.localAssist.default":
+    "Model Provider Local Assist Default",
+  "models.providers.*.localOrchestration.localAssist.targetAgent":
+    "Model Provider Local Assist Target Agent",
+  "models.providers.*.localOrchestration.localAssist.targetModel":
+    "Model Provider Local Assist Target Model",
+  "models.providers.*.localOrchestration.moe": "Model Provider MoE",
+  "models.providers.*.localOrchestration.moe.default": "Model Provider MoE Default",
+  "models.providers.*.localOrchestration.moe.companionModel": "Model Provider MoE Companion Model",
+  "models.providers.*.localOrchestration.moe.companionAgent": "Model Provider MoE Companion Agent",
   "models.providers.*.localService": "Model Provider Local Service",
   "models.providers.*.localService.command": "Model Provider Local Service Command",
   "models.providers.*.localService.args": "Model Provider Local Service Arguments",
@@ -636,6 +660,18 @@ export const FIELD_LABELS: Record<string, string> = {
   "models.providers.*.models": "Model Provider Model List",
   "models.providers.*.models[].agentRuntime": "Model Runtime",
   "models.providers.*.models[].agentRuntime.id": "Model Runtime ID",
+  "models.providers.*.models[].localOrchestration": "Model Local Orchestration",
+  "models.providers.*.models[].localOrchestration.localAssist": "Model Local Assist",
+  "models.providers.*.models[].localOrchestration.localAssist.default":
+    "Model Local Assist Default",
+  "models.providers.*.models[].localOrchestration.localAssist.targetAgent":
+    "Model Local Assist Target Agent",
+  "models.providers.*.models[].localOrchestration.localAssist.targetModel":
+    "Model Local Assist Target Model",
+  "models.providers.*.models[].localOrchestration.moe": "Model MoE",
+  "models.providers.*.models[].localOrchestration.moe.default": "Model MoE Default",
+  "models.providers.*.models[].localOrchestration.moe.companionModel": "Model MoE Companion Model",
+  "models.providers.*.models[].localOrchestration.moe.companionAgent": "Model MoE Companion Agent",
   "models.providers.*.models[].mediaInput": "Model Media Input",
   "models.providers.*.models[].mediaInput.image": "Model Image Input",
   "models.providers.*.models[].mediaInput.image.maxBytes": "Model Image Max Bytes",
@@ -655,6 +691,20 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.models": "Models",
   "agents.defaults.models.*.agentRuntime": "Default Agent Model Runtime",
   "agents.defaults.models.*.agentRuntime.id": "Default Agent Model Runtime ID",
+  "agents.defaults.models.*.localOrchestration": "Default Agent Model Local Orchestration",
+  "agents.defaults.models.*.localOrchestration.localAssist": "Default Agent Model Local Assist",
+  "agents.defaults.models.*.localOrchestration.localAssist.default":
+    "Default Agent Model Local Assist Default",
+  "agents.defaults.models.*.localOrchestration.localAssist.targetAgent":
+    "Default Agent Model Local Assist Target Agent",
+  "agents.defaults.models.*.localOrchestration.localAssist.targetModel":
+    "Default Agent Model Local Assist Target Model",
+  "agents.defaults.models.*.localOrchestration.moe": "Default Agent Model MoE",
+  "agents.defaults.models.*.localOrchestration.moe.default": "Default Agent Model MoE Default",
+  "agents.defaults.models.*.localOrchestration.moe.companionModel":
+    "Default Agent Model MoE Companion Model",
+  "agents.defaults.models.*.localOrchestration.moe.companionAgent":
+    "Default Agent Model MoE Companion Agent",
   "agents.defaults.model.primary": "Primary Model",
   "agents.defaults.model.fallbacks": "Model Fallbacks",
   "agents.defaults.imageModel.primary": "Image Model",

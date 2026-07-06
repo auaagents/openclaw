@@ -5,7 +5,7 @@ import type {
   OpenAIResponsesCompat,
   ThinkingLevelMap,
 } from "../llm/types.js";
-import type { AgentRuntimePolicyConfig } from "./types.agents-shared.js";
+import type { AgentRuntimePolicyConfig, LocalOrchestrationConfig } from "./types.agents-shared.js";
 import type { ConfiguredModelProviderRequest } from "./types.provider-request.js";
 import type { SecretInput } from "./types.secrets.js";
 
@@ -197,6 +197,8 @@ export type ModelDefinitionConfig = {
   params?: Record<string, unknown>;
   /** Optional agent execution runtime override for this provider/model pair. */
   agentRuntime?: AgentRuntimePolicyConfig;
+  /** Optional local-assist/MoE defaults for this provider/model pair. */
+  localOrchestration?: LocalOrchestrationConfig;
   /** Static headers merged into requests for this model. */
   headers?: Record<string, string>;
   /** Provider compatibility flags for payload shaping and feature gating. */
@@ -231,6 +233,8 @@ export type ModelProviderConfig = {
   params?: Record<string, unknown>;
   /** Optional default agent execution runtime for models under this provider. */
   agentRuntime?: AgentRuntimePolicyConfig;
+  /** Optional local-assist/MoE defaults for models under this provider. */
+  localOrchestration?: LocalOrchestrationConfig;
   /** Optional local service to start before calling this provider. */
   localService?: ModelProviderLocalServiceConfig;
   /** Secret-bearing headers merged into provider requests. */

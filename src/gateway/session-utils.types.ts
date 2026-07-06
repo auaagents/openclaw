@@ -73,6 +73,12 @@ export type GatewaySessionRow = {
   effectiveFastMode?: FastMode;
   effectiveFastModeSource?: FastModeSource;
   fastAutoOnSeconds?: number;
+  localAssist?: boolean;
+  effectiveLocalAssist?: boolean;
+  localAssistDefault?: boolean;
+  localMoe?: boolean;
+  effectiveLocalMoe?: boolean;
+  localMoeDefault?: boolean;
   verboseLevel?: string;
   traceLevel?: string;
   reasoningLevel?: string;

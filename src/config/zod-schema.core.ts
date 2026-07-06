@@ -48,6 +48,28 @@ const EnvSecretRefSchema = z
   })
   .strict();
 
+export const LocalOrchestrationSchema = z
+  .object({
+    localAssist: z
+      .object({
+        default: z.boolean().optional(),
+        targetAgent: z.string().min(1).optional(),
+        targetModel: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    moe: z
+      .object({
+        default: z.boolean().optional(),
+        companionModel: z.string().min(1).optional(),
+        companionAgent: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .optional();
+
 const FileSecretRefSchema = z
   .object({
     source: z.literal("file"),
@@ -412,6 +434,7 @@ const ModelDefinitionSchema = z
     thinkingLevelMap: ThinkingLevelMapSchema.optional(),
     params: z.record(z.string(), z.unknown()).optional(),
     agentRuntime: ModelAgentRuntimePolicySchema,
+    localOrchestration: LocalOrchestrationSchema,
     headers: z.record(z.string(), z.string()).optional(),
     compat: ModelCompatSchema,
     mediaInput: ModelMediaInputSchema.optional(),
@@ -532,6 +555,7 @@ const ModelProviderSchema = z
     injectNumCtxForOpenAICompat: z.boolean().optional(),
     params: z.record(z.string(), z.unknown()).optional(),
     agentRuntime: ModelAgentRuntimePolicySchema,
+    localOrchestration: LocalOrchestrationSchema,
     localService: ModelProviderLocalServiceSchema,
     headers: z.record(z.string(), SecretInputSchema.register(sensitive)).optional(),
     authHeader: z.boolean().optional(),

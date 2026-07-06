@@ -298,6 +298,10 @@ export type SessionEntry = {
   chatType?: SessionChatType;
   thinkingLevel?: string;
   fastMode?: FastMode;
+  /** Non-local primary models: allow delegation to local helper compute for this session. */
+  localAssist?: boolean;
+  /** Local primary models: allow sibling local-model assistance for this session. */
+  localMoe?: boolean;
   verboseLevel?: string;
   traceLevel?: string;
   reasoningLevel?: string;

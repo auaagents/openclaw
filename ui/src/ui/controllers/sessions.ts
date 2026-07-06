@@ -312,6 +312,8 @@ const SESSION_EVENT_ROW_FIELDS = [
   "elevatedLevel",
   "effectiveFastMode",
   "effectiveFastModeSource",
+  "effectiveLocalAssist",
+  "effectiveLocalMoe",
   "favoriteOrder",
   "fastMode",
   "fastAutoOnSeconds",
@@ -321,6 +323,10 @@ const SESSION_EVENT_ROW_FIELDS = [
   "kind",
   "label",
   "latestCompactionCheckpoint",
+  "localAssist",
+  "localAssistDefault",
+  "localMoe",
+  "localMoeDefault",
   "model",
   "modelProvider",
   "outputTokens",
@@ -1274,6 +1280,8 @@ export async function patchSession(
     favoriteOrder?: number | null;
     thinkingLevel?: string | null;
     fastMode?: FastMode | null;
+    localAssist?: boolean | null;
+    localMoe?: boolean | null;
     verboseLevel?: string | null;
     reasoningLevel?: string | null;
   },
@@ -1291,6 +1299,8 @@ export async function patchSession(
     "favoriteOrder",
     "thinkingLevel",
     "fastMode",
+    "localAssist",
+    "localMoe",
     "verboseLevel",
     "reasoningLevel",
   ] as const) {

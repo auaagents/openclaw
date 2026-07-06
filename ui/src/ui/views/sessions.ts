@@ -77,6 +77,8 @@ export type SessionsProps = {
       favoriteOrder?: number | null;
       thinkingLevel?: string | null;
       fastMode?: FastMode | null;
+      localAssist?: boolean | null;
+      localMoe?: boolean | null;
       verboseLevel?: string | null;
       reasoningLevel?: string | null;
     },

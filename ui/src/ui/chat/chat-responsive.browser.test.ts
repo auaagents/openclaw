@@ -114,7 +114,7 @@ function chatControlsHtml(opts: { agent?: boolean } = {}) {
               <select data-chat-session-select="true" aria-label="Chat session"><option>Daily planning</option></select>
             </label>
             <details class="chat-controls__session chat-controls__inline-select chat-controls__model">
-              <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="" data-chat-thinking-value="" aria-label="Chat model">gpt-5 · High</summary>
+              <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="" data-chat-thinking-value="" aria-label="Chat model">gpt-5 · High · Local Off</summary>
             </details>
           </div>
           <div class="chat-controls__thinking">
@@ -171,7 +171,7 @@ function chatHeaderControlsHtml(hidden = false) {
               <select data-chat-session-select="true" aria-label="Chat session"><option>main</option></select>
             </label>
             <details class="chat-controls__session chat-controls__inline-select chat-controls__model">
-              <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="gpt-5.5" data-chat-thinking-value="" aria-label="Chat model">gpt-5.5 · High</summary>
+              <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="gpt-5.5" data-chat-thinking-value="" aria-label="Chat model">gpt-5.5 · High · Local Off</summary>
             </details>
           </div>
         </div>
@@ -613,7 +613,7 @@ describeBrowserLayout("chat responsive browser layout", () => {
         expect(session.width / agent.width).toBeGreaterThan(1.25);
         expect(session.width / agent.width).toBeLessThan(1.55);
         expect(model.display).not.toBe("none");
-        expect(model.text).toBe("gpt-5 · High");
+        expect(model.text).toBe("gpt-5 · High · Local Off");
         expect(mobileControls.compactCount).toBe(0);
 
         const sizes = await page

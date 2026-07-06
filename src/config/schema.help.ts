@@ -1002,6 +1002,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Optional low-level agent runtime policy for this provider. Use provider/model runtime policy instead of agent-wide runtime pins; omitted/default lets OpenClaw choose the runtime for the selected provider.",
   "models.providers.*.agentRuntime.id":
     'Provider agent runtime id: "openclaw", "auto", a registered plugin harness id such as "codex", or a supported CLI backend alias such as "claude-cli". OpenAI on the official endpoint defaults to the Codex harness when omitted.',
+  "models.providers.*.localOrchestration":
+    "Optional provider-level Local/MoE orchestration defaults inherited by models under this provider.",
   "models.providers.*.localService":
     "Optional on-demand local model server process for this provider. OpenClaw probes healthUrl, starts the command when needed, waits for readiness, and then sends the model request.",
   "models.providers.*.localService.command":
@@ -1087,6 +1089,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Optional low-level agent runtime policy for this specific model. Model runtime policy overrides the provider runtime policy.",
   "models.providers.*.models[].agentRuntime.id":
     'Model agent runtime id: "openclaw", "auto", a registered plugin harness id such as "codex", or a supported CLI backend alias such as "claude-cli".',
+  "models.providers.*.models[].localOrchestration":
+    "Optional Local/MoE orchestration defaults for this model. Model-level values override provider-level values.",
   "models.providers.*.models[].mediaInput":
     "Optional model media capability metadata used by tools to choose conservative image compression defaults.",
   "models.providers.*.models[].mediaInput.image":
@@ -1182,6 +1186,12 @@ export const FIELD_HELP: Record<string, string> = {
     "Optional per-model runtime policy for the default agent. Use this for model-specific runtime exceptions instead of setting a whole-agent runtime.",
   "agents.defaults.models.*.agentRuntime.id":
     'Default-agent model runtime id: "openclaw", "auto", a registered plugin harness id such as "codex", or a supported CLI backend alias such as "claude-cli".',
+  "agents.defaults.models.*.localOrchestration":
+    "Optional per-model Local/MoE orchestration defaults. For cloud models, localAssist allows delegation to a local helper. For local models, moe allows a sibling local model to assist the selected primary model.",
+  "agents.defaults.models.*.localOrchestration.localAssist.default":
+    "Default Local toggle state for sessions using this non-local model when the session has no explicit override.",
+  "agents.defaults.models.*.localOrchestration.moe.default":
+    "Default MoE toggle state for sessions using this local model when the session has no explicit override.",
   "agents.defaults.memorySearch":
     "Vector search over MEMORY.md and memory/*.md (per-agent overrides supported).",
   "agents.defaults.memorySearch.enabled":

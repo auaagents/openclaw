@@ -473,6 +473,14 @@ function clickChatSpeedOption(container: Element, value: string) {
   option?.click();
 }
 
+function clickChatLocalComputeOption(container: Element, value: string) {
+  const option = Array.from(
+    container.querySelectorAll<HTMLButtonElement>("[data-chat-local-compute-option]"),
+  ).find((button) => button.dataset.chatLocalComputeOption === value);
+  expect(option).toBeInstanceOf(HTMLButtonElement);
+  option?.click();
+}
+
 function getThinkingSelect(container: Element): HTMLElement {
   const select = container.querySelector<HTMLElement>('[data-chat-thinking-select="true"]');
   expect(select).toBeInstanceOf(HTMLElement);
@@ -4318,6 +4326,54 @@ describe("chat session controls", () => {
     expect(request).toHaveBeenCalledWith("sessions.patch", {
       key: "main",
       fastMode: "auto",
+    });
+  });
+
+  it("sets Local Assist for non-local composer models", async () => {
+    const { state, request } = createChatHeaderState();
+    state.sessionsResult = createSessionsResultFromRows([
+      {
+        key: "main",
+        kind: "direct",
+        modelProvider: "openai",
+        model: "gpt-5",
+        effectiveLocalAssist: false,
+        updatedAt: 1,
+      },
+    ]);
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    expect(getChatModelSelect(container).textContent).toContain("Local Off");
+    clickChatLocalComputeOption(container, "on");
+
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "main",
+      localAssist: true,
+    });
+  });
+
+  it("sets MoE for local composer models", async () => {
+    const { state, request } = createChatHeaderState();
+    state.sessionsResult = createSessionsResultFromRows([
+      {
+        key: "main",
+        kind: "direct",
+        modelProvider: "ollama",
+        model: "gemma4-opencode:26b-262k",
+        effectiveLocalMoe: false,
+        updatedAt: 1,
+      },
+    ]);
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    expect(getChatModelSelect(container).textContent).toContain("MoE Off");
+    clickChatLocalComputeOption(container, "on");
+
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "main",
+      localMoe: true,
     });
   });
 

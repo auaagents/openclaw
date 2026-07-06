@@ -70,6 +70,7 @@ const FAST_MODE_PROVIDER_IDS = new Set([
   "openrouter",
   "xai",
 ]);
+const LOCAL_MODEL_PROVIDER_IDS = new Set(["ollama"]);
 
 const CHAT_SESSION_PICKER_SEARCH_DEBOUNCE_MS = 300;
 const chatSessionPickerSearchControllers = new WeakMap<
@@ -1210,6 +1211,7 @@ export function renderChatModelSelect(state: AppViewState) {
   const { currentOverride, defaultLabel, options } = resolveChatModelSelectState(state);
   const thinking = resolveChatThinkingSelectState(state);
   const fastMode = resolveChatFastModeSelectState(state, currentOverride);
+  const localCompute = resolveChatLocalComputeSelectState(state, currentOverride);
   const busy =
     state.chatLoading || state.chatSending || Boolean(state.chatRunId) || state.chatStream !== null;
   const disabled =
@@ -1241,10 +1243,12 @@ export function renderChatModelSelect(state: AppViewState) {
     selectedThinkingLabel,
     selectedThinkingValue: thinking.currentOverride,
     fastMode,
+    localCompute,
     thinkingDisabled,
     thinkingOptions: [{ value: "", label: thinking.defaultLabel }, ...thinking.options],
     onModelSelect: (next) => switchChatModel(state, next),
     onFastModeSelect: (next) => switchChatFastMode(state, next),
+    onLocalComputeSelect: (kind, next) => switchChatLocalCompute(state, kind, next),
     onThinkingSelect: (next) => switchChatThinkingLevel(state, next),
   });
 }
@@ -1263,6 +1267,18 @@ type ChatThinkingSelectState = {
 type ChatFastModeSelectState = {
   currentOverride: "" | "on" | "off" | "auto";
   disabled: boolean;
+  options: ChatInlineSelectOption[];
+  supported: boolean;
+};
+
+type ChatLocalComputeKind = "localAssist" | "localMoe";
+
+type ChatLocalComputeSelectState = {
+  currentOverride: "" | "on" | "off";
+  disabled: boolean;
+  effectiveEnabled: boolean;
+  kind: ChatLocalComputeKind;
+  label: string;
   options: ChatInlineSelectOption[];
   supported: boolean;
 };
@@ -1298,16 +1314,24 @@ function resolveProviderFromModelValue(
   );
 }
 
+function resolveEffectiveProviderForModelOverride(
+  state: AppViewState,
+  currentModelOverride: string,
+): string | null {
+  const { provider } = resolveThinkingTargetModel(state);
+  return (
+    resolveProviderFromModelValue(currentModelOverride, state.chatModelCatalog ?? []) ??
+    provider?.trim().toLowerCase() ??
+    null
+  );
+}
+
 function resolveChatFastModeSelectState(
   state: AppViewState,
   currentModelOverride: string,
 ): ChatFastModeSelectState {
   const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
-  const { provider } = resolveThinkingTargetModel(state);
-  const effectiveProvider =
-    resolveProviderFromModelValue(currentModelOverride, state.chatModelCatalog ?? []) ??
-    provider?.trim().toLowerCase() ??
-    null;
+  const effectiveProvider = resolveEffectiveProviderForModelOverride(state, currentModelOverride);
   const currentOverride =
     activeRow?.fastMode === "auto"
       ? "auto"
@@ -1334,6 +1358,44 @@ function resolveChatFastModeSelectState(
       { value: "on", label: "Fast" },
       { value: "off", label: "Standard" },
       { value: "auto", label: "Auto" },
+    ],
+    supported,
+  };
+}
+
+function resolveChatLocalComputeSelectState(
+  state: AppViewState,
+  currentModelOverride: string,
+): ChatLocalComputeSelectState {
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
+  const effectiveProvider = resolveEffectiveProviderForModelOverride(state, currentModelOverride);
+  const isLocal = Boolean(effectiveProvider && LOCAL_MODEL_PROVIDER_IDS.has(effectiveProvider));
+  const kind: ChatLocalComputeKind = isLocal ? "localMoe" : "localAssist";
+  const stored = kind === "localMoe" ? activeRow?.localMoe : activeRow?.localAssist;
+  const effectiveEnabled =
+    kind === "localMoe"
+      ? (activeRow?.effectiveLocalMoe ?? activeRow?.localMoe ?? false)
+      : (activeRow?.effectiveLocalAssist ?? activeRow?.localAssist ?? false);
+  const currentOverride = stored === true ? "on" : stored === false ? "off" : "";
+  const label = kind === "localMoe" ? "MoE" : "Local";
+  const supported = Boolean(effectiveProvider);
+  return {
+    currentOverride,
+    disabled:
+      !supported ||
+      !state.connected ||
+      state.chatLoading ||
+      state.chatSending ||
+      Boolean(state.chatRunId) ||
+      state.chatStream !== null ||
+      !state.client,
+    effectiveEnabled,
+    kind,
+    label,
+    options: [
+      { value: "", label: `Default (${effectiveEnabled ? "Enabled" : "Disabled"})` },
+      { value: "on", label: "Enabled" },
+      { value: "off", label: "Disabled" },
     ],
     supported,
   };
@@ -1470,6 +1532,7 @@ function formatCombinedPickerThinkingOptionLabel(option: ChatInlineSelectOption)
 
 function renderChatModelReasoningSelect(params: {
   fastMode: ChatFastModeSelectState;
+  localCompute: ChatLocalComputeSelectState;
   disabled: boolean;
   modelOptions: ChatInlineSelectOption[];
   selectedModelLabel: string;
@@ -1479,12 +1542,14 @@ function renderChatModelReasoningSelect(params: {
   thinkingDisabled: boolean;
   thinkingOptions: ChatInlineSelectOption[];
   onFastModeSelect: (value: "" | "on" | "off" | "auto") => Promise<unknown>;
+  onLocalComputeSelect: (kind: ChatLocalComputeKind, value: "" | "on" | "off") => Promise<unknown>;
   onModelSelect: (value: string) => Promise<unknown>;
   onThinkingSelect: (value: string) => Promise<unknown>;
 }) {
   const {
     disabled,
     fastMode,
+    localCompute,
     modelOptions,
     selectedModelLabel,
     selectedModelValue,
@@ -1493,12 +1558,14 @@ function renderChatModelReasoningSelect(params: {
     thinkingDisabled,
     thinkingOptions,
     onFastModeSelect,
+    onLocalComputeSelect,
     onModelSelect,
     onThinkingSelect,
   } = params;
   const triggerModel = formatCombinedPickerModelLabel(selectedModelLabel);
   const triggerThinking = formatCombinedPickerThinkingLabel(selectedThinkingLabel);
-  const triggerLabel = `${triggerModel} · ${triggerThinking}`;
+  const triggerLocal = `${localCompute.label} ${localCompute.effectiveEnabled ? "On" : "Off"}`;
+  const triggerLabel = `${triggerModel} · ${triggerThinking} · ${triggerLocal}`;
   return html`
     <details class="chat-controls__session chat-controls__inline-select chat-controls__model">
       <summary
@@ -1665,6 +1732,55 @@ function renderChatModelReasoningSelect(params: {
                 </div>
               `
             : ""}
+          ${localCompute.supported
+            ? html`
+                <div class="chat-controls__inline-select-section-label">${localCompute.label}</div>
+                <div class="chat-controls__reasoning-options" role="listbox">
+                  ${repeat(
+                    localCompute.options,
+                    (option) => option.value,
+                    (option) => {
+                      const optionValue = option.value as "" | "on" | "off";
+                      const selected = optionValue === localCompute.currentOverride;
+                      return html`
+                        <button
+                          class="chat-controls__reasoning-option ${selected
+                            ? "chat-controls__reasoning-option--selected"
+                            : ""}"
+                          data-chat-local-compute-option=${option.value}
+                          data-chat-local-compute-kind=${localCompute.kind}
+                          role="option"
+                          aria-selected=${selected ? "true" : "false"}
+                          type="button"
+                          ?disabled=${localCompute.disabled}
+                          @click=${async (event: MouseEvent) => {
+                            event.stopPropagation();
+                            if (localCompute.disabled) {
+                              event.preventDefault();
+                              return;
+                            }
+                            (event.currentTarget as HTMLElement)
+                              .closest("details")
+                              ?.removeAttribute("open");
+                            await onLocalComputeSelect(localCompute.kind, optionValue);
+                          }}
+                        >
+                          <span>${option.label}</span>
+                          ${selected
+                            ? html`<span
+                                class="chat-controls__inline-select-check"
+                                aria-hidden="true"
+                              >
+                                ${icons.check}
+                              </span>`
+                            : ""}
+                        </button>
+                      `;
+                    },
+                  )}
+                </div>
+              `
+            : ""}
         </div>
       </div>
     </details>
@@ -1713,6 +1829,61 @@ async function switchChatFastMode(state: AppViewState, nextFastMode: "" | "on" |
   } catch (err) {
     patchSessionFastMode(state, targetSessionKey, previousFastMode);
     setChatError(state, `Failed to set speed: ${String(err)}`);
+  }
+}
+
+function patchSessionLocalCompute(
+  state: AppViewState,
+  sessionKey: string,
+  kind: ChatLocalComputeKind,
+  value: boolean | undefined,
+) {
+  const current = state.sessionsResult;
+  if (!current) {
+    return;
+  }
+  const effectiveField = kind === "localMoe" ? "effectiveLocalMoe" : "effectiveLocalAssist";
+  state.sessionsResult = {
+    ...current,
+    sessions: current.sessions.map((row) =>
+      row.key === sessionKey
+        ? Object.assign({}, row, {
+            [kind]: value,
+            ...(value !== undefined ? { [effectiveField]: value } : {}),
+          })
+        : row,
+    ),
+  };
+}
+
+async function switchChatLocalCompute(
+  state: AppViewState,
+  kind: ChatLocalComputeKind,
+  nextLocalCompute: "" | "on" | "off",
+) {
+  if (!state.client || !state.connected) {
+    return;
+  }
+  const targetSessionKey = state.sessionKey;
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === targetSessionKey);
+  const previousValue = kind === "localMoe" ? activeRow?.localMoe : activeRow?.localAssist;
+  const next = nextLocalCompute === "" ? undefined : nextLocalCompute === "on" ? true : false;
+  if (previousValue === next) {
+    return;
+  }
+  setChatError(state, null);
+  patchSessionLocalCompute(state, targetSessionKey, kind, next);
+  try {
+    await state.client.request("sessions.patch", {
+      key: targetSessionKey,
+      ...scopedAgentParamsForSession(state, targetSessionKey),
+      [kind]: next ?? null,
+    });
+    await refreshSessionOptions(state);
+    patchSessionLocalCompute(state, targetSessionKey, kind, next);
+  } catch (err) {
+    patchSessionLocalCompute(state, targetSessionKey, kind, previousValue);
+    setChatError(state, `Failed to set ${kind === "localMoe" ? "MoE" : "Local"}: ${String(err)}`);
   }
 }
 

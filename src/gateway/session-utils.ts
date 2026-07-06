@@ -26,6 +26,7 @@ import {
 import { lookupContextTokens, resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveFastModeState } from "../agents/fast-mode.js";
+import { resolveLocalOrchestrationPolicy } from "../agents/local-orchestration.js";
 import {
   findModelCatalogEntry,
   modelSupportsInput,
@@ -2143,6 +2144,13 @@ export function buildGatewaySessionRow(params: {
           }
         : undefined,
   });
+  const localOrchestrationPolicy = resolveLocalOrchestrationPolicy({
+    cfg,
+    agentId: sessionAgentId,
+    provider: rowModelProvider ?? DEFAULT_PROVIDER,
+    model: rowModel ?? DEFAULT_MODEL,
+    sessionEntry: entry,
+  });
   const pluginExtensions =
     !lightweight && entry ? projectPluginSessionExtensionsSync({ sessionKey: key, entry }) : [];
 
@@ -2186,6 +2194,12 @@ export function buildGatewaySessionRow(params: {
     effectiveFastMode: fastModeState.mode,
     effectiveFastModeSource: fastModeState.source,
     fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
+    localAssist: entry?.localAssist,
+    effectiveLocalAssist: localOrchestrationPolicy.localAssistEnabled,
+    localAssistDefault: localOrchestrationPolicy.localAssistDefault,
+    localMoe: entry?.localMoe,
+    effectiveLocalMoe: localOrchestrationPolicy.localMoeEnabled,
+    localMoeDefault: localOrchestrationPolicy.localMoeDefault,
     verboseLevel: entry?.verboseLevel,
     traceLevel: entry?.traceLevel,
     reasoningLevel: entry?.reasoningLevel,

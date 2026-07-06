@@ -490,6 +490,12 @@ export type GatewaySessionRow = {
   effectiveFastMode?: FastMode;
   effectiveFastModeSource?: FastModeSource;
   fastAutoOnSeconds?: number;
+  localAssist?: boolean;
+  effectiveLocalAssist?: boolean;
+  localAssistDefault?: boolean;
+  localMoe?: boolean;
+  effectiveLocalMoe?: boolean;
+  localMoeDefault?: boolean;
   verboseLevel?: string;
   reasoningLevel?: string;
   elevatedLevel?: string;
@@ -559,6 +565,8 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   updatedAt?: number;
   thinkingLevel?: string;
   fastMode?: FastMode;
+  localAssist?: boolean;
+  localMoe?: boolean;
   verboseLevel?: string;
   reasoningLevel?: string;
   elevatedLevel?: string;

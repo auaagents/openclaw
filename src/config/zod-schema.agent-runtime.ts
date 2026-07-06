@@ -17,6 +17,7 @@ import {
   GroupChatSchema,
   HumanDelaySchema,
   IdentitySchema,
+  LocalOrchestrationSchema,
   SecretInputSchema,
   ToolsLinksSchema,
   ToolsMediaSchema,
@@ -1026,6 +1027,7 @@ export const AgentModelRuntimeEntrySchema = z
     alias: z.string().optional(),
     params: z.record(z.string(), z.unknown()).optional(),
     agentRuntime: AgentRuntimePolicySchema,
+    localOrchestration: LocalOrchestrationSchema,
     streaming: z.boolean().optional(),
   })
   .strict();

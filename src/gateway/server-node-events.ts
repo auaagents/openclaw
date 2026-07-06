@@ -277,6 +277,8 @@ async function touchSessionStore(params: {
       updatedAt: params.now,
       thinkingLevel: params.entry?.thinkingLevel,
       fastMode: params.entry?.fastMode,
+      localAssist: params.entry?.localAssist,
+      localMoe: params.entry?.localMoe,
       verboseLevel: params.entry?.verboseLevel,
       reasoningLevel: params.entry?.reasoningLevel,
       systemSent: params.entry?.systemSent,

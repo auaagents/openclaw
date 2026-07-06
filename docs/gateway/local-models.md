@@ -82,6 +82,54 @@ Best current local stack. Load a large model in LM Studio (for example, a full-s
 
 Keep hosted models configured even when running local; use `models.mode: "merge"` so fallbacks stay available.
 
+### Local Assist and local MoE
+
+OpenClaw can treat local models as specialist compute without pretending that a
+router is a model. The model selector still lists real provider/model entries;
+the session policy controls whether extra local orchestration is allowed.
+
+- For hosted/non-local models, the chat picker shows **Local**. When enabled,
+  the selected hosted model stays primary, but the session may delegate useful
+  substeps to a configured local helper agent/model.
+- For local models, the chat picker shows **MoE**. When enabled, the selected
+  local model stays primary, but the session may call a sibling local model as a
+  temporary specialist for planning, critique, synthesis, or checking.
+- The control is per-session and supports inherited default, enabled, and
+  disabled states. A reset preserves the explicit session choice.
+
+Example model metadata:
+
+```json5
+{
+  agents: {
+    defaults: {
+      models: {
+        "anthropic/claude-sonnet-4-6": {
+          alias: "Sonnet",
+          localOrchestration: {
+            localAssist: {
+              default: false,
+              targetAgent: "aua-local",
+              targetModel: "local-code",
+            },
+          },
+        },
+        "ollama/gemma4-opencode:26b-262k": {
+          alias: "local-code",
+          localOrchestration: {
+            moe: {
+              default: false,
+              companionAgent: "aua-local",
+              companionModel: "local-chat",
+            },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
 ### Hybrid config: hosted primary, local fallback
 
 ```json5

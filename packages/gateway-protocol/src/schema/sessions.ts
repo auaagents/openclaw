@@ -310,6 +310,8 @@ export const SessionsPatchParamsSchema = Type.Object(
     favoriteOrder: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thinkingLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     fastMode: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto"), Type.Null()])),
+    localAssist: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
+    localMoe: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
     verboseLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     traceLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     reasoningLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),

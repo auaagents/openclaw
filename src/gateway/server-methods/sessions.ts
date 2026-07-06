@@ -187,6 +187,8 @@ function inheritSessionRuntimeSelection(
     ...(parentEntry.model ? { model: parentEntry.model } : {}),
     ...(parentEntry.thinkingLevel ? { thinkingLevel: parentEntry.thinkingLevel } : {}),
     ...(parentEntry.fastMode !== undefined ? { fastMode: parentEntry.fastMode } : {}),
+    ...(parentEntry.localAssist !== undefined ? { localAssist: parentEntry.localAssist } : {}),
+    ...(parentEntry.localMoe !== undefined ? { localMoe: parentEntry.localMoe } : {}),
     ...(parentEntry.verboseLevel ? { verboseLevel: parentEntry.verboseLevel } : {}),
     ...(parentEntry.traceLevel ? { traceLevel: parentEntry.traceLevel } : {}),
     ...(parentEntry.reasoningLevel ? { reasoningLevel: parentEntry.reasoningLevel } : {}),

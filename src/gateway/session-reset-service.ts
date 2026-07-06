@@ -1008,6 +1008,8 @@ export async function performGatewaySessionReset(params: {
         abortedLastRun: false,
         thinkingLevel: currentEntry?.thinkingLevel,
         fastMode: currentEntry?.fastMode,
+        localAssist: currentEntry?.localAssist,
+        localMoe: currentEntry?.localMoe,
         verboseLevel: currentEntry?.verboseLevel,
         traceLevel: currentEntry?.traceLevel,
         reasoningLevel: currentEntry?.reasoningLevel,
