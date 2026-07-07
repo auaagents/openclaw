@@ -9,6 +9,7 @@ import {
   abortChatRun,
   handleChatEvent,
   loadChatHistory,
+  loadOlderChatHistory,
   requestChatSend,
   requestSkillWorkshopRevisionChatSend,
   sendChatMessage,
@@ -23,6 +24,9 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 function createState(overrides: Partial<ChatState> = {}): ChatState {
   return {
     chatAttachments: [],
+    chatHistoryHasMore: false,
+    chatHistoryLoadingMore: false,
+    chatHistoryNextOffset: null,
     chatLoading: false,
     chatMessage: "",
     chatMessages: [],
@@ -1890,7 +1894,8 @@ describe("loadChatHistory filtering", () => {
 
     expect(request).toHaveBeenCalledWith("chat.startup", {
       sessionKey: "global",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(state.chatMessages).toEqual([
       { role: "assistant", content: [{ type: "text", text: "ready" }] },
@@ -1917,7 +1922,8 @@ describe("loadChatHistory filtering", () => {
 
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "main",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
   });
 });
@@ -2106,6 +2112,51 @@ describe("sendChatMessage", () => {
     expect(request).toHaveBeenCalledWith(
       "chat.send",
       expect.objectContaining({ sessionKey: "global", agentId: "ops" }),
+    );
+  });
+
+  it("passes explicit one-turn thinking overrides to chat.send", async () => {
+    const request = vi.fn().mockResolvedValue({ runId: "run-thinking", status: "started" });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+    });
+
+    await requestChatSend(state, {
+      message: "queued",
+      runId: "run-thinking",
+      thinking: " low ",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({
+        message: "queued",
+        thinking: "low",
+      }),
+    );
+  });
+
+  it("forces thinking off when the chat setting disables thinking", async () => {
+    const request = vi.fn().mockResolvedValue({ runId: "run-thinking-off", status: "started" });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+      settings: { chatShowThinking: false },
+    });
+
+    await requestChatSend(state, {
+      message: "queued",
+      runId: "run-thinking-off",
+      thinking: "high",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({
+        message: "queued",
+        thinking: "off",
+      }),
     );
   });
 
@@ -2504,11 +2555,13 @@ describe("loadChatHistory retry handling", () => {
 
     expect(request).toHaveBeenNthCalledWith(1, "chat.startup", {
       sessionKey: "main",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).toHaveBeenNthCalledWith(2, "chat.history", {
       sessionKey: "main",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(state.chatMessages).toEqual([
       { role: "assistant", content: [{ type: "text", text: "fallback" }] },
@@ -2576,7 +2629,8 @@ describe("loadChatHistory retry handling", () => {
 
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "main",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(state.chatMessages).toEqual([
       { role: "assistant", content: [{ type: "text", text: "visible answer" }] },
@@ -2585,6 +2639,85 @@ describe("loadChatHistory retry handling", () => {
     expect(state.chatThinkingLevel).toBe("low");
     expect(state.chatLoading).toBe(false);
     expect(state.lastError).toBeNull();
+  });
+
+  it("records pagination metadata from history responses", async () => {
+    const request = vi.fn().mockResolvedValue({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "visible answer" }] }],
+      hasMore: true,
+      nextOffset: 1000,
+      totalMessages: 2000,
+    });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+    });
+
+    await loadChatHistory(state);
+
+    expect(request).toHaveBeenCalledWith("chat.history", {
+      sessionKey: "main",
+      limit: 1000,
+      offset: 0,
+    });
+    expect(state.chatHistoryHasMore).toBe(true);
+    expect(state.chatHistoryNextOffset).toBe(1000);
+    expect(state.chatHistoryLoadingMore).toBe(false);
+  });
+
+  it("loads older history pages and keeps boundary duplicates out of the transcript", async () => {
+    const olderMessage = {
+      role: "user",
+      content: [{ type: "text", text: "older" }],
+      __openclaw: { seq: 1 },
+    };
+    const currentBoundary = {
+      role: "assistant",
+      content: [{ type: "text", text: "boundary" }],
+      __openclaw: { seq: 2 },
+    };
+    const currentNewer = {
+      role: "user",
+      content: [{ type: "text", text: "newer" }],
+      __openclaw: { seq: 3 },
+    };
+    const request = vi.fn().mockResolvedValue({
+      messages: [
+        olderMessage,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "duplicate boundary" }],
+          __openclaw: { seq: 2 },
+        },
+      ],
+      hasMore: false,
+      totalMessages: 3,
+    });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+      chatHistoryHasMore: true,
+      chatHistoryNextOffset: 1000,
+      chatMessages: [currentBoundary, currentNewer],
+      chatMessagesBySession: new Map(),
+    });
+
+    await loadOlderChatHistory(state);
+
+    expect(request).toHaveBeenCalledWith("chat.history", {
+      sessionKey: "main",
+      limit: 1000,
+      offset: 1000,
+    });
+    expect(state.chatMessages).toEqual([olderMessage, currentBoundary, currentNewer]);
+    expect(state.chatMessagesBySession?.get("agent:main:main")).toEqual([
+      olderMessage,
+      currentBoundary,
+      currentNewer,
+    ]);
+    expect(state.chatHistoryHasMore).toBe(false);
+    expect(state.chatHistoryNextOffset).toBeNull();
+    expect(state.chatHistoryLoadingMore).toBe(false);
   });
 
   it("filters heartbeat acknowledgements and internal-only user messages", async () => {

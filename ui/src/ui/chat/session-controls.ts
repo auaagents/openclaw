@@ -27,6 +27,13 @@ import {
 import { pushUniqueTrimmedSelectOption } from "../select-options.ts";
 import { isCronSessionKey, resolveSessionDisplayName } from "../session-display.ts";
 import {
+  applyLocalFavoritePatch,
+  buildSessionFavoritePatch,
+  compareFavoriteSessions,
+  isFavoriteSession,
+  rowFromLocalFavoriteSession,
+} from "../session-favorites.ts";
+import {
   buildAgentMainSessionKey,
   isSessionKeyTiedToAgent,
   isSubagentSessionKey,
@@ -591,34 +598,64 @@ export type ChatSessionPickerSection = {
   rows: ChatSessionPickerRowEntry[];
 };
 
-function isPermanentFavoriteSessionRow(row: SessionsListResult["sessions"][number]): boolean {
-  return row.permanentFavorite === true;
+function localFavoriteRowMatchesQuery(
+  row: SessionsListResult["sessions"][number],
+  query: string,
+): boolean {
+  const normalizedQuery = normalizeLowercaseStringOrEmpty(query);
+  if (!normalizedQuery) {
+    return true;
+  }
+  const parsed = parseAgentSessionKey(row.key);
+  return [
+    row.key,
+    row.label,
+    row.displayName,
+    row.surface,
+    row.subject,
+    row.room,
+    row.space,
+    parsed?.agentId,
+    parsed?.rest,
+  ].some((value) => normalizeLowercaseStringOrEmpty(value).includes(normalizedQuery));
 }
 
-function resolveFavoriteOrder(row: SessionsListResult["sessions"][number]): number {
-  const order = row.favoriteOrder;
-  return typeof order === "number" && Number.isFinite(order) && order >= 0
-    ? order
-    : Number.MAX_SAFE_INTEGER;
+function buildChatSessionRowsByKey(
+  state: AppViewState,
+  result: SessionsListResult | null,
+  options: { localFavoritesQuery?: string } = {},
+): Map<string, SessionsListResult["sessions"][number]> {
+  const rowsByKey = new Map((result?.sessions ?? []).map((row) => [row.key, row] as const));
+  for (const local of state.settings.favoriteSessions ?? []) {
+    const row = rowFromLocalFavoriteSession(local, rowsByKey.get(local.key));
+    if (!localFavoriteRowMatchesQuery(row, options.localFavoritesQuery ?? "")) {
+      continue;
+    }
+    rowsByKey.set(row.key, row);
+  }
+  return rowsByKey;
 }
 
-function compareFavoritePickerRows(a: ChatSessionPickerRowEntry, b: ChatSessionPickerRowEntry) {
-  const orderDelta = resolveFavoriteOrder(a.row) - resolveFavoriteOrder(b.row);
-  if (orderDelta !== 0) {
-    return orderDelta;
+function resolveChatSessionPickerLocalFavoritesQuery(
+  state: AppViewState,
+  result: SessionsListResult | null,
+): string {
+  if (result && result === state.chatSessionPickerResult) {
+    return state.chatSessionPickerAppliedQuery;
   }
-  const updatedDelta = (b.row.updatedAt ?? 0) - (a.row.updatedAt ?? 0);
-  if (updatedDelta !== 0) {
-    return updatedDelta;
+  if (state.chatSessionPickerOpen) {
+    return state.chatSessionPickerAppliedQuery;
   }
-  return a.row.key.localeCompare(b.row.key);
+  return "";
 }
 
 export function resolveChatSessionPickerRows(
   state: AppViewState,
   result: SessionsListResult | null,
 ): ChatSessionPickerRowEntry[] {
-  const rowsByKey = new Map((result?.sessions ?? []).map((row) => [row.key, row] as const));
+  const rowsByKey = buildChatSessionRowsByKey(state, result, {
+    localFavoritesQuery: resolveChatSessionPickerLocalFavoritesQuery(state, result),
+  });
   return resolveSessionOptionGroups(state, state.sessionKey, result)
     .flatMap((group) => group.options)
     .filter((option) => rowsByKey.has(option.key))
@@ -634,8 +671,8 @@ export function resolveChatSessionPickerSections(
 ): ChatSessionPickerSection[] {
   const rows = resolveChatSessionPickerRows(state, result);
   const favorites = rows
-    .filter((entry) => isPermanentFavoriteSessionRow(entry.row))
-    .toSorted(compareFavoritePickerRows);
+    .filter((entry) => isFavoriteSession(entry.row, state.settings.favoriteSessions))
+    .toSorted((a, b) => compareFavoriteSessions(a.row, b.row, state.settings.favoriteSessions));
   const favoriteKeys = new Set(favorites.map((entry) => entry.row.key));
   const recent = rows.filter((entry) => !favoriteKeys.has(entry.row.key));
   const sections: ChatSessionPickerSection[] = [];
@@ -741,22 +778,19 @@ async function toggleChatSessionFavorite(
     return;
   }
   const sessionKey = row.key;
-  const nextFavorite = row.permanentFavorite !== true;
-  const favoriteOrder = nextFavorite ? resolveFavoriteOrder(row) : null;
-  const nextFavoriteOrder =
-    favoriteOrder === Number.MAX_SAFE_INTEGER || favoriteOrder === null
-      ? Date.now()
-      : favoriteOrder;
+  const localPatch = buildSessionFavoritePatch(row, state.settings.favoriteSessions);
+  const previousSettings = state.settings;
   const previousSessionsResult = state.sessionsResult;
   const previousPickerResult = state.chatSessionPickerResult;
   const previousRowsByAgent = state.chatAgentSessionRowsByAgent;
   state.chatSessionFavoriteBusyKey = sessionKey;
   setChatError(state, null);
+  state.applySettings(applyLocalFavoritePatch(state.settings, row, localPatch));
   patchChatSessionRows(state, sessionKey, (current) => {
     const next = { ...current };
-    if (nextFavorite) {
+    if (localPatch.permanentFavorite) {
       next.permanentFavorite = true;
-      next.favoriteOrder = nextFavoriteOrder;
+      next.favoriteOrder = localPatch.favoriteOrder ?? Date.now();
     } else {
       delete next.permanentFavorite;
       delete next.favoriteOrder;
@@ -768,11 +802,12 @@ async function toggleChatSessionFavorite(
     await state.client.request("sessions.patch", {
       key: sessionKey,
       ...scopedAgentParamsForSession(state, sessionKey),
-      permanentFavorite: nextFavorite,
-      favoriteOrder: nextFavorite ? nextFavoriteOrder : null,
+      permanentFavorite: localPatch.permanentFavorite,
+      favoriteOrder: localPatch.favoriteOrder,
     });
     await refreshSessionMetadataResults(state);
   } catch (err) {
+    state.applySettings(previousSettings);
     state.sessionsResult = previousSessionsResult;
     state.chatSessionPickerResult = previousPickerResult;
     state.chatAgentSessionRowsByAgent = previousRowsByAgent;
@@ -2134,10 +2169,7 @@ export function resolveSessionOptionGroups(
   const hideCron = state.sessionsHideCron ?? true;
   const activeAgentId = resolveChatAgentFilterId(state, sessionKey);
   const defaultAgentId = normalizeAgentId(state.agentsList?.defaultId ?? "main");
-  const byKey = new Map<string, SessionsListResult["sessions"][number]>();
-  for (const row of rows) {
-    byKey.set(row.key, row);
-  }
+  const byKey = buildChatSessionRowsByKey(state, sessions);
 
   const seenKeys = new Set<string>();
   const groups = new Map<string, SessionOptionGroup>();
@@ -2177,21 +2209,35 @@ export function resolveSessionOptionGroups(
     });
   };
 
-  for (const row of rows) {
+  const shouldIncludeSessionOptionRow = (row: SessionsListResult["sessions"][number]) => {
     if (
       !isSessionKeyTiedToAgent(row.key, activeAgentId, defaultAgentId) &&
       row.key !== sessionKey
     ) {
-      continue;
+      return false;
     }
     if (row.key !== sessionKey && (row.kind === "global" || row.kind === "unknown")) {
-      continue;
+      return false;
     }
     if (hideCron && row.key !== sessionKey && isCronSessionKey(row.key)) {
-      continue;
+      return false;
     }
     const isSubagent = isSubagentSessionKey(row.key) || Boolean(row.spawnedBy);
     if (isSubagent && row.key !== sessionKey) {
+      return false;
+    }
+    return true;
+  };
+
+  for (const row of rows) {
+    if (!shouldIncludeSessionOptionRow(row)) {
+      continue;
+    }
+    addOption(row.key);
+  }
+  for (const local of state.settings.favoriteSessions ?? []) {
+    const row = byKey.get(local.key);
+    if (!row || !shouldIncludeSessionOptionRow(row)) {
       continue;
     }
     addOption(row.key);

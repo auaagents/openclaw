@@ -530,6 +530,8 @@ function createChatProps(
     showThinking: false,
     showToolCalls: true,
     loading: false,
+    historyHasMore: false,
+    historyLoadingMore: false,
     sending: false,
     compactionStatus: null,
     fallbackStatus: null,
@@ -570,6 +572,7 @@ function createChatProps(
     showNewMessages: false,
     onScrollToBottom: () => undefined,
     onRefresh: () => undefined,
+    onLoadOlderHistory: () => undefined,
     getDraft: () => "",
     onDraftChange: () => undefined,
     onRequestUpdate: () => undefined,
@@ -689,6 +692,45 @@ describe("chat code-block copy", () => {
     await Promise.resolve();
 
     expect(writeText).toHaveBeenCalledWith(payload);
+  });
+});
+
+describe("chat history pagination", () => {
+  it("renders a load-older control when older history is available", () => {
+    const onLoadOlderHistory = vi.fn();
+    const container = renderChatView({
+      messages: [{ role: "assistant", content: "current" }],
+      historyHasMore: true,
+      onLoadOlderHistory,
+    });
+
+    const button = requireElement(
+      container,
+      ".chat-history-load-more",
+      "load older history button",
+    ) as HTMLButtonElement;
+    expect(button.textContent?.trim()).toBe("Load older messages");
+
+    button.click();
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the load-older control while an older history page is loading", () => {
+    const container = renderChatView({
+      messages: [{ role: "assistant", content: "current" }],
+      historyHasMore: true,
+      historyLoadingMore: true,
+    });
+
+    const button = requireElement(
+      container,
+      ".chat-history-load-more",
+      "load older history button",
+    ) as HTMLButtonElement;
+
+    expect(button.disabled).toBe(true);
+    expect(button.textContent?.trim()).toBe("Loading older messages...");
   });
 });
 
@@ -3126,6 +3168,113 @@ describe("chat session controls", () => {
     expect(onSwitchSession).toHaveBeenCalledWith(state, targetSessionKey);
   });
 
+  it("renders locally pinned favorites in the picker when they are absent from the result page", () => {
+    const { state } = createChatHeaderState();
+    state.sessionKey = "agent:main:main";
+    state.settings.sessionKey = state.sessionKey;
+    state.settings.favoriteSessions = [
+      {
+        key: "agent:main:pinned-plan",
+        kind: "direct",
+        label: "Pinned plan",
+        favoriteOrder: 5,
+        updatedAt: Date.now() - 24 * 60 * 60_000,
+      },
+    ];
+    state.sessionsResult = createSessionsResultFromRows([
+      { key: "agent:main:main", kind: "direct", label: "Main", updatedAt: 10 },
+      { key: "agent:main:recent", kind: "direct", label: "Recent", updatedAt: 9 },
+    ]);
+    state.chatSessionPickerOpen = true;
+    state.chatSessionPickerSurface = "desktop";
+    state.chatSessionPickerResult = state.sessionsResult;
+    const onSwitchSession = vi.fn();
+    const container = document.createElement("div");
+
+    render(renderChatSessionSelect(state, onSwitchSession), container);
+
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(".chat-session-picker__section-label"),
+      ).map((node) => node.textContent?.trim()),
+    ).toEqual(["Favorites", "Recent"]);
+    expect(
+      Array.from(container.querySelectorAll<HTMLElement>(".chat-session-picker__option-label")).map(
+        (node) => node.textContent?.trim(),
+      ),
+    ).toEqual(["Pinned plan", "Main", "Recent"]);
+
+    const pinnedOption = container.querySelector<HTMLButtonElement>(
+      'button[data-chat-session-picker-option="true"][data-session-key="agent:main:pinned-plan"]',
+    );
+    expect(pinnedOption).toBeInstanceOf(HTMLButtonElement);
+    pinnedOption!.click();
+
+    expect(onSwitchSession).toHaveBeenCalledWith(state, "agent:main:pinned-plan");
+  });
+
+  it("keeps local favorites visible when a favorite mutation refresh returns a short page", async () => {
+    const { state } = createChatHeaderState();
+    state.sessionKey = "agent:main:main";
+    state.settings.sessionKey = state.sessionKey;
+    state.settings.favoriteSessions = [
+      {
+        key: "agent:main:pinned-a",
+        kind: "direct",
+        label: "Pinned A",
+        favoriteOrder: 1,
+        updatedAt: 8,
+      },
+      {
+        key: "agent:main:pinned-b",
+        kind: "direct",
+        label: "Pinned B",
+        favoriteOrder: 2,
+        updatedAt: 7,
+      },
+    ];
+    const shortRows: GatewaySessionRow[] = [
+      { key: "agent:main:main", kind: "direct", label: "Main", updatedAt: 10 },
+      { key: "agent:main:recent", kind: "direct", label: "Recent", updatedAt: 9 },
+    ];
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.patch") {
+        return { ok: true, key: "agent:main:recent" };
+      }
+      if (method === "sessions.list") {
+        return createSessionsResultFromRows(shortRows);
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    state.client = { request } as unknown as GatewayBrowserClient;
+    state.sessionsResult = createSessionsResultFromRows(shortRows);
+    state.chatSessionPickerOpen = true;
+    state.chatSessionPickerSurface = "desktop";
+    state.chatSessionPickerResult = state.sessionsResult;
+    const container = document.createElement("div");
+
+    render(renderChatSessionSelect(state), container);
+    container
+      .querySelector<HTMLButtonElement>(
+        'button[data-chat-session-favorite-toggle="true"][data-session-key="agent:main:recent"]',
+      )!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(state.chatSessionFavoriteBusyKey).toBeNull());
+    render(renderChatSessionSelect(state), container);
+
+    expect(state.settings.favoriteSessions?.map((entry) => entry.key)).toEqual([
+      "agent:main:pinned-a",
+      "agent:main:pinned-b",
+      "agent:main:recent",
+    ]);
+    expect(
+      Array.from(container.querySelectorAll<HTMLElement>(".chat-session-picker__option-label")).map(
+        (node) => node.textContent?.trim(),
+      ),
+    ).toEqual(["Pinned A", "Pinned B", "Recent", "Main"]);
+  });
+
   it("renders permanent favorites first and keeps add/remove actions stable", async () => {
     const { state } = createChatHeaderState();
     state.sessionKey = "agent:main:main";
@@ -3222,6 +3371,9 @@ describe("chat session controls", () => {
       ),
     );
     await vi.waitFor(() => expect(state.chatSessionFavoriteBusyKey).toBeNull());
+    expect(state.settings.favoriteSessions?.map((entry) => entry.key)).toEqual([
+      "agent:main:recent",
+    ]);
     render(renderChatSessionSelect(state), container);
 
     expect(

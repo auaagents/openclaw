@@ -110,6 +110,8 @@ export type ChatProps = {
   showThinking: boolean;
   showToolCalls: boolean;
   loading: boolean;
+  historyHasMore?: boolean;
+  historyLoadingMore?: boolean;
   sending: boolean;
   canAbort?: boolean;
   runStatus?: ChatRunUiStatus | null;
@@ -177,6 +179,7 @@ export type ChatProps = {
   onScrollToBottom?: () => void;
   onAssistantAttachmentLoaded?: () => void;
   onRefresh: () => void;
+  onLoadOlderHistory?: () => void | Promise<void>;
   onToggleFocusMode?: () => void;
   getDraft?: () => string;
   onDraftChange: (next: string) => void;
@@ -2314,6 +2317,8 @@ export function renderChat(props: ChatProps) {
   const hasRealtimeTalkConversation = (props.realtimeTalkConversation?.length ?? 0) > 0;
   const isEmpty = chatItems.length === 0 && !props.loading && !hasRealtimeTalkConversation;
   const showLoadingSkeleton = props.loading && chatItems.length === 0;
+  const showLoadOlderHistory =
+    props.historyHasMore === true && typeof props.onLoadOlderHistory === "function";
   const threadContextWindow =
     activeSession?.contextTokens ?? props.sessions?.defaults?.contextTokens ?? null;
 
@@ -2335,6 +2340,25 @@ export function renderChat(props: ChatProps) {
       @contextmenu=${(e: MouseEvent) => handleChatContextMenu(e, props)}
     >
       <div class="chat-thread-inner">
+        ${showLoadOlderHistory
+          ? html`
+              <div class="chat-history-load-more-row">
+                <button
+                  class="btn btn--subtle btn--sm chat-history-load-more"
+                  type="button"
+                  ?disabled=${props.loading || props.historyLoadingMore === true}
+                  @click=${(event: Event) => {
+                    event.preventDefault();
+                    void props.onLoadOlderHistory?.();
+                  }}
+                >
+                  ${props.historyLoadingMore === true
+                    ? "Loading older messages..."
+                    : "Load older messages"}
+                </button>
+              </div>
+            `
+          : nothing}
         ${showLoadingSkeleton
           ? html`
               <div class="chat-loading-skeleton" aria-label="Loading chat">

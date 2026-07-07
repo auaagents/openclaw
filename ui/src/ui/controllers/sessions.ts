@@ -1156,7 +1156,7 @@ async function loadSessionsOnce(
       includeUnknown,
       configuredAgentsOnly,
     };
-    if (overrides?.includePermanentFavorites === true) {
+    if (overrides?.includePermanentFavorites !== false) {
       params.includePermanentFavorites = true;
     }
     const agentId = overrides?.agentId?.trim();

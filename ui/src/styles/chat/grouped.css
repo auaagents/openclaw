@@ -12,6 +12,16 @@
   margin-right: 16px;
 }
 
+.chat-history-load-more-row {
+  display: flex;
+  justify-content: center;
+  margin: 12px 8px 18px;
+}
+
+.chat-history-load-more {
+  white-space: nowrap;
+}
+
 /* User messages on right */
 .chat-group.user {
   flex-direction: row-reverse;

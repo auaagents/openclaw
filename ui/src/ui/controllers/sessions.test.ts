@@ -337,6 +337,7 @@ describe("createSessionAndRefresh", () => {
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(state.sessionsResult?.sessions[0]?.key).toBe("agent:main:dashboard:abc");
@@ -400,6 +401,7 @@ describe("deleteSessionsAndRefresh", () => {
     expect(request).toHaveBeenNthCalledWith(3, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(state.sessionsLoading).toBe(false);
@@ -432,6 +434,7 @@ describe("deleteSessionsAndRefresh", () => {
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
       agentId: "work",
     });
@@ -527,6 +530,7 @@ describe("deleteSessionsAndRefresh", () => {
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(state.sessionsLoading).toBe(false);
@@ -551,6 +555,7 @@ describe("patchSession", () => {
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
       agentId: "work",
     });
@@ -802,6 +807,7 @@ describe("loadSessions", () => {
       limit: 50,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
   });
@@ -832,6 +838,7 @@ describe("loadSessions", () => {
       limit: 50,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
   });
@@ -860,6 +867,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenCalledWith("sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
   });
@@ -889,6 +897,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenCalledWith("sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
   });
@@ -919,6 +928,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenCalledWith("sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
       agentId: "ops",
     });
@@ -959,6 +969,7 @@ describe("loadSessions", () => {
       search: "telegram",
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
   });
@@ -1006,6 +1017,36 @@ describe("loadSessions", () => {
       "agent:main:dashboard:recent",
       "agent:main:dashboard:old-favorite",
     ]);
+  });
+
+  it("allows permanent favorite inclusion to be disabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method !== "sessions.list") {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      return {
+        ts: 1,
+        path: "(multiple)",
+        count: 0,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [],
+      };
+    });
+    const state = createState(request);
+
+    await loadSessions(state, {
+      activeMinutes: 0,
+      limit: 0,
+      includeGlobal: true,
+      includeUnknown: true,
+      includePermanentFavorites: false,
+    });
+
+    expect(request).toHaveBeenCalledWith("sessions.list", {
+      includeGlobal: true,
+      includeUnknown: true,
+      configuredAgentsOnly: true,
+    });
   });
 
   it("appends paged session rows without duplicating existing rows", async () => {
@@ -1104,11 +1145,13 @@ describe("loadSessions", () => {
       limit: 10,
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(state.sessionsResult?.ts).toBe(2);
@@ -1192,6 +1235,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenNthCalledWith(1, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
     });
     expect(request).toHaveBeenNthCalledWith(2, "sessions.compaction.list", {
@@ -1252,6 +1296,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
       agentId: "work",
     });
@@ -1263,6 +1308,7 @@ describe("loadSessions", () => {
     expect(request).toHaveBeenNthCalledWith(4, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
+      includePermanentFavorites: true,
       configuredAgentsOnly: true,
       agentId: "work",
     });

@@ -107,7 +107,11 @@ export type ChatHost = ChatInputHistoryState & {
   lastError?: string | null;
   chatError?: string | null;
   basePath: string;
-  settings?: { gatewayUrl?: string | null; token?: string | null };
+  settings?: {
+    chatShowThinking?: boolean;
+    gatewayUrl?: string | null;
+    token?: string | null;
+  };
   password?: string | null;
   hello: GatewayHelloOk | null;
   chatAvatarUrl: string | null;

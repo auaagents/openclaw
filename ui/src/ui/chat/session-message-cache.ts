@@ -10,9 +10,10 @@ import {
   type UiSessionDefaultsHost,
 } from "../session-key.ts";
 import { normalizeLowercaseStringOrEmpty } from "../string-coerce.ts";
+import { CHAT_HISTORY_RENDER_LIMIT } from "./history-limits.ts";
 import { getSessionCacheValue, setSessionCacheValue } from "./session-cache.ts";
 
-const MAX_CACHED_CHAT_MESSAGES = 100;
+const MAX_CACHED_CHAT_MESSAGES = CHAT_HISTORY_RENDER_LIMIT;
 
 export type ChatMessageCache = Map<string, unknown[]>;
 

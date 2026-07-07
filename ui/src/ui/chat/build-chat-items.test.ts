@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { MessageGroup } from "../types/chat-types.ts";
 import { buildChatItems, type BuildChatItemsProps } from "./build-chat-items.ts";
+import { CHAT_HISTORY_RENDER_CHAR_BUDGET } from "./history-limits.ts";
 
 const SENDER_METADATA_BLOCK =
   'Sender (untrusted metadata):\n```json\n{"label":"openclaw-control-ui","id":"openclaw-control-ui"}\n```';
@@ -625,10 +626,10 @@ describe("buildChatItems", () => {
     expect(groups).toStrictEqual([]);
   });
 
-  it("renders only the last 100 history messages and shows a hidden-count notice", () => {
+  it("renders only the last 10000 history messages and shows a hidden-count notice", () => {
     const items = buildChatItems(
       createProps({
-        messages: Array.from({ length: 105 }, (_, index) => ({
+        messages: Array.from({ length: 10_005 }, (_, index) => ({
           role: index % 2 === 0 ? "user" : "assistant",
           content: `message ${index}`,
           timestamp: index,
@@ -642,10 +643,10 @@ describe("buildChatItems", () => {
     expect(noticeGroup.messages).toHaveLength(1);
     const noticeMessage = messageRecord(noticeGroup);
     expect(noticeMessage.role).toBe("system");
-    expect(noticeMessage.content).toBe("Showing last 100 messages (5 hidden).");
-    expect(groups).toHaveLength(101);
+    expect(noticeMessage.content).toBe("Showing last 10000 messages (5 hidden).");
+    expect(groups).toHaveLength(10_001);
     expect(messageRecord(groups[1]).content).toBe("message 5");
-    expect(messageRecord(groups[groups.length - 1]).content).toBe("message 104");
+    expect(messageRecord(groups[groups.length - 1]).content).toBe("message 10004");
   });
 
   it("honors a smaller history render window and preserves the hidden-count notice", () => {
@@ -670,7 +671,7 @@ describe("buildChatItems", () => {
   });
 
   it("budgets rendered history by tool-result content size", () => {
-    const largeOutput = "x".repeat(100_000);
+    const largeOutput = "x".repeat(Math.floor(CHAT_HISTORY_RENDER_CHAR_BUDGET / 2.5));
     const items = buildChatItems(
       createProps({
         messages: Array.from({ length: 6 }, (_, index) => ({

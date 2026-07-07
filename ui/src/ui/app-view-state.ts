@@ -99,6 +99,9 @@ export type AppViewState = {
   chatSessionMessageSubscriptionKey?: string | null;
   chatSessionMessageSubscriptionRequestedKey?: string | null;
   chatLoading: boolean;
+  chatHistoryHasMore?: boolean;
+  chatHistoryNextOffset?: number | null;
+  chatHistoryLoadingMore?: boolean;
   chatSending: boolean;
   chatMessage: string;
   chatAttachments: ChatAttachment[];

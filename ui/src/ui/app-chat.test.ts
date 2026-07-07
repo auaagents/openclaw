@@ -149,6 +149,9 @@ function makeHost(overrides?: Partial<ChatHost>): ChatHost {
     chatStreamSegments: [],
     chatToolMessages: [],
     connected: true,
+    chatHistoryHasMore: false,
+    chatHistoryLoadingMore: false,
+    chatHistoryNextOffset: null,
     chatLoading: false,
     chatMessage: "",
     chatLocalInputHistoryBySession: {},
@@ -285,7 +288,8 @@ describe("refreshChat", () => {
     expect(host.chatLoading).toBe(true);
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "main",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("models.list", { view: "configured" });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
@@ -318,7 +322,8 @@ describe("refreshChat", () => {
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "global",
       agentId: "work",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
     await vi.waitFor(() =>
@@ -341,7 +346,8 @@ describe("refreshChat", () => {
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "agent:work:main",
       agentId: "work",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
   });
@@ -360,7 +366,8 @@ describe("refreshChat", () => {
     expect(outcome).toBe("resolved");
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "agent:work:dashboard",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
   });
@@ -385,7 +392,8 @@ describe("refreshChat", () => {
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "global",
       agentId: "ops",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
   });
@@ -405,7 +413,8 @@ describe("refreshChat", () => {
     expect(outcome).toBe("resolved");
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "unknown",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(request).not.toHaveBeenCalledWith("sessions.list", expect.anything());
   });
@@ -1126,7 +1135,8 @@ describe("refreshChat", () => {
       });
       expect(request).toHaveBeenCalledWith("chat.startup", {
         sessionKey: "main",
-        limit: 100,
+        limit: 1000,
+        offset: 0,
       });
       expect(request).not.toHaveBeenCalledWith("chat.metadata", expect.anything());
       expect(request).not.toHaveBeenCalledWith("models.list", expect.anything());
@@ -1398,6 +1408,30 @@ describe("handleSendChat", () => {
     expect(payload.sessionKey).toBe("agent:main");
     expect(payload.message).toBe("/reset");
     expect(host.chatMessage).toBe("");
+  });
+
+  it("forces thinking off for normal sends when chat thinking is disabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "chat.send") {
+        return { status: "started" };
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const host = makeHost({
+      client: { request } as unknown as ChatHost["client"],
+      chatMessage: "answer quickly",
+      settings: { chatShowThinking: false },
+    });
+
+    await handleSendChat(host);
+
+    const payload = findRequestPayload(
+      request as unknown as MockCallSource,
+      "chat.send",
+      "chat send payload",
+    );
+    expect(payload.message).toBe("answer quickly");
+    expect(payload.thinking).toBe("off");
   });
 
   it.each([
@@ -2365,6 +2399,7 @@ describe("handleSendChat", () => {
     const host = makeHost({
       client: { request } as unknown as ChatHost["client"],
       chatMessage: "/btw summarize this",
+      settings: { chatShowThinking: false },
     });
 
     await handleSendChat(host);
@@ -2376,6 +2411,7 @@ describe("handleSendChat", () => {
     );
     expect(payload.message).toBe("/btw summarize this");
     expect(payload.deliver).toBe(false);
+    expect(payload.thinking).toBe("off");
     expect(host.chatRunId).toBeNull();
     expect(host.chatMessages).toStrictEqual([]);
     expect(host.chatMessage).toBe("");
@@ -2994,7 +3030,8 @@ describe("handleSendChat", () => {
     expect(request).toHaveBeenCalledWith("chat.history", {
       sessionKey: "global",
       agentId: "work",
-      limit: 100,
+      limit: 1000,
+      offset: 0,
     });
     expect(host.chatMessages).toStrictEqual([]);
     expect(host.chatMessagesBySession?.has("agent:work:main")).toBe(false);
@@ -3063,6 +3100,33 @@ describe("handleSendChat", () => {
     expect(host.chatQueue[0]?.text).toBe("tighten the plan");
     expect(host.chatQueue[0]?.kind).toBe("steered");
     expect(host.chatQueue[0]?.pendingRunId).toBe("run-1");
+  });
+
+  it("forces thinking off for queued steer sends when chat thinking is disabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "chat.send") {
+        return { status: "started", runId: "steer-run" };
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const host = makeHost({
+      client: { request } as unknown as ChatHost["client"],
+      chatRunId: "run-1",
+      chatStream: "Working...",
+      chatQueue: [{ id: "queued-1", text: "tighten the plan", createdAt: 1 }],
+      sessionKey: "agent:main:main",
+      settings: { chatShowThinking: false },
+    });
+
+    await steerQueuedChatMessage(host, "queued-1");
+
+    const payload = findRequestPayload(
+      request as unknown as MockCallSource,
+      "chat.send",
+      "steered chat send payload",
+    );
+    expect(payload.message).toBe("tighten the plan");
+    expect(payload.thinking).toBe("off");
   });
 
   it("removes queued steer indicators when chat.send returns terminal ok", async () => {

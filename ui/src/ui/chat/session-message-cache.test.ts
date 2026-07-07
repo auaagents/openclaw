@@ -54,13 +54,13 @@ describe("session message cache", () => {
       cache,
       host,
       { sessionKey: "agent:ops:large" },
-      Array.from({ length: 101 }, (_, index) => index),
+      Array.from({ length: 10_001 }, (_, index) => index),
     );
 
     expect(cache.size).toBe(20);
     expect(cache.has("agent:ops:session-0")).toBe(true);
     expect(cache.has("agent:ops:session-1")).toBe(false);
-    expect(cache.get("agent:ops:large")).toHaveLength(100);
+    expect(cache.get("agent:ops:large")).toHaveLength(10_000);
     expect(cache.get("agent:ops:large")?.[0]).toBe(1);
   });
 });

@@ -60,7 +60,7 @@ export { isGatewayMethodAdvertised } from "../gateway-methods.ts";
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 const SYNTHETIC_TRANSCRIPT_REPAIR_RESULT =
   "[openclaw] missing tool result in session history; inserted synthetic error result for transcript repair.";
-const CHAT_HISTORY_REQUEST_LIMIT = 100;
+const CHAT_HISTORY_REQUEST_LIMIT = 1000;
 const STARTUP_CHAT_HISTORY_RETRY_TIMEOUT_MS = 60_000;
 const STARTUP_CHAT_HISTORY_DEFAULT_RETRY_MS = 500;
 const STARTUP_CHAT_HISTORY_MAX_RETRY_MS = 5_000;
@@ -392,6 +392,9 @@ export type ChatState = {
   currentSessionId?: string | null;
   reconnectResumeSessionId?: string | null;
   chatLoading: boolean;
+  chatHistoryHasMore?: boolean;
+  chatHistoryNextOffset?: number | null;
+  chatHistoryLoadingMore?: boolean;
   chatMessages: unknown[];
   chatMessagesBySession?: ChatMessageCache;
   chatThinkingLevel: string | null;
@@ -410,7 +413,7 @@ export type ChatState = {
   agentsList?: ChatAgentsListSnapshot | null;
   agentsSelectedId?: string | null;
   hello?: GatewayHelloOk | null;
-  settings?: { chatPersistCommentary?: boolean };
+  settings?: { chatPersistCommentary?: boolean; chatShowThinking?: boolean };
 };
 
 type ChatAgentsListSnapshot = Partial<Omit<AgentsListResult, "agents">> & {
@@ -420,6 +423,10 @@ type ChatAgentsListSnapshot = Partial<Omit<AgentsListResult, "agents">> & {
 export type ChatHistoryResult = {
   messages?: Array<unknown>;
   sessionId?: string;
+  offset?: number;
+  nextOffset?: number | null;
+  hasMore?: boolean;
+  totalMessages?: number;
   thinkingLevel?: string;
   verboseLevel?: string;
   defaults?: GatewaySessionsDefaults;
@@ -673,6 +680,55 @@ function applyChatStartupAgentsList(state: ChatState, agentsList: AgentsListResu
       : (agentsList.agents[0]?.id ?? null);
 }
 
+function extractChatHistorySeq(message: unknown): number | null {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const meta = (message as { __openclaw?: unknown })["__openclaw"];
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    return null;
+  }
+  const seq = (meta as { seq?: unknown }).seq;
+  return typeof seq === "number" && Number.isFinite(seq) && seq >= 0 ? seq : null;
+}
+
+function prependOlderHistoryMessages(olderMessages: unknown[], currentMessages: unknown[]) {
+  const seenSeqs = new Set<number>();
+  for (const message of currentMessages) {
+    const seq = extractChatHistorySeq(message);
+    if (seq !== null) {
+      seenSeqs.add(seq);
+    }
+  }
+  const dedupedOlder: unknown[] = [];
+  for (const message of olderMessages) {
+    const seq = extractChatHistorySeq(message);
+    if (seq !== null) {
+      if (seenSeqs.has(seq)) {
+        continue;
+      }
+      seenSeqs.add(seq);
+    }
+    dedupedOlder.push(message);
+  }
+  return [...dedupedOlder, ...currentMessages];
+}
+
+function clearChatHistoryPaginationState(state: ChatState) {
+  state.chatHistoryHasMore = false;
+  state.chatHistoryNextOffset = null;
+}
+
+function applyChatHistoryPaginationState(state: ChatState, result: ChatHistoryResult) {
+  state.chatHistoryHasMore = result.hasMore === true;
+  state.chatHistoryNextOffset =
+    result.hasMore === true &&
+    typeof result.nextOffset === "number" &&
+    Number.isFinite(result.nextOffset)
+      ? result.nextOffset
+      : null;
+}
+
 async function loadChatHistoryUncached(
   state: ChatState,
   client: NonNullable<ChatState["client"]>,
@@ -694,6 +750,8 @@ async function loadChatHistoryUncached(
   // Any pending input-history snapshot becomes invalid once we start reloading transcript state.
   state.resetChatInputHistoryNavigation?.();
   state.chatLoading = true;
+  state.chatHistoryLoadingMore = false;
+  clearChatHistoryPaginationState(state);
   setChatError(state, null);
   try {
     let res: ChatHistoryResult;
@@ -703,6 +761,7 @@ async function loadChatHistoryUncached(
           sessionKey,
           ...(requestAgentId ? { agentId: requestAgentId } : {}),
           limit: CHAT_HISTORY_REQUEST_LIMIT,
+          offset: 0,
         });
         break;
       } catch (err) {
@@ -722,6 +781,7 @@ async function loadChatHistoryUncached(
             sessionKey,
             ...(requestAgentId ? { agentId: requestAgentId } : {}),
             limit: CHAT_HISTORY_REQUEST_LIMIT,
+            offset: 0,
           });
           break;
         }
@@ -756,6 +816,7 @@ async function loadChatHistoryUncached(
     if (lateOptimisticTail.length > 0) {
       state.chatMessages = [...state.chatMessages, ...lateOptimisticTail];
     }
+    applyChatHistoryPaginationState(state, res);
     replaceCachedChatMessages(state, sessionKey, state.chatMessages, requestAgentId);
     state.currentSessionId =
       typeof res.sessionInfo?.sessionId === "string" && res.sessionInfo.sessionId.trim()
@@ -869,6 +930,7 @@ async function loadChatHistoryUncached(
       state.chatMessages = [];
       state.chatThinkingLevel = null;
       state.chatVerboseLevel = null;
+      clearChatHistoryPaginationState(state);
       setChatError(state, formatMissingOperatorReadScopeMessage("existing chat history"));
     } else {
       setChatError(state, String(err));
@@ -876,6 +938,98 @@ async function loadChatHistoryUncached(
   } finally {
     if (isLatestChatHistoryRequest(state, requestVersion)) {
       state.chatLoading = false;
+    }
+  }
+  return undefined;
+}
+
+export async function loadOlderChatHistory(
+  state: ChatState,
+): Promise<ChatHistoryResult | undefined> {
+  if (
+    !state.client ||
+    !state.connected ||
+    state.chatLoading ||
+    state.chatHistoryLoadingMore ||
+    state.chatHistoryHasMore !== true ||
+    typeof state.chatHistoryNextOffset !== "number" ||
+    !Number.isFinite(state.chatHistoryNextOffset)
+  ) {
+    return undefined;
+  }
+  const client = state.client;
+  const sessionKey = state.sessionKey;
+  const requestAgentId = isSelectedGlobalEventSessionKey(sessionKey)
+    ? resolveSelectedAgentId(state)
+    : undefined;
+  const offset = Math.max(0, Math.floor(state.chatHistoryNextOffset));
+  const requestVersion = beginChatHistoryRequest(state);
+  const startedAtMs = controlUiNowMs();
+  const previousRunId = state.chatRunId;
+  recordChatHistoryTiming(state, "start", startedAtMs, {
+    requestSessionKey: sessionKey,
+    requestAgentId,
+    method: "chat.history",
+    offset,
+    previousRunId,
+  });
+  state.resetChatInputHistoryNavigation?.();
+  state.chatHistoryLoadingMore = true;
+  setChatError(state, null);
+  try {
+    const res = await client.request<ChatHistoryResult>("chat.history", {
+      sessionKey,
+      ...(requestAgentId ? { agentId: requestAgentId } : {}),
+      limit: CHAT_HISTORY_REQUEST_LIMIT,
+      offset,
+    });
+    if (!shouldApplyChatHistoryResult(state, requestVersion, sessionKey, requestAgentId)) {
+      recordChatHistoryTiming(state, "stale", startedAtMs, {
+        requestSessionKey: sessionKey,
+        requestAgentId,
+        previousRunId,
+        reason: "older-history-version",
+        offset,
+      });
+      return undefined;
+    }
+    const messages = Array.isArray(res.messages) ? res.messages : [];
+    const visibleMessages = messages.filter((message) => !shouldHideHistoryMessage(message));
+    state.chatMessages = prependOlderHistoryMessages(visibleMessages, state.chatMessages);
+    applyChatHistoryPaginationState(state, res);
+    replaceCachedChatMessages(state, sessionKey, state.chatMessages, requestAgentId);
+    recordChatHistoryTiming(state, "applied", startedAtMs, {
+      requestSessionKey: sessionKey,
+      requestAgentId,
+      previousRunId,
+      messageCount: messages.length,
+      visibleMessageCount: visibleMessages.length,
+      offset,
+      olderHistory: true,
+    });
+    return res;
+  } catch (err) {
+    if (!shouldApplyChatHistoryResult(state, requestVersion, sessionKey, requestAgentId)) {
+      recordChatHistoryTiming(state, "stale", startedAtMs, {
+        requestSessionKey: sessionKey,
+        requestAgentId,
+        previousRunId,
+        reason: "older-history-error-version",
+        offset,
+      });
+      return undefined;
+    }
+    recordChatHistoryTiming(state, "error", startedAtMs, {
+      requestSessionKey: sessionKey,
+      requestAgentId,
+      previousRunId,
+      offset,
+      olderHistory: true,
+    });
+    setChatError(state, String(err));
+  } finally {
+    if (isLatestChatHistoryRequest(state, requestVersion)) {
+      state.chatHistoryLoadingMore = false;
     }
   }
   return undefined;
@@ -963,6 +1117,17 @@ function normalizeChatSendAck(payload: unknown, fallbackRunId: string): ChatSend
   };
 }
 
+function normalizeChatSendThinking(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function resolveChatSendThinking(state: ChatState, requested: unknown): string | undefined {
+  if (state.settings?.chatShowThinking === false) {
+    return "off";
+  }
+  return normalizeChatSendThinking(requested);
+}
+
 export async function requestChatSend(
   state: ChatState,
   params: {
@@ -971,9 +1136,11 @@ export async function requestChatSend(
     runId: string;
     sessionKey?: string;
     agentId?: string;
+    thinking?: string;
   },
 ): Promise<ChatSendAck> {
   const routing = resolveChatSendRouting(state, params);
+  const thinking = resolveChatSendThinking(state, params.thinking);
   const controlUiReconnectResume = Boolean(
     routing.sessionId && state.reconnectResumeSessionId === routing.sessionId,
   );
@@ -985,6 +1152,7 @@ export async function requestChatSend(
     ...(routing.sessionId ? { sessionId: routing.sessionId } : {}),
     ...(controlUiReconnectResume ? { __controlUiReconnectResume: true } : {}),
     message: params.message,
+    ...(thinking ? { thinking } : {}),
     deliver: false,
     idempotencyKey: params.runId,
     attachments: buildApiAttachments(params.attachments),

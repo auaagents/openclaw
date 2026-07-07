@@ -59,7 +59,7 @@ import {
 } from "./controllers/agents.ts";
 import { setAssistantAvatarOverride } from "./controllers/assistant-identity.ts";
 import { loadChannels } from "./controllers/channels.ts";
-import { loadChatHistory } from "./controllers/chat.ts";
+import { loadChatHistory, loadOlderChatHistory } from "./controllers/chat.ts";
 import {
   applyConfig,
   ensureAgentConfigEntry,
@@ -4002,6 +4002,8 @@ export function renderApp(state: AppViewState) {
                   showThinking,
                   showToolCalls,
                   loading: state.chatLoading,
+                  historyHasMore: state.chatHistoryHasMore,
+                  historyLoadingMore: state.chatHistoryLoadingMore,
                   sending: state.chatSending,
                   compactionStatus: state.compactionStatus,
                   fallbackStatus: state.fallbackStatus,
@@ -4061,6 +4063,7 @@ export function renderApp(state: AppViewState) {
                     state.resetToolStream();
                     void refreshChat(state, { awaitHistory: true, scheduleScroll: false });
                   },
+                  onLoadOlderHistory: () => void loadOlderChatHistory(state),
                   onChatScroll: (event) => state.handleChatScroll(event),
                   getDraft: () => state.chatMessage,
                   onDraftChange: (next) => state.handleChatDraftChange(next),

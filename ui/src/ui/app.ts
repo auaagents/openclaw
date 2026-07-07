@@ -296,6 +296,9 @@ export class OpenClawApp extends LitElement {
   currentSessionId: string | null = null;
   reconnectResumeSessionId: string | null = null;
   @state() chatLoading = false;
+  @state() chatHistoryHasMore = false;
+  @state() chatHistoryNextOffset: number | null = null;
+  @state() chatHistoryLoadingMore = false;
   @state() chatSending = false;
   @state() chatMessage = "";
   @state() chatMessages: unknown[] = [];
