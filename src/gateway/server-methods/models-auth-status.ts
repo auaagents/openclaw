@@ -44,6 +44,16 @@ import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 
 const log = createSubsystemLogger("models-auth-status");
 const apiKeyUsageStatusProviders = new Set<UsageProviderId>(["deepseek"]);
+const externalCliStatusProviders = new Set([
+  "claude-cli",
+  "codex",
+  "codex-app-server",
+  "codex-cli",
+  "google-gemini-cli",
+  "minimax",
+  "minimax-cli",
+  "minimax-portal",
+]);
 
 type ProviderUsageStatus = Pick<ProviderUsageSnapshot, "windows" | "summary" | "plan">;
 
@@ -195,11 +205,40 @@ function buildExpiry(
 }
 
 function providerDisplayName(provider: string): string {
+  const normalized = normalizeProviderId(provider);
+  const direct = PROVIDER_LABELS[normalized as UsageProviderId];
+  if (direct) {
+    return direct;
+  }
   const usageId = resolveUsageProviderId(provider);
   if (usageId && PROVIDER_LABELS[usageId]) {
     return PROVIDER_LABELS[usageId];
   }
   return provider;
+}
+
+function resolveAuthHealthProviderFilter(params: {
+  configuredProviders: readonly string[];
+  externalCli: ReturnType<typeof externalCliDiscoveryForConfigStatus>;
+}): string[] | undefined {
+  const providers = new Set<string>();
+  for (const provider of params.configuredProviders) {
+    const normalized = normalizeProviderId(provider);
+    if (normalized) {
+      providers.add(normalized);
+    }
+  }
+  if (params.externalCli.mode === "scoped") {
+    for (const provider of params.externalCli.providerIds ?? []) {
+      const normalized = normalizeProviderId(provider);
+      if (normalized && externalCliStatusProviders.has(normalized)) {
+        providers.add(normalized);
+      }
+    }
+  }
+  return providers.size > 0
+    ? [...providers].toSorted((left, right) => left.localeCompare(right))
+    : undefined;
 }
 
 /**
@@ -469,14 +508,16 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
       const agentDir = resolveDefaultAgentDir(cfg);
       // Use the external-profile-aware store for status reads so the dashboard
       // reflects CLI-discovered credentials without persisting them here.
-      const store = ensureAuthProfileStore(agentDir, {
-        externalCli: externalCliDiscoveryForConfigStatus({ cfg }),
-      });
+      const externalCli = externalCliDiscoveryForConfigStatus({ cfg });
+      const store = ensureAuthProfileStore(agentDir, { externalCli });
       const configured = resolveConfiguredProviders(cfg);
       const authHealth: AuthHealthSummary = buildAuthHealthSummary({
         store,
         cfg,
-        providers: configured.providers.length > 0 ? configured.providers : undefined,
+        providers: resolveAuthHealthProviderFilter({
+          configuredProviders: configured.providers,
+          externalCli,
+        }),
         allowKeychainPrompt: false,
       });
 

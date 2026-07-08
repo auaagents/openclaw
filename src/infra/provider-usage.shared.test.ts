@@ -11,6 +11,8 @@ describe("provider-usage.shared", () => {
 
   it.each([
     { value: "deepseek", expected: "deepseek" },
+    { value: "claude-cli", expected: "anthropic" },
+    { value: " Claude-CLI ", expected: "anthropic" },
     { value: "zai", expected: "zai" },
     { value: "z-ai", expected: undefined },
     { value: " GOOGLE-GEMINI-CLI ", expected: "google-gemini-cli" },

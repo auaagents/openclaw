@@ -26,6 +26,7 @@ type RepairReport = {
   droppedLines: number;
   validatedSnapshot?: SessionRepairFileSnapshot;
   rewrittenAssistantMessages?: number;
+  droppedAssistantMessages?: number;
   droppedBlankUserMessages?: number;
   rewrittenUserMessages?: number;
   removedCorruptedImageBlocks?: number;
@@ -222,6 +223,39 @@ function rewriteAssistantEntryWithEmptyContent(entry: SessionMessageEntry): Sess
   };
 }
 
+function isOllamaAssistantEntryWithNonDeliverableEmptyContent(
+  entry: unknown,
+): entry is SessionMessageEntry {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+  const record = entry as { type?: unknown; message?: unknown };
+  if (record.type !== "message" || !record.message || typeof record.message !== "object") {
+    return false;
+  }
+  const message = record.message as {
+    role?: unknown;
+    content?: unknown;
+    api?: unknown;
+    provider?: unknown;
+    stopReason?: unknown;
+    usage?: unknown;
+  };
+  const usage = message.usage && typeof message.usage === "object" ? message.usage : {};
+  const output = (usage as { output?: unknown }).output;
+  const hasPositiveOutput = typeof output === "number" && Number.isFinite(output) && output > 0;
+  return (
+    message.role === "assistant" &&
+    normalizeTrimmedString(message.api) === "ollama" &&
+    normalizeTrimmedString(message.provider) === "ollama" &&
+    hasPositiveOutput &&
+    message.stopReason !== "error" &&
+    message.stopReason !== "aborted" &&
+    Array.isArray(message.content) &&
+    message.content.length === 0
+  );
+}
+
 function isImageMimeType(value: unknown): value is string {
   return typeof value === "string" && /^image\//iu.test(value.trim());
 }
@@ -362,6 +396,7 @@ function repairUserEntryWithBlankTextContent(entry: SessionMessageEntry): UserEn
 function buildRepairSummaryParts(params: {
   droppedLines: number;
   rewrittenAssistantMessages: number;
+  droppedAssistantMessages: number;
   droppedBlankUserMessages: number;
   rewrittenUserMessages: number;
   removedCorruptedImageBlocks: number;
@@ -373,6 +408,9 @@ function buildRepairSummaryParts(params: {
   }
   if (params.rewrittenAssistantMessages > 0) {
     parts.push(`rewrote ${params.rewrittenAssistantMessages} assistant message(s)`);
+  }
+  if (params.droppedAssistantMessages > 0) {
+    parts.push(`dropped ${params.droppedAssistantMessages} assistant message(s)`);
   }
   if (params.droppedBlankUserMessages > 0) {
     parts.push(`dropped ${params.droppedBlankUserMessages} blank user message(s)`);
@@ -625,6 +663,7 @@ type RepairEntriesResult = {
   entries: unknown[];
   droppedLines: number;
   rewrittenAssistantMessages: number;
+  droppedAssistantMessages: number;
   droppedBlankUserMessages: number;
   rewrittenUserMessages: number;
   removedCorruptedImageBlocks: number;
@@ -634,6 +673,7 @@ function repairSessionLines(lines: string[]): RepairEntriesResult {
   const entries: unknown[] = [];
   let droppedLines = 0;
   let rewrittenAssistantMessages = 0;
+  let droppedAssistantMessages = 0;
   let droppedBlankUserMessages = 0;
   let rewrittenUserMessages = 0;
   let removedCorruptedImageBlocks = 0;
@@ -651,6 +691,10 @@ function repairSessionLines(lines: string[]): RepairEntriesResult {
       if (isAssistantEntryWithEmptyContent(entry)) {
         entries.push(rewriteAssistantEntryWithEmptyContent(entry));
         rewrittenAssistantMessages += 1;
+        continue;
+      }
+      if (isOllamaAssistantEntryWithNonDeliverableEmptyContent(entry)) {
+        droppedAssistantMessages += 1;
         continue;
       }
       let entryForUserRepair = entry;
@@ -695,6 +739,7 @@ function repairSessionLines(lines: string[]): RepairEntriesResult {
     entries,
     droppedLines,
     rewrittenAssistantMessages,
+    droppedAssistantMessages,
     droppedBlankUserMessages,
     rewrittenUserMessages,
     removedCorruptedImageBlocks,
@@ -705,6 +750,7 @@ function hasEntryRepairs(result: RepairEntriesResult): boolean {
   return (
     result.droppedLines > 0 ||
     result.rewrittenAssistantMessages > 0 ||
+    result.droppedAssistantMessages > 0 ||
     result.droppedBlankUserMessages > 0 ||
     result.rewrittenUserMessages > 0 ||
     result.removedCorruptedImageBlocks > 0
@@ -830,6 +876,7 @@ export async function repairSessionFileIfNeeded(params: {
     entries,
     droppedLines,
     rewrittenAssistantMessages,
+    droppedAssistantMessages,
     droppedBlankUserMessages,
     rewrittenUserMessages,
     removedCorruptedImageBlocks,
@@ -916,6 +963,7 @@ export async function repairSessionFileIfNeeded(params: {
       repaired: false,
       droppedLines,
       rewrittenAssistantMessages,
+      droppedAssistantMessages,
       droppedBlankUserMessages,
       rewrittenUserMessages,
       removedCorruptedImageBlocks,
@@ -952,6 +1000,7 @@ export async function repairSessionFileIfNeeded(params: {
     `session file repaired: ${buildRepairSummaryParts({
       droppedLines,
       rewrittenAssistantMessages,
+      droppedAssistantMessages,
       droppedBlankUserMessages,
       rewrittenUserMessages,
       removedCorruptedImageBlocks,
@@ -963,6 +1012,7 @@ export async function repairSessionFileIfNeeded(params: {
     droppedLines,
     ...(repairedSnapshot ? { validatedSnapshot: repairedSnapshot } : {}),
     rewrittenAssistantMessages,
+    droppedAssistantMessages,
     droppedBlankUserMessages,
     rewrittenUserMessages,
     removedCorruptedImageBlocks,

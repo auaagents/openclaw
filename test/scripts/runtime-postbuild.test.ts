@@ -361,6 +361,36 @@ describe("runtime postbuild static assets", () => {
     await expectPathMissing(path.join(distDir, "library.js"));
   });
 
+  it("keeps stable runtime entry wrappers emitted by tsdown", async () => {
+    const rootDir = createTempDir("openclaw-runtime-postbuild-");
+    const distDir = path.join(rootDir, "dist");
+    await fs.mkdir(distDir, { recursive: true });
+    await fs.writeFile(
+      path.join(distDir, "prepare.runtime-DvOlUXuD.js"),
+      "export const t = true;\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(distDir, "prepare.runtime.js"),
+      [
+        'import { t as prepareCliRunContext } from "./prepare.runtime-DvOlUXuD.js";',
+        "export { prepareCliRunContext };",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    writeStableRootRuntimeAliases({ rootDir });
+
+    expect(await fs.readFile(path.join(distDir, "prepare.runtime.js"), "utf8")).toBe(
+      [
+        'import { t as prepareCliRunContext } from "./prepare.runtime-DvOlUXuD.js";',
+        "export { prepareCliRunContext };",
+        "",
+      ].join("\n"),
+    );
+  });
+
   it("does not write ambiguous stable aliases for colliding root runtime chunks", async () => {
     const rootDir = createTempDir("openclaw-runtime-postbuild-");
     const distDir = path.join(rootDir, "dist");

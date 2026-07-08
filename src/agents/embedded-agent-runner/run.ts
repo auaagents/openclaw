@@ -1643,6 +1643,7 @@ async function runEmbeddedAgentInternal(
       let reasoningOnlyRetryInstruction: string | null = null;
       let emptyResponseRetryInstruction: string | null = null;
       let compactionContinuationRetryInstruction: string | null = null;
+      let disableToolsForNonVisibleRetry = false;
       let nextAttemptPromptOverride: string | null = null;
       let rateLimitProfileRotations = 0;
       let timeoutCompactionAttempts = 0;
@@ -1996,6 +1997,8 @@ async function runEmbeddedAgentInternal(
             promptAdditions.length > 0
               ? `${basePrompt}\n\n${promptAdditions.join("\n\n")}`
               : basePrompt;
+          const disableToolsForThisAttempt = params.disableTools || disableToolsForNonVisibleRetry;
+          disableToolsForNonVisibleRetry = false;
           const resolvedStreamApiKey = resolveAttemptDispatchApiKey({
             apiKeyInfo,
             runtimeAuthState,
@@ -2152,7 +2155,7 @@ async function runEmbeddedAgentInternal(
             images: params.images,
             imageOrder: params.imageOrder,
             clientTools: params.clientTools,
-            disableTools: params.disableTools,
+            disableTools: disableToolsForThisAttempt,
             provider,
             modelId,
             requestedModelId,
@@ -3838,6 +3841,7 @@ async function runEmbeddedAgentInternal(
           ) {
             reasoningOnlyRetryAttempts += 1;
             reasoningOnlyRetryInstruction = nextReasoningOnlyRetryInstruction;
+            disableToolsForNonVisibleRetry = (attempt.toolMetas?.length ?? 0) > 0;
             log.warn(
               `reasoning-only assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
@@ -3873,6 +3877,7 @@ async function runEmbeddedAgentInternal(
           ) {
             emptyResponseRetryAttempts += 1;
             emptyResponseRetryInstruction = nextEmptyResponseRetryInstruction;
+            disableToolsForNonVisibleRetry = (attempt.toolMetas?.length ?? 0) > 0;
             log.warn(
               `empty response detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} ` +
@@ -3935,9 +3940,9 @@ async function runEmbeddedAgentInternal(
             const incompletePayloadText = terminalToolPresentation
               ? terminalToolPresentation.concat(
                   "\n\n",
-                  "⚠️ Agent couldn't generate a response. Please try again.",
+                  "⚠️ Agent couldn't generate a response. Reason: non_deliverable_terminal_turn. Please try again.",
                 )
-              : "⚠️ Agent couldn't generate a response. Please try again.";
+              : "⚠️ Agent couldn't generate a response. Reason: non_deliverable_terminal_turn. Please try again.";
             const replayInvalid = resolveReplayInvalidForAttempt(incompletePayloadText);
             const livenessState = resolveRunLivenessState({
               payloadCount: 0,

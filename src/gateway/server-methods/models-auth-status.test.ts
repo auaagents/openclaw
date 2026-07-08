@@ -292,6 +292,50 @@ function createOpenAiCodexOauthHealthSummary(): AuthHealthSummary {
   };
 }
 
+function createClaudeCliAndOpenAiOauthHealthSummary(): AuthHealthSummary {
+  const claudeProfile = {
+    profileId: "anthropic:claude-cli",
+    provider: "claude-cli",
+    type: "oauth",
+    status: "ok",
+    expiresAt: 1_000_000,
+    remainingMs: 60_000,
+    source: "store",
+    label: "anthropic:claude-cli",
+  } satisfies AuthHealthSummary["profiles"][number];
+  const openAiProfile = {
+    profileId: "openai:default",
+    provider: "openai",
+    type: "oauth",
+    status: "ok",
+    expiresAt: 2_000_000,
+    remainingMs: 120_000,
+    source: "store",
+    label: "openai:default",
+  } satisfies AuthHealthSummary["profiles"][number];
+  return {
+    now: 0,
+    warnAfterMs: 0,
+    profiles: [claudeProfile, openAiProfile],
+    providers: [
+      {
+        provider: "claude-cli",
+        status: "ok",
+        expiresAt: 1_000_000,
+        remainingMs: 60_000,
+        profiles: [claudeProfile],
+      },
+      {
+        provider: "openai",
+        status: "ok",
+        expiresAt: 2_000_000,
+        remainingMs: 120_000,
+        profiles: [openAiProfile],
+      },
+    ],
+  };
+}
+
 describe("models.authStatus", () => {
   beforeEach(() => {
     resetAuthStatusMocks();
@@ -310,9 +354,62 @@ describe("models.authStatus", () => {
     const result = payload as ModelAuthStatusResult;
     expect(result.providers).toHaveLength(1);
     expect(result.providers[0].provider).toBe("openai");
+    expect(result.providers[0].displayName).toBe("OpenAI");
     expect(result.providers[0].status).toBe("ok");
     expect(result.providers[0].expiry?.at).toBe(1_000_000);
     expect(result.providers[0].profiles[0].type).toBe("oauth");
+  });
+
+  it("includes external CLI runtime providers in dashboard usage status", async () => {
+    mocks.getRuntimeConfig.mockReturnValue({
+      auth: {
+        profiles: {
+          "openai:default": { provider: "openai", mode: "oauth" },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-fable-5" },
+          models: {
+            "anthropic/claude-fable-5": {
+              agentRuntime: { id: "claude-cli" },
+            },
+          },
+        },
+      },
+    });
+    mocks.buildAuthHealthSummary.mockReturnValue(createClaudeCliAndOpenAiOauthHealthSummary());
+    mocks.loadProviderUsageSummary.mockResolvedValue({
+      updatedAt: 0,
+      providers: [
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          windows: [{ label: "5h", usedPercent: 29 }],
+        },
+        {
+          provider: "openai",
+          displayName: "OpenAI",
+          windows: [{ label: "Week", usedPercent: 66 }],
+        },
+      ],
+    });
+
+    const opts = createOptions();
+    await handler(opts);
+
+    expect(firstBuildAuthHealthSummaryCall()?.[0]?.providers).toEqual(["claude-cli", "openai"]);
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+      providers: ["anthropic", "openai"],
+      agentDir: "/tmp/agent",
+      timeoutMs: 3500,
+    });
+
+    const [, payload] = firstRespondCall(opts) ?? [];
+    const result = payload as ModelAuthStatusResult;
+    expect(result.providers.map((provider) => provider.displayName)).toEqual(["Claude", "OpenAI"]);
+    expect(result.providers[0]?.usage?.windows).toEqual([{ label: "5h", usedPercent: 29 }]);
+    expect(result.providers[1]?.usage?.windows).toEqual([{ label: "Week", usedPercent: 66 }]);
   });
 
   it("forwards unresolved auth reason codes to status clients", async () => {

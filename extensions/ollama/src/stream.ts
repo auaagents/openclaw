@@ -947,6 +947,9 @@ export function convertToOllamaMessages(
     if (msg.role === "assistant") {
       const text = extractTextContent(msg.content);
       const toolCalls = extractToolCalls(msg.content, options);
+      if (!text && toolCalls.length === 0) {
+        continue;
+      }
       result.push({
         role: "assistant",
         content: text,

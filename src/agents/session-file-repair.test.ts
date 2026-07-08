@@ -368,6 +368,47 @@ describe("repairSessionFileIfNeeded", () => {
     ]);
   });
 
+  it("drops persisted Ollama empty assistant stop turns before replay", async () => {
+    const { file } = await createTempSessionPath();
+    const { header, message } = buildSessionHeaderAndMessage();
+    const emptyOllamaAssistantEntry = {
+      type: "message",
+      id: "msg-empty-ollama",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        content: [],
+        api: "ollama",
+        provider: "ollama",
+        model: "gemma4-opencode:26b-262k",
+        usage: { input: 22801, output: 1722, cacheRead: 0, cacheWrite: 0, totalTokens: 24523 },
+        stopReason: "stop",
+      },
+    };
+    const followUp = {
+      type: "message",
+      id: "msg-after-empty",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content: "continue" },
+    };
+    const original = `${JSON.stringify(header)}\n${JSON.stringify(message)}\n${JSON.stringify(emptyOllamaAssistantEntry)}\n${JSON.stringify(followUp)}\n`;
+    await fs.writeFile(file, original, "utf-8");
+
+    const debug = vi.fn();
+    const result = await repairSessionFileIfNeeded({ sessionFile: file, debug });
+
+    expect(result.repaired).toBe(true);
+    expect(result.droppedAssistantMessages).toBe(1);
+    expect(requireFirstLogMessage(debug)).toContain("dropped 1 assistant message(s)");
+
+    const repaired = await fs.readFile(file, "utf-8");
+    const repairedLines = repaired.trim().split("\n");
+    expect(repairedLines).toHaveLength(3);
+    expect(repairedLines.some((line) => line.includes("msg-empty-ollama"))).toBe(false);
+  });
+
   it("rewrites blank-only user text messages to synthetic placeholder instead of dropping", async () => {
     const { file } = await createTempSessionPath();
     const { header, message } = buildSessionHeaderAndMessage();

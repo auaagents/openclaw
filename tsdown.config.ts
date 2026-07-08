@@ -280,6 +280,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "infra/boundary-file-read": "src/infra/boundary-file-read.ts",
     "plugins/provider-discovery.runtime": "src/plugins/provider-discovery.runtime.ts",
     "plugins/provider-runtime.runtime": "src/plugins/provider-runtime.runtime.ts",
+    "execute.runtime": "src/agents/cli-runner/execute.runtime.ts",
+    "prepare.runtime": "src/agents/cli-runner/prepare.runtime.ts",
     "web-fetch/runtime": "src/web-fetch/runtime.ts",
     "plugins/public-surface-runtime": "src/plugins/public-surface-runtime.ts",
     "plugins/loader": "src/plugins/loader.ts",

@@ -60,6 +60,7 @@ type IncompleteTurnAttempt = Pick<
   | "promptErrorSource"
   | "timedOutDuringCompaction"
   | "toolMetas"
+  | "successfulCronAdds"
 > &
   Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
 
@@ -133,9 +134,9 @@ const RETRY_GUARD_MODEL_APIS = new Set([
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
 export const REASONING_ONLY_RETRY_INSTRUCTION =
-  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch. If tool results are already present in the transcript, do not call tools; summarize the completed work or current blocker from those results.";
 export const EMPTY_RESPONSE_RETRY_INSTRUCTION =
-  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch. If tool results are already present in the transcript, do not call tools; summarize the completed work or current blocker from those results.";
 
 /**
  * Marks whether retrying the attempt can safely replay the prompt. Concrete
@@ -303,9 +304,22 @@ export function resolveIncompleteTurnPayloadText(params: {
     return null;
   }
 
+  const reasonDetail =
+    stopReason === "length"
+      ? "length stop before a final visible answer"
+      : reasoningOnlyAssistant || thinkingOnlyTerminal
+        ? "reasoning-only assistant turn"
+        : emptyResponseAssistant
+          ? "empty assistant response"
+          : incompleteTerminalAssistant || toolUseTerminal
+            ? "terminal tool-use turn without final answer"
+            : stopReason === "error"
+              ? "assistant stopReason=error"
+              : "non-deliverable terminal turn";
+  const reasonText = `Reason: non_deliverable_terminal_turn (${reasonDetail}).`;
   return resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
-    ? "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying."
-    : "⚠️ Agent couldn't generate a response. Please try again.";
+    ? `⚠️ Agent couldn't generate a response. ${reasonText} Note: some tool actions may have already been executed — please verify before retrying.`
+    : `⚠️ Agent couldn't generate a response. ${reasonText} Please try again.`;
 }
 
 /**
@@ -597,6 +611,39 @@ function isEmptyResponseAssistantTurn(params: {
   return true;
 }
 
+function isOllamaProvider(provider?: string): boolean {
+  return OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(
+    normalizeLowercaseStringOrEmpty(provider ?? ""),
+  );
+}
+
+function hasOnlyCompletedToolActivityReplayRisk(attempt: IncompleteTurnAttempt): boolean {
+  const replayMetadata = resolveAttemptReplayMetadata(attempt);
+  if (!replayMetadata.hadPotentialSideEffects) {
+    return false;
+  }
+  return (
+    attempt.toolMetas.length > 0 &&
+    !hasAsyncStartedToolActivity(attempt.toolMetas) &&
+    !hasCommittedMessagingToolDeliveryEvidence(attempt) &&
+    !hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) &&
+    (attempt.successfulCronAdds ?? 0) === 0
+  );
+}
+
+function shouldAllowOllamaCompletedToolContinuation(params: {
+  provider?: string;
+  attempt: IncompleteTurnAttempt;
+}): boolean {
+  if (!isOllamaProvider(params.provider)) {
+    return false;
+  }
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
+  return (
+    hasPositiveOutputTokenUsage(assistant) && hasOnlyCompletedToolActivityReplayRisk(params.attempt)
+  );
+}
+
 function isNonVisibleAssistantTurnEligibleForSilentReply(params: {
   payloadCount: number;
   attempt: Pick<
@@ -632,7 +679,15 @@ function shouldSkipNonVisibleTurnRetry(params: {
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
+  allowCompletedToolContinuation?: boolean;
 }): boolean {
+  const replayMetadata = resolveAttemptReplayMetadata(params.attempt);
+  const replayUnsafe =
+    replayMetadata.hadPotentialSideEffects &&
+    !(
+      params.allowCompletedToolContinuation === true &&
+      hasOnlyCompletedToolActivityReplayRisk(params.attempt)
+    );
   return Boolean(
     params.aborted ||
     params.timedOut ||
@@ -641,7 +696,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
-    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
+    replayUnsafe,
   );
 }
 
@@ -697,7 +752,8 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  if (shouldSkipNonVisibleTurnRetry(params)) {
+  const allowCompletedToolContinuation = shouldAllowOllamaCompletedToolContinuation(params);
+  if (shouldSkipNonVisibleTurnRetry({ ...params, allowCompletedToolContinuation })) {
     return null;
   }
 
@@ -740,7 +796,8 @@ export function resolveEmptyResponseRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  if (shouldSkipNonVisibleTurnRetry(params)) {
+  const allowCompletedToolContinuation = shouldAllowOllamaCompletedToolContinuation(params);
+  if (shouldSkipNonVisibleTurnRetry({ ...params, allowCompletedToolContinuation })) {
     return null;
   }
 
@@ -756,9 +813,7 @@ export function resolveEmptyResponseRetryInstruction(params: {
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
   if (
     assistant?.stopReason === "stop" &&
-    OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(
-      normalizeLowercaseStringOrEmpty(params.provider ?? ""),
-    ) &&
+    isOllamaProvider(params.provider) &&
     !hasPositiveOutputTokenUsage(assistant)
   ) {
     return null;

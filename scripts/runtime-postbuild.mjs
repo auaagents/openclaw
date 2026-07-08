@@ -229,6 +229,20 @@ function resolveStableRootRuntimeAliasCandidate(params) {
   return wrappers.length === 1 ? wrappers[0].candidate : null;
 }
 
+function isCurrentStableRootRuntimeEntryWrapper(params) {
+  const { aliasPath, candidates, fsImpl } = params;
+  let source = "";
+  try {
+    source = fsImpl.readFileSync(aliasPath, "utf8");
+  } catch {
+    return false;
+  }
+  return (
+    /\bexport\s*\{/u.test(source) &&
+    candidates.some((candidate) => source.includes(`"./${candidate}"`))
+  );
+}
+
 /**
  * Lists stable aliases for hashed root runtime/contract chunks.
  */
@@ -318,6 +332,9 @@ export function writeStableRootRuntimeAliases(params = {}) {
     });
     if (!candidate) {
       fsImpl.rmSync?.(aliasPath, { force: true });
+      continue;
+    }
+    if (isCurrentStableRootRuntimeEntryWrapper({ aliasPath, candidates, fsImpl })) {
       continue;
     }
     writeTextFileIfChanged(aliasPath, `export * from "./${candidate}";\n`);

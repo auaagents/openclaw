@@ -167,7 +167,12 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
 
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
     expect(result.payloads).toEqual([
-      { text: "⚠️ Agent couldn't generate a response. Please try again.", isError: true },
+      {
+        text:
+          "⚠️ Agent couldn't generate a response. " +
+          "Reason: non_deliverable_terminal_turn (terminal tool-use turn without final answer). Please try again.",
+        isError: true,
+      },
     ]);
     expect(result.meta?.livenessState).toBe("abandoned");
   });
@@ -321,7 +326,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       {
         text:
           "Web fetch completed.\nOrigin: https://example.com\nStatus: 200\n\n" +
-          "⚠️ Agent couldn't generate a response. Please try again.",
+          "⚠️ Agent couldn't generate a response. " +
+          "Reason: non_deliverable_terminal_turn (terminal tool-use turn without final answer). Please try again.",
         isError: true,
       },
     ]);
@@ -378,7 +384,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       {
         text:
           "Cron scheduler status.\nEnabled: yes\n\n" +
-          "⚠️ Agent couldn't generate a response. Please try again.",
+          "⚠️ Agent couldn't generate a response. " +
+          "Reason: non_deliverable_terminal_turn (terminal tool-use turn without final answer). Please try again.",
         isError: true,
       },
     ]);
@@ -441,7 +448,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       {
         text:
           "Web fetch completed.\nOrigin: https://example.com\nStatus: 200\n\n" +
-          "⚠️ Agent couldn't generate a response. Please try again.",
+          "⚠️ Agent couldn't generate a response. " +
+          "Reason: non_deliverable_terminal_turn (empty assistant response). Please try again.",
         isError: true,
       },
     ]);
@@ -1308,7 +1316,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       {
         text:
           "Web fetch completed.\nOrigin: https://example.com\nStatus: 200\n\n" +
-          "⚠️ Agent couldn't generate a response. Please try again.",
+          "⚠️ Agent couldn't generate a response. Reason: non_deliverable_terminal_turn. Please try again.",
         isError: true,
       },
     ]);
@@ -2802,6 +2810,32 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           model: "qwen3.6-27b",
           content: [],
           usage: { input: 512, output: 103, totalTokens: 615 },
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBe(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+  });
+
+  it("retries Ollama empty stop turns after completed tool activity", () => {
+    const retryInstruction = resolveEmptyResponseRetryInstruction({
+      provider: "ollama",
+      modelId: "gemma4-opencode:26b-262k",
+      modelApi: "ollama",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "exec", meta: "find files", replaySafe: false }],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "ollama",
+          model: "gemma4-opencode:26b-262k",
+          content: [],
+          usage: { input: 22655, output: 1731, totalTokens: 24386 },
         } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
       }),
     });

@@ -799,6 +799,24 @@ describe("convertToOllamaMessages", () => {
     ]);
   });
 
+  it("drops empty assistant turns that have no visible text or tool calls", () => {
+    const messages = [
+      { role: "user", content: "Check the login task." },
+      {
+        role: "assistant",
+        content: [],
+      },
+      { role: "user", content: "Continue." },
+    ];
+
+    const result = convertToOllamaMessages(messages);
+
+    expect(result).toEqual([
+      { role: "user", content: "Check the login task." },
+      { role: "user", content: "Continue." },
+    ]);
+  });
+
   it("normalizes provider-prefixed tool-call names before Ollama replay", () => {
     const messages = [
       {

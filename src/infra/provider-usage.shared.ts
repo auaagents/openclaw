@@ -44,6 +44,11 @@ export function resolveUsageProviderId(
     return undefined;
   }
   const normalized = normalizeProviderId(provider);
+  // Claude CLI logins store an Anthropic OAuth credential under the claude-cli
+  // provider id; their usage comes from the anthropic usage endpoint.
+  if (normalized === "claude-cli") {
+    return "anthropic";
+  }
   if (
     normalized === "openai" &&
     (options?.credentialType === "oauth" || options?.credentialType === "token")
