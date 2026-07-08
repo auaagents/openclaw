@@ -112,6 +112,31 @@ describe("Tool Search", () => {
     }
   });
 
+  it("keeps tools visible when a caller excludes them from cataloging", () => {
+    const write = fakeTool("write", "Write a local file");
+    const hidden = pluginTool("fake_hidden_tool", "Hidden target");
+    const compacted = applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        write,
+        hidden,
+      ],
+      config: { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never,
+      sessionId: "session-direct-write",
+      shouldCatalogTool: (tool) => tool.name !== "write",
+    });
+
+    expect(compacted.tools.map((tool) => tool.name)).toEqual([
+      TOOL_SEARCH_RAW_TOOL_NAME,
+      TOOL_DESCRIBE_RAW_TOOL_NAME,
+      TOOL_CALL_RAW_TOOL_NAME,
+      "write",
+    ]);
+    expect(compacted.catalogToolCount).toBe(1);
+  });
+
   it("compacts plugin tools behind the code surface and can search, describe, and call them", async () => {
     const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
     const alpha = pluginTool("fake_create_ticket", "Create a ticket in the fake tracker");

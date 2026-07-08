@@ -10,6 +10,7 @@ import {
   filterLocalModelLeanTools,
   isLocalModelLeanEnabled,
   resolveLocalModelLeanPreserveToolNames,
+  shouldCatalogToolForLocalModelLean,
 } from "./local-model-lean.js";
 
 function tools(names: string[]): AnyAgentTool[] {
@@ -269,5 +270,13 @@ describe("local model lean tool filtering", () => {
     };
 
     expect(applyLocalModelLeanToolSearchDefaults({ config: cfg, agentId: "main" })).toBe(cfg);
+  });
+
+  it("keeps core coding tools outside the lean Tool Search catalog", () => {
+    for (const name of ["apply_patch", "edit", "exec", "process", "read", "write"]) {
+      expect(shouldCatalogToolForLocalModelLean({ name } as AnyAgentTool), name).toBe(false);
+    }
+
+    expect(shouldCatalogToolForLocalModelLean({ name: "browser" } as AnyAgentTool)).toBe(true);
   });
 });

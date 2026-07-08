@@ -10,6 +10,14 @@ import type { AnyAgentTool } from "./agent-tools.types.js";
 import { expandToolGroups, normalizeToolName } from "./tool-policy.js";
 
 const LOCAL_MODEL_LEAN_DENY_TOOL_NAMES = new Set(["browser", "cron", "message"]);
+const LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES = new Set([
+  "apply_patch",
+  "edit",
+  "exec",
+  "process",
+  "read",
+  "write",
+]);
 const LOCAL_MODEL_LEAN_TOOL_SEARCH_DEFAULTS = {
   enabled: true,
   mode: "tools",
@@ -96,6 +104,13 @@ export function filterLocalModelLeanTools(params: {
       !LOCAL_MODEL_LEAN_DENY_TOOL_NAMES.has(normalizedName)
     );
   });
+}
+
+// Lean mode targets coding-tuned local models. Keep the core coding surface
+// visible so a later compacted turn cannot drop a familiar read/write tool
+// from the live dispatcher while the model still calls it from context.
+export function shouldCatalogToolForLocalModelLean(tool: AnyAgentTool): boolean {
+  return !LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES.has(normalizeToolName(tool.name));
 }
 
 export function applyLocalModelLeanToolSearchDefaults(params: {

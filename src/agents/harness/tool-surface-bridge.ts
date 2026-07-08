@@ -10,7 +10,9 @@ import {
 import {
   applyLocalModelLeanToolSearchDefaults,
   filterLocalModelLeanTools,
+  isLocalModelLeanEnabled,
   resolveLocalModelLeanPreserveToolNames,
+  shouldCatalogToolForLocalModelLean,
 } from "../local-model-lean.js";
 import { filterRuntimeCompatibleTools } from "../tool-schema-projection.js";
 import {
@@ -106,6 +108,11 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
         : undefined;
   const toolSearchCatalogExecutor =
     toolSearchControlsEnabled || codeModeControlsEnabled ? params.executeTool : undefined;
+  const localModelLeanEnabled = isLocalModelLeanEnabled({
+    config: params.config,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+  });
   const compactTools = (
     tools: AnyAgentTool[],
     options: { hookContext?: HookContext } = {},
@@ -184,6 +191,10 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
             runId: params.runId,
             catalogRef: toolSearchCatalogRef,
             toolHookContext: options.hookContext,
+            shouldCatalogTool:
+              localModelLeanEnabled && toolSearchConfig.mode === "tools"
+                ? shouldCatalogToolForLocalModelLean
+                : undefined,
           });
     const projectedCompactedTools = filterLocalModelLeanTools({
       tools: compacted.tools,

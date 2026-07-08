@@ -896,6 +896,7 @@ export function applyToolSearchCatalog(params: {
   runId?: string;
   catalogRef?: ToolSearchCatalogRef;
   toolHookContext?: HookContext;
+  shouldCatalogTool?: (tool: AnyAgentTool) => boolean;
 }): {
   tools: AnyAgentTool[];
   compacted: boolean;
@@ -910,6 +911,7 @@ export function applyToolSearchCatalog(params: {
     isVisibleControlTool: (tool) =>
       TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) &&
       shouldExposeControlTool(tool.name, config.mode),
+    shouldCatalogTool: params.shouldCatalogTool,
   });
 }
 
