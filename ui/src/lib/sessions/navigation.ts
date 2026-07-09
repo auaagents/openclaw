@@ -216,6 +216,17 @@ export function getVisibleSessionRows(
 }
 
 export function compareSessionRowsByUpdatedAt(a: GatewaySessionRow, b: GatewaySessionRow): number {
+  const favoriteStateDiff =
+    Number(b.permanentFavorite === true) - Number(a.permanentFavorite === true);
+  if (favoriteStateDiff !== 0) {
+    return favoriteStateDiff;
+  }
+  if (a.permanentFavorite === true && b.permanentFavorite === true) {
+    const favoriteOrderDiff = (a.favoriteOrder ?? 0) - (b.favoriteOrder ?? 0);
+    if (favoriteOrderDiff !== 0) {
+      return favoriteOrderDiff;
+    }
+  }
   const pinnedStateDiff = Number(b.pinned === true) - Number(a.pinned === true);
   if (pinnedStateDiff !== 0) {
     return pinnedStateDiff;

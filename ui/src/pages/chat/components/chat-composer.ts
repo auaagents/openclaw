@@ -96,6 +96,10 @@ type ChatComposerProps = {
   realtimeTalkDetail?: string | null;
   realtimeTalkInputLevel?: RealtimeTalkLevelSignal;
   realtimeTalkConversation?: RealtimeTalkConversationEntry[];
+  localDictationEnabled?: boolean;
+  localDictationInterim?: string | null;
+  localDictationError?: string | null;
+  localTtsError?: string | null;
   composerControls?: TemplateResult | typeof nothing;
   getDraft?: () => string;
   onDraftChange: (next: string) => void;
@@ -104,6 +108,7 @@ type ChatComposerProps = {
   onSlashIntent?: () => void | Promise<void>;
   onSend: () => void;
   onCompact?: () => void | Promise<void>;
+  onToggleLocalDictation?: () => void;
   onToggleRealtimeTalk?: () => void;
   onDismissRealtimeTalkError?: () => void;
   onAbort?: () => void;
@@ -1772,7 +1777,7 @@ function renderChatPrimaryActions(props: ChatRunControlsProps) {
     : nothing;
 
   return html`
-    ${props.voiceActive && props.onToggleVoice
+    ${props.voiceActive && props.onToggleVoice && !props.canAbort
       ? html`
           <openclaw-tooltip .content=${t("chat.composer.stopVoiceInput")}>
             <button
@@ -1784,7 +1789,6 @@ function renderChatPrimaryActions(props: ChatRunControlsProps) {
               <span class="agent-chat__control-label">${t("chat.composer.stopVoiceInput")}</span>
             </button>
           </openclaw-tooltip>
-          ${abortAction}
         `
       : props.canAbort
         ? html`
@@ -2146,6 +2150,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     syncComposerDraftAfterSend(composerTextarea);
   };
   const handleVoicePrimaryAction = () => {
+    if (props.localDictationEnabled) {
+      props.onToggleLocalDictation?.();
+      return;
+    }
     if (props.realtimeTalkActive) {
       props.onToggleRealtimeTalk?.();
       return;
@@ -2155,8 +2163,13 @@ export function renderChatComposer(props: ChatComposerProps) {
       handleSend();
       return;
     }
+    if (props.onToggleLocalDictation) {
+      props.onToggleLocalDictation();
+      return;
+    }
     props.onToggleRealtimeTalk?.();
   };
+  const hasVoiceAction = Boolean(props.onToggleLocalDictation || props.onToggleRealtimeTalk);
   const runControlsProps: ChatRunControlsProps = {
     canAbort: showAbortableUi,
     connected: canCompose,
@@ -2165,19 +2178,23 @@ export function renderChatComposer(props: ChatComposerProps) {
     hasMessages: props.messages.length > 0,
     isBusy,
     sending: props.sending,
-    voiceActive: props.realtimeTalkActive,
+    voiceActive: props.localDictationEnabled || props.realtimeTalkActive,
     onAbort: props.onAbort,
     onExport: () => exportMarkdown(props),
     onNewSession: props.onNewSession,
     onSend: handleSend,
     onStoreDraft: () => {},
-    onToggleVoice: props.onToggleRealtimeTalk ? handleVoicePrimaryAction : undefined,
+    onToggleVoice: hasVoiceAction ? handleVoicePrimaryAction : undefined,
   };
   const slashMenuVisible = canCompose && isSlashMenuVisible(state);
   const activeSlashMenuOptionId = getActiveSlashMenuOptionId(state, props.paneId);
   const activeSlashMenuOptionLabel = getActiveSlashMenuOptionLabel(state);
   const slashMenuListboxId = paneDomId(props.paneId, "slash-menu-listbox");
   const slashMenuAnnouncementId = paneDomId(props.paneId, "slash-active-announcement");
+  const localSpeechStatus =
+    props.localDictationInterim ?? props.localDictationError ?? props.localTtsError ?? null;
+  const localSpeechStatusTone =
+    props.localDictationError || props.localTtsError ? "error" : "listening";
 
   return html`
     ${renderChatQueue({
@@ -2296,6 +2313,16 @@ export function renderChatComposer(props: ChatComposerProps) {
           inputLevel: props.realtimeTalkInputLevel,
           onDismissError: props.onDismissRealtimeTalkError,
         })}
+        ${localSpeechStatus
+          ? html`
+              <div
+                class="agent-chat__stt-interim agent-chat__local-speech-status agent-chat__local-speech-status--${localSpeechStatusTone}"
+                role=${localSpeechStatusTone === "error" ? "alert" : "status"}
+              >
+                <span>${localSpeechStatus}</span>
+              </div>
+            `
+          : nothing}
 
         <div class="agent-chat__composer-input-row">
           <details class="agent-chat__attach-menu">

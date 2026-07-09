@@ -901,6 +901,10 @@ class ChatPane extends LitElement {
       realtimeTalkDetail: state.realtimeTalkDetail,
       realtimeTalkInputLevel: state.realtimeTalkInputLevel,
       realtimeTalkConversation: state.realtimeTalkConversation,
+      localDictationEnabled: state.localDictationEnabled,
+      localDictationInterim: state.localDictationInterim,
+      localDictationError: state.localDictationError,
+      localTtsError: state.localTtsError,
       connected: state.connected,
       canSend: state.connected && !selectedSessionArchived,
       disabledReason,
@@ -952,11 +956,13 @@ class ChatPane extends LitElement {
         realtimeTalkInputDeviceId: state.realtimeTalkInputDeviceId,
         realtimeTalkInputLoading: state.realtimeTalkInputLoading,
         realtimeTalkInputError: state.realtimeTalkInputError,
+        localTtsEnabled: state.localTtsEnabled,
         canOpenRealtimeTalkSettings,
         onRefresh: () => handleChatManualRefresh(state),
         onRealtimeTalkInputRefresh: () => void state.refreshRealtimeTalkInputs(true),
         onRealtimeTalkInputSelect: state.selectRealtimeTalkInput,
         onRealtimeTalkOptionsChange: state.updateRealtimeTalkOptions,
+        onToggleLocalTts: state.toggleLocalTts,
         onOpenRealtimeTalkSettings: () => {
           if (!canOpenRealtimeTalkSettings) {
             return;
@@ -1019,6 +1025,7 @@ class ChatPane extends LitElement {
         }
         this.context.navigate("sessions", { search: `?${search.toString()}` });
       },
+      onToggleLocalDictation: state.toggleLocalDictation,
       onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
       onDismissError: () => {
         dismissChatError(state as never);

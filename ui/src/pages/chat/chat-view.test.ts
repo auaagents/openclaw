@@ -1750,6 +1750,24 @@ describe("chat voice controls", () => {
     expect(container.querySelector('[aria-label="Voice input"]')).toBeNull();
   });
 
+  it("uses local dictation for the primary empty-composer voice action", () => {
+    const onToggleLocalDictation = vi.fn();
+    const onToggleRealtimeTalk = vi.fn();
+    const container = renderChatView({
+      onToggleLocalDictation,
+      onToggleRealtimeTalk,
+    });
+
+    requireElement(
+      container,
+      '[aria-label="Start voice input"]',
+      "voice input button",
+    ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onToggleLocalDictation).toHaveBeenCalledTimes(1);
+    expect(onToggleRealtimeTalk).not.toHaveBeenCalled();
+  });
+
   it("stops active voice input without sending a composed draft", () => {
     const onSend = vi.fn();
     const onToggleRealtimeTalk = vi.fn();

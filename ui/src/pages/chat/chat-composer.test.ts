@@ -123,7 +123,7 @@ describe("chat run controls", () => {
     expect(container.querySelector('button[aria-label="Start voice input"]')).toBeNull();
   });
 
-  it("keeps voice and generation stop actions available when both are active", () => {
+  it("prioritizes generation stop when voice and generation are both active", () => {
     const container = document.createElement("div");
     const onAbort = vi.fn();
     const onToggleVoice = vi.fn();
@@ -139,15 +139,14 @@ describe("chat run controls", () => {
       container,
     );
 
-    const stopVoiceButton = getButton(container, 'button[aria-label="Stop voice input"]');
     const stopGenerationButton = getButton(
       container,
       `button[aria-label="${t("chat.runControls.stopGenerating")}"]`,
     );
 
-    stopVoiceButton.click();
+    expect(container.querySelector('button[aria-label="Stop voice input"]')).toBeNull();
     stopGenerationButton.click();
-    expect(onToggleVoice).toHaveBeenCalledTimes(1);
+    expect(onToggleVoice).not.toHaveBeenCalled();
     expect(onAbort).toHaveBeenCalledTimes(1);
   });
 

@@ -115,6 +115,18 @@ describe("chat composer settings", () => {
     expect(onRealtimeTalkOptionsChange).toHaveBeenCalledWith({ voice: "cedar" });
   });
 
+  it("keeps Jenny read-aloud in Settings", () => {
+    const container = document.createElement("div");
+    const onToggleLocalTts = vi.fn();
+    render(renderChatControls(createProps({ onToggleLocalTts })), container);
+
+    const readAloud = container.querySelector<HTMLButtonElement>('[aria-label="Read aloud"]');
+    expect(readAloud).toBeInstanceOf(HTMLButtonElement);
+    readAloud?.click();
+
+    expect(onToggleLocalTts).toHaveBeenCalledOnce();
+  });
+
   it("keeps microphone selection in Voice settings", () => {
     const container = document.createElement("div");
     const onRealtimeTalkInputSelect = vi.fn();

@@ -1514,6 +1514,10 @@ openclaw-chat-page {
   background: color-mix(in srgb, var(--danger, #ef4444) 9%, transparent);
 }
 
+.agent-chat__local-speech-status--error {
+  color: var(--danger, #ef4444);
+}
+
 .agent-chat__talk-status {
   display: flex;
   align-items: center;

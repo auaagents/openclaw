@@ -41,12 +41,14 @@ type ChatControlsProps = {
   realtimeTalkInputDeviceId?: string;
   realtimeTalkInputLoading?: boolean;
   realtimeTalkInputError?: string | null;
+  localTtsEnabled?: boolean;
   canOpenRealtimeTalkSettings?: boolean;
   onOpenRealtimeTalkSettings?: () => void;
   onRefresh: () => Promise<void> | void;
   onRealtimeTalkInputRefresh?: () => void;
   onRealtimeTalkInputSelect?: (deviceId: string) => void;
   onRealtimeTalkOptionsChange?: (next: Partial<RealtimeTalkOptions>) => void;
+  onToggleLocalTts?: () => void;
   onSettingsChange: (next: UiSettings) => void;
   onSettingsOpenChange: (
     open: boolean,
@@ -196,6 +198,7 @@ export function renderChatControls(props: ChatControlsProps) {
   const commentaryLabel = disableThinkingToggle
     ? t("chat.onboardingDisabled")
     : t("chat.commentaryToggle");
+  const readAloudLabel = props.localTtsEnabled ? "Stop read aloud" : "Read aloud";
   const refreshDisabled =
     !props.connected ||
     props.manualRefreshInFlight ||
@@ -322,6 +325,23 @@ export function renderChatControls(props: ChatControlsProps) {
                 <span class="chat-settings-action__text">${t("chat.commentaryLabel")}</span>
               </button>
             </openclaw-tooltip>
+            ${props.onToggleLocalTts
+              ? html`
+                  <openclaw-tooltip .content=${readAloudLabel}>
+                    <button
+                      class="btn btn--sm btn--icon chat-settings-action ${props.localTtsEnabled
+                        ? "active"
+                        : ""}"
+                      @click=${props.onToggleLocalTts}
+                      aria-pressed=${props.localTtsEnabled}
+                      aria-label=${readAloudLabel}
+                    >
+                      ${props.localTtsEnabled ? icons.volume2 : icons.volumeOff}
+                      <span class="chat-settings-action__text">Read aloud</span>
+                    </button>
+                  </openclaw-tooltip>
+                `
+              : ""}
             <openclaw-tooltip .content=${cronLabel}>
               <button
                 class="btn btn--sm btn--icon chat-settings-action ${hideCron ? "active" : ""}"

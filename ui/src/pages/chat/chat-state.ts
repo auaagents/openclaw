@@ -51,6 +51,11 @@ import {
   type ChatMetadataResult,
   type ChatState,
 } from "./chat-history.ts";
+import {
+  attachChatLocalSpeechActions,
+  createInitialChatLocalSpeechState,
+  type ChatLocalSpeechState,
+} from "./chat-local-speech.ts";
 import { clearPendingQueueItemsForRun, removeQueuedMessage } from "./chat-queue.ts";
 import {
   attachChatRealtimeActions,
@@ -116,6 +121,7 @@ type ChatPageElement = {
 export type ChatPageHost = ChatHost &
   ChatState &
   ChatRealtimeState &
+  ChatLocalSpeechState &
   SessionWorkspaceHost & {
     sessions: SessionCapability;
     settings: UiSettings;
@@ -1066,6 +1072,7 @@ export function createPageState(
     toolStreamOrder: [] as string[],
     toolStreamSyncTimer: null,
     ...createInitialChatRealtimeState(settings.realtimeTalkInputDeviceId),
+    ...createInitialChatLocalSpeechState(),
     requestUpdate,
     sessionWorkspaceState: undefined,
     sessionWorkspaceOpenRequest: undefined,
@@ -1120,12 +1127,13 @@ export function createPageState(
       }
     });
   };
-  attachChatRealtimeActions(state);
   state.loadAssistantIdentity = async () => {
     await loadPageAssistantIdentity(state);
   };
   state.handleSendChat = (messageOverride, options) =>
     handleSendChat(state, messageOverride, options as never);
+  attachChatRealtimeActions(state);
+  attachChatLocalSpeechActions(state);
   state.handleAbortChat = async (options) => {
     await handleAbortChat(state, options as never);
     requestUpdate();
@@ -1240,9 +1248,15 @@ export class ChatStateController<TState extends ChatPageHost> implements Reactiv
     this.previousChatToolMessages = state.chatToolMessages;
     this.previousChatStream = state.chatStream;
     this.previousRealtimeConversation = state.realtimeTalkConversation;
+    if (state.localDictationEnabled) {
+      state.startLocalDictation({ preserveEnabled: true });
+    }
     state.requestUpdate = this.requestUpdate;
     const sendChat = state.handleSendChat;
     state.handleSendChat = async (messageOverride, options) => {
+      if (state.localDictationEnabled) {
+        state.stopLocalDictation();
+      }
       const pending = sendChat(messageOverride, options);
       this.requestUpdate();
       try {
@@ -1286,6 +1300,7 @@ export class ChatStateController<TState extends ChatPageHost> implements Reactiv
     this.previousChatToolMessages = state.chatToolMessages;
     this.previousChatStream = state.chatStream;
     this.previousRealtimeConversation = state.realtimeTalkConversation;
+    state.syncLocalTtsAutoRead();
     if (!messagesChanged && !streamChanged && !loadingChanged) {
       return;
     }
@@ -1396,6 +1411,7 @@ export class ChatStateController<TState extends ChatPageHost> implements Reactiv
     state?.realtimeTalkSession?.stop();
     if (state) {
       state.realtimeTalkSession = null;
+      state.stopLocalSpeechEffects();
       state.resetToolStream?.();
     }
   }

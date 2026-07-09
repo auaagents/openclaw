@@ -75,6 +75,10 @@ export type ChatProps = {
   realtimeTalkDetail?: string | null;
   realtimeTalkInputLevel?: RealtimeTalkLevelSignal;
   realtimeTalkConversation?: RealtimeTalkConversationEntry[];
+  localDictationEnabled?: boolean;
+  localDictationInterim?: string | null;
+  localDictationError?: string | null;
+  localTtsError?: string | null;
   connected: boolean;
   canSend: boolean;
   disabledReason: string | null;
@@ -115,6 +119,7 @@ export type ChatProps = {
   onSend: () => void;
   onCompact?: () => void | Promise<void>;
   onOpenSessionCheckpoints?: () => void | Promise<void>;
+  onToggleLocalDictation?: () => void;
   onToggleRealtimeTalk?: () => void;
   onDismissError?: () => void;
   onDismissRealtimeTalkError?: () => void;
@@ -241,6 +246,10 @@ export function renderChat(props: ChatProps) {
     realtimeTalkDetail: props.realtimeTalkDetail,
     realtimeTalkInputLevel: props.realtimeTalkInputLevel,
     realtimeTalkConversation: props.realtimeTalkConversation,
+    localDictationEnabled: props.localDictationEnabled,
+    localDictationInterim: props.localDictationInterim,
+    localDictationError: props.localDictationError,
+    localTtsError: props.localTtsError,
     composerControls: props.composerControls,
     getDraft: props.getDraft,
     onDraftChange: props.onDraftChange,
@@ -249,6 +258,7 @@ export function renderChat(props: ChatProps) {
     onSlashIntent: props.onSlashIntent,
     onSend: props.onSend,
     onCompact: props.onCompact,
+    onToggleLocalDictation: props.onToggleLocalDictation,
     onToggleRealtimeTalk: props.onToggleRealtimeTalk,
     onDismissRealtimeTalkError: props.onDismissRealtimeTalkError,
     onAbort: props.onAbort,
