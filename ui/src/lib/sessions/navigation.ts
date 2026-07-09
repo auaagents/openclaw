@@ -33,7 +33,7 @@ export type SessionNavigation = {
   selectedAgentId: string;
   defaultAgentId: string;
   selectedSession?: GatewaySessionRow;
-  recentSessions: GatewaySessionRow[];
+  visibleSessions: GatewaySessionRow[];
   activeRowKey: string | null;
 };
 
@@ -216,17 +216,6 @@ export function getVisibleSessionRows(
 }
 
 export function compareSessionRowsByUpdatedAt(a: GatewaySessionRow, b: GatewaySessionRow): number {
-  const favoriteStateDiff =
-    Number(b.permanentFavorite === true) - Number(a.permanentFavorite === true);
-  if (favoriteStateDiff !== 0) {
-    return favoriteStateDiff;
-  }
-  if (a.permanentFavorite === true && b.permanentFavorite === true) {
-    const favoriteOrderDiff = (a.favoriteOrder ?? 0) - (b.favoriteOrder ?? 0);
-    if (favoriteOrderDiff !== 0) {
-      return favoriteOrderDiff;
-    }
-  }
   const pinnedStateDiff = Number(b.pinned === true) - Number(a.pinned === true);
   if (pinnedStateDiff !== 0) {
     return pinnedStateDiff;
@@ -260,32 +249,22 @@ export function resolveSessionNavigation(input: SessionNavigationInput): Session
     defaultAgentId,
     filterByAgent: shouldFilterByAgent,
   }).toSorted(input.compareSessions ?? compareSessionRowsByUpdatedAt);
-  // Keep visible selections in their sorted slot. Hoisting every active row
-  // makes the list move after each click. Permanent favorites and pinned chats
-  // remain outside the recent-chat cap so explicit selections never disappear.
-  const favoriteSessions = sortedSessions.filter((row) => row.permanentFavorite === true);
-  const pinnedSessions = sortedSessions.filter(
-    (row) => row.pinned === true && row.permanentFavorite !== true,
-  );
-  let recentSessions = [
-    ...favoriteSessions,
-    ...pinnedSessions,
-    ...sortedSessions
-      .filter((row) => row.permanentFavorite !== true && row.pinned !== true)
-      .slice(0, 9),
-  ];
-  let activeRow = recentSessions.find(matchesCurrentSession);
+  // The sidebar is the session list, not a recent-session preview. Keep every
+  // active row in its sorted slot so selecting a session never reshuffles or
+  // hides another one behind a separate route.
+  let visibleSessions = sortedSessions;
+  let activeRow = visibleSessions.find(matchesCurrentSession);
   if (!activeRow && activeSession) {
-    // Deep-linked, archived, and capped sessions still need a visible row.
+    // Deep-linked and archived sessions still need a visible selected row.
     activeRow = sortedSessions.find(matchesCurrentSession) ?? activeSession;
-    recentSessions = [activeRow, ...recentSessions.filter((row) => row !== activeRow)];
+    visibleSessions = [activeRow, ...visibleSessions.filter((row) => row !== activeRow)];
   }
   return {
     currentSessionKey,
     selectedAgentId,
     defaultAgentId,
     selectedSession: activeSession,
-    recentSessions,
+    visibleSessions,
     activeRowKey: activeRow?.key ?? null,
   };
 }

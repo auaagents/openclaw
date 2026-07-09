@@ -983,6 +983,7 @@ export function createPageState(
     client: null,
     connected: false,
     hello: null,
+    terminalAvailable: false,
     assistantAgentId: context.agentSelection.state.selectedId,
     sessionKey: settings.sessionKey,
     chatLoading: false,
