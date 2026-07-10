@@ -23,15 +23,6 @@ type ScopedSessionSelection = {
   lastActiveSessionKey: string;
 };
 
-export type LocalFavoriteSession = {
-  key: string;
-  label?: string;
-  displayName?: string;
-  kind?: "cron" | "direct" | "group" | "global" | "unknown";
-  favoriteOrder?: number;
-  updatedAt?: number | null;
-};
-
 type PersistedUiSettings = Omit<UiSettings, "token" | "sessionKey" | "lastActiveSessionKey"> & {
   token?: never;
   sessionKey?: string;
@@ -75,68 +66,13 @@ export function normalizeChatSendShortcut(value: unknown): ChatSendShortcut {
     : "enter";
 }
 
-function normalizeFavoriteKind(value: unknown): LocalFavoriteSession["kind"] | undefined {
-  return value === "cron" ||
-    value === "direct" ||
-    value === "group" ||
-    value === "global" ||
-    value === "unknown"
-    ? value
-    : undefined;
-}
+const CHAT_WORKSPACE_DOCKS = ["right", "bottom"] as const;
+export type ChatWorkspaceDock = (typeof CHAT_WORKSPACE_DOCKS)[number];
 
-function normalizeFavoriteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-export function normalizeFavoriteSessions(value: unknown): LocalFavoriteSession[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const seen = new Set<string>();
-  const favorites: LocalFavoriteSession[] = [];
-  for (const item of value) {
-    const key =
-      typeof item === "string"
-        ? normalizeOptionalString(item)
-        : item && typeof item === "object"
-          ? normalizeOptionalString((item as { key?: unknown }).key)
-          : null;
-    if (!key || seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    if (typeof item === "string") {
-      favorites.push({ key });
-      continue;
-    }
-    const candidate = item as {
-      label?: unknown;
-      displayName?: unknown;
-      kind?: unknown;
-      favoriteOrder?: unknown;
-      updatedAt?: unknown;
-    };
-    const label = normalizeOptionalString(candidate.label);
-    const displayName = normalizeOptionalString(candidate.displayName);
-    const kind = normalizeFavoriteKind(candidate.kind);
-    const favoriteOrder = normalizeFavoriteNumber(candidate.favoriteOrder);
-    const updatedAt =
-      candidate.updatedAt === null
-        ? null
-        : typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt)
-          ? candidate.updatedAt
-          : undefined;
-    favorites.push({
-      key,
-      ...(label ? { label } : {}),
-      ...(displayName ? { displayName } : {}),
-      ...(kind ? { kind } : {}),
-      ...(favoriteOrder != null ? { favoriteOrder } : {}),
-      ...(updatedAt !== undefined ? { updatedAt } : {}),
-    });
-  }
-  return favorites;
+export function normalizeChatWorkspaceDock(value: unknown): ChatWorkspaceDock {
+  return CHAT_WORKSPACE_DOCKS.includes(value as ChatWorkspaceDock)
+    ? (value as ChatWorkspaceDock)
+    : "right";
 }
 
 export function normalizeTextScale(value: unknown, fallback: TextScaleStop = 100): TextScaleStop {
@@ -170,7 +106,7 @@ export type UiSettings = {
   realtimeTalkInputDeviceId?: string;
   splitRatio: number; // Sidebar split ratio (0.4 to 0.7, default 0.6)
   chatSplitLayout?: ChatSplitLayout;
-  favoriteSessions?: LocalFavoriteSession[];
+  chatWorkspaceDock?: ChatWorkspaceDock; // Session workspace rail dock edge (default "right")
   navCollapsed: boolean; // Collapsible sidebar state
   navWidth: number; // Sidebar width when expanded (240–400px)
   sidebarPinnedRoutes: SidebarNavRoute[]; // Nav routes shown above the "More" section
@@ -178,6 +114,8 @@ export type UiSettings = {
   textScale?: TextScaleStop; // Browser-local text scale percentage
   customTheme?: ImportedCustomTheme;
   locale?: string;
+  lobsterPetVisits?: boolean; // Whether the sidebar lobster pet drops by (default true)
+  lobsterPetSounds?: boolean; // Opt-in poke/pet chirps from the lobster (default false)
 };
 
 type LastActiveSessionHost = {
@@ -210,6 +148,7 @@ type ApplicationStartupSettings = {
   password: string | null;
   pendingGatewayUrl: string | null;
   pendingGatewayToken: string | null;
+  pendingBootstrapToken: string | null;
   queryTokenUsed: boolean;
   location: ApplicationStartupLocation;
   changed: boolean;
@@ -230,6 +169,7 @@ export function resolveApplicationStartupSettings(
   let password: string | null = null;
   let pendingGatewayUrl: string | null = null;
   let pendingGatewayToken: string | null = null;
+  let pendingBootstrapToken: string | null = null;
   let queryTokenUsed = false;
 
   const updateSettings = (patch: Partial<UiSettings>) => {
@@ -270,6 +210,7 @@ export function resolveApplicationStartupSettings(
       password,
       pendingGatewayUrl,
       pendingGatewayToken,
+      pendingBootstrapToken,
       queryTokenUsed,
       location,
       changed,
@@ -289,6 +230,8 @@ export function resolveApplicationStartupSettings(
   const hashToken = hashParams.get("token");
   const hasTokenParam = hashToken != null || queryToken != null;
   const token = normalizeOptionalString(hashToken ?? queryToken);
+  const hasBootstrapTokenParam = hashParams.has("bootstrapToken");
+  const bootstrapToken = normalizeOptionalString(hashParams.get("bootstrapToken"));
   const session = normalizeOptionalString(params.get("session") ?? hashParams.get("session"));
   const shouldResetSessionForToken = Boolean(token && !session && !gatewayUrlChanged);
   let shouldCleanUrl = false;
@@ -311,6 +254,12 @@ export function resolveApplicationStartupSettings(
       updateSettings({ token });
     }
     hashParams.delete("token");
+    shouldCleanUrl = true;
+  }
+
+  if (hasBootstrapTokenParam) {
+    pendingBootstrapToken = bootstrapToken ?? null;
+    hashParams.delete("bootstrapToken");
     shouldCleanUrl = true;
   }
 
@@ -338,6 +287,8 @@ export function resolveApplicationStartupSettings(
     pendingGatewayUrl = gatewayUrlChanged ? nextGatewayUrl : null;
     if (!gatewayUrlChanged) {
       pendingGatewayToken = null;
+    } else if (pendingBootstrapToken) {
+      pendingGatewayToken = null;
     }
     params.delete("gatewayUrl");
     hashParams.delete("gatewayUrl");
@@ -355,6 +306,7 @@ export function resolveApplicationStartupSettings(
     password,
     pendingGatewayUrl,
     pendingGatewayToken,
+    pendingBootstrapToken,
     queryTokenUsed,
     location: shouldCleanUrl
       ? {
@@ -648,7 +600,6 @@ export function loadSettings(): UiSettings {
       chatAutoScroll: normalizeChatAutoScrollMode(parsed.chatAutoScroll),
       chatSendShortcut: normalizeChatSendShortcut(parsed.chatSendShortcut),
       realtimeTalkInputDeviceId: normalizeOptionalString(parsed.realtimeTalkInputDeviceId),
-      favoriteSessions: normalizeFavoriteSessions(parsed.favoriteSessions),
       splitRatio:
         typeof parsed.splitRatio === "number" &&
         parsed.splitRatio >= 0.4 &&
@@ -656,6 +607,7 @@ export function loadSettings(): UiSettings {
           ? parsed.splitRatio
           : defaults.splitRatio,
       chatSplitLayout: normalizeChatSplitLayout(parsed.chatSplitLayout),
+      chatWorkspaceDock: normalizeChatWorkspaceDock(parsed.chatWorkspaceDock),
       navCollapsed:
         typeof parsed.navCollapsed === "boolean" ? parsed.navCollapsed : defaults.navCollapsed,
       navWidth:
@@ -673,6 +625,8 @@ export function loadSettings(): UiSettings {
       textScale: normalizeTextScale(parsed.textScale, defaults.textScale),
       customTheme: customTheme ?? undefined,
       locale: isSupportedLocale(parsed.locale) ? parsed.locale : undefined,
+      ...(parsed.lobsterPetVisits === false ? { lobsterPetVisits: false } : {}),
+      ...(parsed.lobsterPetSounds === true ? { lobsterPetSounds: true } : {}),
     };
     if (source.legacy || "token" in parsed) {
       persistSettings(settings, { selectGateway: true });
@@ -735,7 +689,6 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
       ],
     ].slice(-MAX_SCOPED_SESSION_ENTRIES),
   );
-  const favoriteSessions = normalizeFavoriteSessions(next.favoriteSessions);
   const persisted: PersistedUiSettings = {
     gatewayUrl: next.gatewayUrl,
     theme: next.theme,
@@ -752,7 +705,8 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
       : {}),
     splitRatio: next.splitRatio,
     ...(next.chatSplitLayout ? { chatSplitLayout: next.chatSplitLayout } : {}),
-    ...(favoriteSessions.length > 0 ? { favoriteSessions } : {}),
+    // Right dock is the default; only the opt-in bottom dock persists.
+    ...(next.chatWorkspaceDock === "bottom" ? { chatWorkspaceDock: "bottom" as const } : {}),
     navCollapsed: next.navCollapsed,
     navWidth: next.navWidth,
     sidebarPinnedRoutes: next.sidebarPinnedRoutes,
@@ -761,6 +715,10 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
     ...(next.customTheme ? { customTheme: next.customTheme } : {}),
     sessionsByGateway,
     ...(next.locale ? { locale: next.locale } : {}),
+    // Visits default on; only an explicit opt-out persists. Sounds default
+    // off; only an explicit opt-in persists.
+    ...(next.lobsterPetVisits === false ? { lobsterPetVisits: false } : {}),
+    ...(next.lobsterPetSounds === true ? { lobsterPetSounds: true } : {}),
   };
   const serialized = JSON.stringify(persisted);
   try {

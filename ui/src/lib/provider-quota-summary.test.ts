@@ -1,6 +1,7 @@
 // Control UI tests cover provider quota summary behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatQuotaReset, groupQuotaWindowsByProvider } from "./provider-quota-summary.ts";
+import type { ModelAuthStatusProvider } from "../api/types.ts";
+import { collectProviderQuotaGroups, formatQuotaReset } from "./provider-quota-summary.ts";
 
 describe("formatQuotaReset", () => {
   afterEach(() => {
@@ -20,29 +21,93 @@ describe("formatQuotaReset", () => {
   });
 });
 
-describe("groupQuotaWindowsByProvider", () => {
-  it("keeps each provider separate and orders providers most-constrained first", () => {
-    const grouped = groupQuotaWindowsByProvider([
-      { displayName: "OpenAI", label: "Week", remaining: 28 },
-      { displayName: "Claude", label: "5h", remaining: 40, resetAt: 1_700_000_000_000 },
-      { displayName: "Claude", label: "Week", remaining: 65 },
-      { displayName: "OpenAI", label: "3h", remaining: 82 },
-    ]);
+describe("collectProviderQuotaGroups", () => {
+  const acceptAll = () => true;
 
-    expect(grouped.map((p) => p.displayName)).toEqual(["OpenAI", "Claude"]);
-    expect(grouped[0]).toMatchObject({ displayName: "OpenAI", remaining: 28 });
-    expect(grouped[0]?.windows.map((w) => w.label)).toEqual(["Week", "3h"]);
-    expect(grouped[1]).toMatchObject({ displayName: "Claude", remaining: 40 });
-    expect(grouped[1]?.windows.map((w) => w.label)).toEqual(["5h", "Week"]);
+  function providerWithUsage(
+    provider: string,
+    usage: ModelAuthStatusProvider["usage"],
+  ): ModelAuthStatusProvider {
+    return {
+      provider,
+      displayName: "Claude",
+      status: "ok",
+      profiles: [{ profileId: `${provider}:default`, type: "oauth", status: "ok" }],
+      usage,
+    };
+  }
+
+  it("collapses providers sharing identical usage into one group", () => {
+    const usage: ModelAuthStatusProvider["usage"] = {
+      providerId: "anthropic",
+      plan: "Max (20x)",
+      windows: [
+        { label: "5h", usedPercent: 21.6, resetAt: 1_800_000_000_000 },
+        { label: "Week", usedPercent: 25 },
+      ],
+      billing: [{ type: "budget", used: 157.85, limit: 400, unit: "USD", period: "month" }],
+    };
+    const groups = collectProviderQuotaGroups(
+      {
+        ts: 1,
+        providers: [providerWithUsage("anthropic", usage), providerWithUsage("claude-cli", usage)],
+      },
+      acceptAll,
+    );
+
+    expect(groups).toEqual([
+      {
+        providers: ["anthropic", "claude-cli"],
+        displayName: "Claude",
+        plan: "Max (20x)",
+        windows: [
+          { label: "5h", usedPercent: 22, resetAt: 1_800_000_000_000 },
+          { label: "Week", usedPercent: 25 },
+        ],
+        budgets: [{ used: 157.85, limit: 400, unit: "USD" }],
+      },
+    ]);
   });
 
-  it("breaks remaining ties by provider name and returns empty for no windows", () => {
-    const grouped = groupQuotaWindowsByProvider([
-      { displayName: "OpenAI", label: "Week", remaining: 30 },
-      { displayName: "Claude", label: "5h", remaining: 30 },
-    ]);
+  it("drops providers without windows or budgets and invalid budget shapes", () => {
+    const groups = collectProviderQuotaGroups(
+      {
+        ts: 1,
+        providers: [
+          providerWithUsage("anthropic", { providerId: "anthropic", windows: [] }),
+          providerWithUsage("openrouter", {
+            providerId: "openrouter",
+            windows: [],
+            billing: [
+              { type: "balance", amount: 10, unit: "USD" },
+              { type: "budget", used: 5, limit: 0, unit: "USD" },
+            ],
+          }),
+          providerWithUsage("openai", {
+            providerId: "openai",
+            windows: [{ label: "Week", usedPercent: 140 }],
+          }),
+        ],
+      },
+      acceptAll,
+    );
 
-    expect(grouped.map((p) => p.displayName)).toEqual(["Claude", "OpenAI"]);
-    expect(groupQuotaWindowsByProvider([])).toEqual([]);
+    expect(groups).toEqual([
+      {
+        providers: ["openai"],
+        displayName: "Claude",
+        windows: [{ label: "Week", usedPercent: 100 }],
+        budgets: [],
+      },
+    ]);
+  });
+
+  it("applies the provider filter", () => {
+    const usage = { providerId: "anthropic", windows: [{ label: "5h", usedPercent: 10 }] };
+    const groups = collectProviderQuotaGroups(
+      { ts: 1, providers: [providerWithUsage("anthropic", usage)] },
+      () => false,
+    );
+    expect(groups).toEqual([]);
   });
 });

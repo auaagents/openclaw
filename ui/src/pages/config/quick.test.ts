@@ -43,6 +43,10 @@ function expectStatByLabel(container: Element, text: string): HTMLElement {
 
 function createProps(overrides: Partial<QuickSettingsProps> = {}): QuickSettingsProps {
   return {
+    lobsterPetVisits: true,
+    setLobsterPetVisits: () => {},
+    lobsterPetSounds: false,
+    setLobsterPetSounds: () => {},
     currentModel: "gpt-5.5",
     thinkingLevel: "off",
     fastMode: false,
@@ -82,8 +86,6 @@ function createProps(overrides: Partial<QuickSettingsProps> = {}): QuickSettings
     setTextScale: vi.fn(),
     userAvatar: null,
     onUserAvatarChange: vi.fn(),
-    configObject: {},
-    onSelectPreset: vi.fn(),
     connected: true,
     gatewayUrl: "ws://localhost:18789",
     assistantName: "OpenClaw",
@@ -139,7 +141,7 @@ describe("renderQuickSettings", () => {
       "qs-card--personal",
       "qs-card--automations",
     ]);
-    expect(container.querySelectorAll(".qs-card--span-all")).toHaveLength(1);
+    expect(container.querySelectorAll(".qs-card--span-all")).toHaveLength(0);
   });
 
   it("renders Gateway host identity and resources", () => {
@@ -276,15 +278,57 @@ describe("renderQuickSettings", () => {
     expect(systemCard?.querySelector(".qs-system__address")).toBeNull();
   });
 
-  it("shows the current bootstrap default when config omits the explicit limit", () => {
+  it("hides the pending changes bar when the config is clean", () => {
     const container = document.createElement("div");
 
-    render(renderQuickSettings(createProps({ configObject: {} })), container);
+    render(renderQuickSettings(createProps()), container);
 
-    const summary = container.querySelector(".qs-profiles__summary-values");
-    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-      "20,000 chars per file · 60,000 chars total · Every turn",
+    expect(container.querySelector(".qs-pending")).toBeNull();
+  });
+
+  it("renders pending config actions and calls their handlers", () => {
+    const onResetConfig = vi.fn();
+    const onSaveConfig = vi.fn();
+    const onApplyConfig = vi.fn();
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          configDirty: true,
+          configReady: true,
+          connected: true,
+          onResetConfig,
+          onSaveConfig,
+          onApplyConfig,
+        }),
+      ),
+      container,
     );
+
+    expect(container.querySelector(".qs-pending")).not.toBeNull();
+    const discardButton = expectButtonByText(container, "Discard");
+    const saveButton = expectButtonByText(container, "Save");
+    const applyButton = expectButtonByText(container, "Apply Now");
+    expect(saveButton.disabled).toBe(false);
+
+    discardButton.click();
+    saveButton.click();
+    applyButton.click();
+
+    expect(onResetConfig).toHaveBeenCalledTimes(1);
+    expect(onSaveConfig).toHaveBeenCalledTimes(1);
+    expect(onApplyConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables commit actions until the config is ready", () => {
+    const container = document.createElement("div");
+
+    render(renderQuickSettings(createProps({ configDirty: true, configReady: false })), container);
+
+    expect(expectButtonByText(container, "Save").disabled).toBe(true);
+    expect(expectButtonByText(container, "Apply Now").disabled).toBe(true);
+    expect(expectButtonByText(container, "Discard").disabled).toBe(false);
   });
 
   it("keeps auto as a first-class quick settings fast mode", () => {
@@ -407,7 +451,7 @@ describe("renderQuickSettings", () => {
     expect(container.querySelector(".qs-assistant-avatar")?.getAttribute("src")).toBe("blob:nova");
   });
 
-  it("renders same-origin assistant avatar routes from IDENTITY.md", () => {
+  it("renders same-origin configured assistant avatar routes", () => {
     const container = document.createElement("div");
 
     render(
@@ -428,7 +472,7 @@ describe("renderQuickSettings", () => {
     );
   });
 
-  it("shows the IDENTITY.md avatar source when the assistant falls back to the logo", () => {
+  it("shows the configured avatar source when the assistant falls back to the logo", () => {
     const container = document.createElement("div");
 
     render(
@@ -449,7 +493,7 @@ describe("renderQuickSettings", () => {
       "/apple-touch-icon.png",
     );
     expect(expectAssistantAvatarSource(container)).toEqual({
-      label: "IDENTITY.md",
+      label: "Configured avatar",
       source: "assets/avatars/nova-portrait.png",
     });
     expect(container.querySelector(".qs-identity-card__issue")?.textContent?.trim()).toBe(
@@ -460,6 +504,95 @@ describe("renderQuickSettings", () => {
         (label) => label.textContent?.trim() === "Choose image",
       ),
     ).toBe(true);
+  });
+
+  it("renders the gateway fallback without retrying a rejected avatar route", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          assistantName: "Nova",
+          assistantAvatar: "A",
+          assistantAvatarUrl: "A",
+          assistantAvatarSource: "assets/avatars/missing.png",
+          assistantAvatarStatus: "none",
+          assistantAvatarReason: "missing",
+        }),
+      ),
+      container,
+    );
+
+    expect(container.querySelector(".qs-assistant-avatar--fallback")?.getAttribute("src")).toBe(
+      "/apple-touch-icon.png",
+    );
+    expect(container.querySelector('.qs-assistant-avatar[src*="/avatar/"]')).toBeNull();
+    expect(container.querySelector(".qs-identity-card__issue")?.textContent?.trim()).toBe(
+      "File not found",
+    );
+  });
+
+  it("shows unreadable avatar failures without retrying the protected route", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          assistantName: "Nova",
+          assistantAvatar: "A",
+          assistantAvatarUrl: "A",
+          assistantAvatarSource: "assets/avatars/avatar.png",
+          assistantAvatarStatus: "none",
+          assistantAvatarReason: "unreadable",
+        }),
+      ),
+      container,
+    );
+
+    expect(container.querySelector('.qs-assistant-avatar[src*="/avatar/"]')).toBeNull();
+    expect(container.querySelector(".qs-identity-card__issue")?.textContent?.trim()).toBe(
+      "Cannot render avatar",
+    );
+  });
+
+  it("keeps a bounded avatar source free of lone surrogates", () => {
+    const container = document.createElement("div");
+    const source = `${"a".repeat(33)}😀${"m".repeat(20)}😀${"b".repeat(23)}`;
+
+    render(
+      renderQuickSettings(
+        createProps({
+          assistantAvatar: "/avatar/main",
+          assistantAvatarUrl: null,
+          assistantAvatarSource: source,
+          assistantAvatarStatus: "none",
+        }),
+      ),
+      container,
+    );
+
+    expect(expectAssistantAvatarSource(container).source).toBe(
+      `${"a".repeat(33)}...${"b".repeat(23)}`,
+    );
+  });
+
+  it("keeps a malformed data-image header free of lone surrogates", () => {
+    const container = document.createElement("div");
+    const source = `data:image/${"a".repeat(20)}😀tail`;
+
+    render(
+      renderQuickSettings(
+        createProps({
+          assistantAvatar: "/avatar/main",
+          assistantAvatarUrl: null,
+          assistantAvatarSource: source,
+          assistantAvatarStatus: "none",
+        }),
+      ),
+      container,
+    );
+
+    expect(expectAssistantAvatarSource(container).source).toBe(`data:image/${"a".repeat(20)},...`);
   });
 
   it("reads assistant image imports into an override", () => {
@@ -525,7 +658,7 @@ describe("renderQuickSettings", () => {
     }
   });
 
-  it("can clear an assistant avatar override back to IDENTITY.md", () => {
+  it("can clear an assistant avatar override back to the configured avatar", () => {
     const onAssistantAvatarClearOverride = vi.fn();
     const container = document.createElement("div");
 
@@ -552,7 +685,7 @@ describe("renderQuickSettings", () => {
     expect(onAssistantAvatarClearOverride).toHaveBeenCalledTimes(1);
   });
 
-  it("lets the browser-local assistant avatar override stale missing IDENTITY.md metadata", () => {
+  it("lets the browser-local assistant avatar override stale missing source metadata", () => {
     const dataUrl = "data:image/png;base64,bG9jYWwtYXNzaXN0YW50";
     const container = document.createElement("div");
 

@@ -31,6 +31,7 @@ import { isSecretRef } from "../../config/types.secrets.js";
 import { loadProviderUsageSummary } from "../../infra/provider-usage.load.js";
 import { PROVIDER_LABELS, resolveUsageProviderId } from "../../infra/provider-usage.shared.js";
 import type {
+  ProviderUsageBilling,
   ProviderUsageSnapshot,
   UsageProviderId,
   UsageWindow,
@@ -55,7 +56,7 @@ const externalCliStatusProviders = new Set([
   "minimax-portal",
 ]);
 
-type ProviderUsageStatus = Pick<ProviderUsageSnapshot, "windows" | "summary" | "plan">;
+type ProviderUsageStatus = Pick<ProviderUsageSnapshot, "windows" | "summary" | "plan" | "billing">;
 
 /**
  * Models-auth status wire types. Mirrored in ui/src/ui/types.ts via an
@@ -88,9 +89,16 @@ export type ModelAuthStatusProvider = {
   expiry?: ModelAuthExpiry;
   profiles: ModelAuthStatusProfile[];
   usage?: {
+    /**
+     * Normalized usage provider id this payload was fetched under (e.g.
+     * "anthropic" for a claude-cli auth row). Session rows report canonical
+     * model providers, so consumers must match against both ids.
+     */
+    providerId: UsageProviderId;
     windows: UsageWindow[];
     summary?: string;
     plan?: string;
+    billing?: ProviderUsageBilling[];
   };
 };
 
@@ -330,13 +338,16 @@ function mapProvider(
       reasonCode: prof.reasonCode,
       expiry: buildExpiry(prof.remainingMs, prof.expiresAt),
     })),
-    usage: usage
-      ? {
-          windows: usage.windows,
-          ...(usage.summary ? { summary: usage.summary } : {}),
-          ...(usage.plan ? { plan: usage.plan } : {}),
-        }
-      : undefined,
+    usage:
+      usage && usageKey
+        ? {
+            providerId: usageKey,
+            windows: usage.windows,
+            ...(usage.summary ? { summary: usage.summary } : {}),
+            ...(usage.plan ? { plan: usage.plan } : {}),
+            ...(usage.billing?.length ? { billing: usage.billing } : {}),
+          }
+        : undefined,
   };
 }
 
@@ -553,6 +564,7 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
               windows: snap.windows,
               ...(snap.summary ? { summary: snap.summary } : {}),
               ...(snap.plan ? { plan: snap.plan } : {}),
+              ...(snap.billing?.length ? { billing: snap.billing } : {}),
             });
           }
         } catch (err) {

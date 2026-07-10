@@ -107,7 +107,6 @@
 .chat-message-actions-row button {
   background: none;
   border: none;
-  cursor: pointer;
   padding: 4px;
   min-width: 24px;
   min-height: 24px;
@@ -472,7 +471,6 @@ img.chat-avatar {
   border-radius: var(--radius-sm, 4px);
   background: transparent;
   color: inherit;
-  cursor: pointer;
   user-select: none;
 }
 
@@ -601,7 +599,6 @@ details.msg-meta:not([open]) .msg-meta__details {
   font-size: 12px; /* was 11px */
   color: var(--muted, #888);
   margin-bottom: 10px;
-  cursor: pointer;
   user-select: none;
 }
 
@@ -609,7 +606,6 @@ details.msg-meta:not([open]) .msg-meta__details {
   width: 14px;
   height: 14px;
   accent-color: var(--accent);
-  cursor: pointer;
 }
 
 .chat-delete-confirm__actions {
@@ -625,7 +621,6 @@ details.msg-meta:not([open]) .msg-meta__details {
   padding: 4px 12px;
   font-size: 12px;
   font-weight: 500;
-  cursor: pointer;
   transition: background 120ms ease-out;
 }
 

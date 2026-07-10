@@ -682,6 +682,35 @@ describe("runWithModelFallback", () => {
     expect(diagnostics.events).toMatchObject(expectedEvents);
   });
 
+  it("does not replay a thrown attempt after the caller reports a committed side effect", async () => {
+    const failure = new FailoverError("primary failed after tool start", {
+      provider: "openai",
+      model: "gpt-5.4",
+      reason: "overloaded",
+    });
+    const run = vi.fn().mockRejectedValue(failure);
+    const canFallbackAfterError = vi.fn().mockReturnValue(false);
+
+    await expect(
+      runWithModelFallback({
+        cfg: makeDiagnosticFallbackConfig(["anthropic/claude-opus-4-7"]),
+        provider: "openai",
+        model: "gpt-5.4",
+        run,
+        canFallbackAfterError,
+      }),
+    ).rejects.toBe(failure);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(canFallbackAfterError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5.4",
+        error: failure,
+      }),
+    );
+  });
+
   it("uses the opt-in auth skip cache on the second turn for the same session", async () => {
     const previous = process.env.OPENCLAW_FALLBACK_SKIP_TTL_MS;
     process.env.OPENCLAW_FALLBACK_SKIP_TTL_MS = "60000";
@@ -2140,6 +2169,58 @@ describe("runWithModelFallback", () => {
       ["openai", "gpt-4.1-mini", { isFinalFallbackAttempt: false }],
       ["anthropic", "claude-sonnet-4-6", { isFinalFallbackAttempt: false }],
     ]);
+  });
+
+  it("returns runtime-changing live switches to the retry owner before redirecting", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "anthropic/claude-haiku-3-5",
+            fallbacks: ["openai/gpt-5.6-luna"],
+          },
+        },
+      },
+    });
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      agentRuntimeOverride: "codex",
+    });
+    const run = vi.fn().mockRejectedValue(switchError);
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "anthropic",
+        model: "claude-haiku-3-5",
+        resolveAgentHarnessRuntimeOverride: (provider) =>
+          provider === "openai" ? "openclaw" : undefined,
+        run,
+      }),
+    ).rejects.toBe(switchError);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns same-model runtime switches to the retry owner", async () => {
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      agentRuntimeOverride: "codex",
+    });
+    const run = vi.fn().mockRejectedValue(switchError);
+
+    await expect(
+      runWithModelFallback({
+        cfg: makeCfg(),
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        fallbacksOverride: [],
+        resolveAgentHarnessRuntimeOverride: () => "openclaw",
+        run,
+      }),
+    ).rejects.toBe(switchError);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("does not redirect stale live-session switch errors back to the current candidate (#58496 family)", async () => {
@@ -4207,5 +4288,92 @@ describe("runWithImageModelFallback", () => {
       ["openai", "gpt-image-1"],
       ["google", "gemini-2.5-flash-image-preview"],
     ]);
+  });
+});
+
+describe("runWithModelFallback preserved prompt errors", () => {
+  it.each([
+    {
+      label: "timeout",
+      promptError: Object.assign(new Error("request timed out"), { name: "TimeoutError" }),
+      expected: { message: "request timed out", reason: "timeout", status: 408 },
+    },
+    {
+      label: "rate limit",
+      promptError: { status: 429, code: "RATE_LIMITED", message: "too many requests" },
+      expected: {
+        message: "too many requests",
+        reason: "rate_limit",
+        status: 429,
+        code: "RATE_LIMITED",
+      },
+    },
+  ])(
+    "falls back with the preserved $label prompt error (#99963)",
+    async ({ promptError, expected }) => {
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-5.5",
+              fallbacks: ["anthropic/claude-sonnet-4-6"],
+            },
+          },
+        },
+      });
+      const takeoverError = Object.assign(new Error("cleanup takeover"), {
+        name: "EmbeddedAttemptSessionTakeoverError",
+        promptError,
+      });
+      const run = vi.fn().mockRejectedValueOnce(takeoverError).mockResolvedValueOnce("ok");
+      const onError = vi.fn();
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.5",
+        run,
+        onError,
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(result.attempts[0]).toMatchObject({
+        error: expected.message,
+        reason: expected.reason,
+      });
+      const observedError = onError.mock.calls[0]?.[0]?.error;
+      expect(observedError).toMatchObject({ name: "FailoverError", ...expected });
+      expect(observedError).toHaveProperty("cause", takeoverError);
+    },
+  );
+
+  it("still aborts fallback for a pure takeover error without promptError (regression)", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.5",
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+        },
+      },
+    });
+
+    const pureTakeoverError = Object.assign(
+      new Error("session file changed while embedded prompt lock was released"),
+      { name: "EmbeddedAttemptSessionTakeoverError" },
+    );
+    const run = vi.fn().mockRejectedValue(pureTakeoverError);
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.5",
+        run,
+      }),
+    ).rejects.toBe(pureTakeoverError);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
