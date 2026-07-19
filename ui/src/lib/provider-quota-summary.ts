@@ -2,21 +2,6 @@
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import type { ModelAuthStatusProvider, ModelAuthStatusResult } from "../api/types.ts";
 
-export type QuotaWindowSummary = {
-  displayName: string;
-  label: string;
-  remaining: number;
-  resetAt?: number;
-};
-
-export type ProviderQuotaSummary = {
-  displayName: string;
-  /** This provider's windows, most-constrained first. */
-  windows: QuotaWindowSummary[];
-  /** Remaining percent of this provider's most-constrained window. */
-  remaining: number;
-};
-
 export function formatQuotaReset(resetAt?: number): string | null {
   const timestampMs = asDateTimestampMs(resetAt);
   if (timestampMs === undefined) {
@@ -27,6 +12,9 @@ export function formatQuotaReset(resetAt?: number): string | null {
     return "now";
   }
   const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) {
+    return "<1m";
+  }
   if (minutes < 60) {
     return `${minutes}m`;
   }
@@ -41,57 +29,6 @@ export function formatQuotaReset(resetAt?: number): string | null {
     return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
   }
   return new Date(timestampMs).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-export function collectQuotaWindows(
-  providers: ReadonlyArray<ModelAuthStatusProvider>,
-): QuotaWindowSummary[] {
-  return providers
-    .flatMap((provider) =>
-      (provider.usage?.windows ?? []).map((window) => ({
-        displayName: provider.displayName,
-        label: (window.label || "").trim(),
-        remaining: Math.max(0, Math.min(100, Math.round(100 - window.usedPercent))),
-        resetAt: window.resetAt,
-      })),
-    )
-    .toSorted((a, b) => a.remaining - b.remaining || a.displayName.localeCompare(b.displayName));
-}
-
-/**
- * Group flat quota windows by provider so UI surfaces can show each provider's
- * quota side by side (e.g. Claude vs OpenAI) instead of one blended number.
- * Providers are ordered most-constrained first.
- */
-export function groupQuotaWindowsByProvider(
-  windows: ReadonlyArray<QuotaWindowSummary>,
-): ProviderQuotaSummary[] {
-  const byProvider = new Map<string, QuotaWindowSummary[]>();
-  for (const window of windows) {
-    const existing = byProvider.get(window.displayName);
-    if (existing) {
-      existing.push(window);
-    } else {
-      byProvider.set(window.displayName, [window]);
-    }
-  }
-  return [...byProvider.entries()]
-    .map(([displayName, providerWindows]) => {
-      const sorted = providerWindows.toSorted((a, b) => a.remaining - b.remaining);
-      return {
-        displayName,
-        windows: sorted,
-        remaining: sorted[0]?.remaining ?? 100,
-      };
-    })
-    .toSorted((a, b) => a.remaining - b.remaining || a.displayName.localeCompare(b.displayName));
-}
-
-export function collectQuotaWindowsFromAuthStatus(
-  status: ModelAuthStatusResult | null,
-  filter: (provider: ModelAuthStatusProvider) => boolean,
-): QuotaWindowSummary[] {
-  return collectQuotaWindows((status?.providers ?? []).filter(filter));
 }
 
 /** Auth-status source props for surfaces that render provider plan usage. */
@@ -118,6 +55,8 @@ export type ProviderQuotaGroup = {
   providers: string[];
   displayName: string;
   plan?: string;
+  /** Account email the usage was fetched under, when known. */
+  accountEmail?: string;
   windows: QuotaLimitSummary[];
   budgets: QuotaBudgetSummary[];
 };
@@ -180,7 +119,12 @@ export function collectProviderQuotaGroups(
     const providerIds = [
       ...new Set([provider.provider, usage.providerId].filter((id): id is string => Boolean(id))),
     ];
-    const identity = JSON.stringify([provider.displayName, windows, budgets]);
+    const identity = JSON.stringify([
+      provider.displayName,
+      usage.accountEmail ?? null,
+      windows,
+      budgets,
+    ]);
     const existing = groups.find((group) => group.identity === identity);
     if (existing) {
       for (const id of providerIds) {
@@ -196,6 +140,7 @@ export function collectProviderQuotaGroups(
         providers: providerIds,
         displayName: provider.displayName,
         ...(usage.plan ? { plan: usage.plan } : {}),
+        ...(usage.accountEmail ? { accountEmail: usage.accountEmail } : {}),
         windows,
         budgets,
       },

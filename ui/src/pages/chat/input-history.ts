@@ -1,6 +1,7 @@
 // Control UI chat module implements input history behavior.
-import { CHAT_INPUT_HISTORY_RECALL_LIMIT } from "../../lib/chat/chat-types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
+
+const CHAT_INPUT_HISTORY_LIMIT = 100;
 
 type ChatLocalInputHistoryEntry = {
   text: string;
@@ -60,7 +61,8 @@ function collectUserInputHistory(
   if (messages.length === 0 && localEntries.length === 0) {
     return [];
   }
-  const start = Math.max(0, messages.length - CHAT_INPUT_HISTORY_RECALL_LIMIT);
+  // Bound input recall independently from the transcript's loaded rendering depth.
+  const start = Math.max(0, messages.length - CHAT_INPUT_HISTORY_LIMIT);
   const candidates: Array<{ text: string; ts: number }> = [...localEntries];
   for (let i = messages.length - 1; i >= start; i--) {
     const message = messages[i];
@@ -93,7 +95,7 @@ function collectUserInputHistory(
     seen.add(candidate.text);
     items.push(candidate.text);
   }
-  return items.slice(0, CHAT_INPUT_HISTORY_RECALL_LIMIT);
+  return items;
 }
 
 export function recordNonTranscriptInputHistory(state: ChatInputHistoryState, text: string) {
@@ -108,7 +110,7 @@ export function recordNonTranscriptInputHistory(state: ChatInputHistoryState, te
   state.chatLocalInputHistoryBySession[state.sessionKey] = [
     { text: trimmed, ts: Date.now() },
     ...sessionEntries,
-  ].slice(0, CHAT_INPUT_HISTORY_RECALL_LIMIT);
+  ].slice(0, CHAT_INPUT_HISTORY_LIMIT);
 }
 
 export function resetChatInputHistoryNavigation(state: ChatInputHistoryState) {
@@ -156,10 +158,7 @@ function ensureChatInputHistorySnapshot(state: ChatInputHistoryState): string[] 
   return items;
 }
 
-export function navigateChatInputHistory(
-  state: ChatInputHistoryState,
-  direction: "up" | "down",
-): boolean {
+function navigateChatInputHistory(state: ChatInputHistoryState, direction: "up" | "down"): boolean {
   const items = ensureChatInputHistorySnapshot(state);
   if (items.length === 0) {
     return false;

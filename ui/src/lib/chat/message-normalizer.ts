@@ -14,6 +14,17 @@ import { splitMediaFromOutput } from "../../../../src/media/parse.js";
 import { parseInlineDirectives } from "../../../../src/utils/directive-tags.js";
 import { getMediaFileExtension } from "../media-file-extension.ts";
 import type { NormalizedMessage, MessageContentItem } from "./chat-types.ts";
+import { formatSenderLabel, normalizeSenderIdentity } from "./sender-label.ts";
+
+// These normalizers take `unknown` gateway/transcript data. A malformed or
+// absent entry can arrive as null/undefined (e.g. a transcript row without a
+// `message`), and `typeof m.role` still throws "reading 'role'" when `m` itself
+// is undefined — the typeof only guards the property, not the object. Coercing
+// a non-object to `{}` keeps every downstream `typeof m.<field>` check working
+// and yields role "unknown" instead of crashing the gateway event handler.
+function asMessageRecord(message: unknown): Record<string, unknown> {
+  return message && typeof message === "object" ? (message as Record<string, unknown>) : {};
+}
 
 export function normalizeRoleForGrouping(role: string): string {
   const lower = role.toLowerCase();
@@ -38,13 +49,13 @@ export function normalizeRoleForGrouping(role: string): string {
 }
 
 export function isToolResultMessage(message: unknown): boolean {
-  const m = message as Record<string, unknown>;
+  const m = asMessageRecord(message);
   const role = typeof m.role === "string" ? m.role.toLowerCase() : "";
   return role === "toolresult" || role === "tool_result";
 }
 
 export function isStandaloneToolMessageForDisplay(message: unknown): boolean {
-  const m = message as Record<string, unknown>;
+  const m = asMessageRecord(message);
   const role = typeof m.role === "string" ? normalizeRoleForGrouping(m.role) : "unknown";
   return (
     role === "tool" ||
@@ -85,6 +96,10 @@ function coerceCanvasPreview(
   if (!render) {
     return null;
   }
+  const mcpApp =
+    preview.mcpApp && typeof preview.mcpApp === "object" && !Array.isArray(preview.mcpApp)
+      ? (preview.mcpApp as Record<string, unknown>)
+      : undefined;
   return {
     kind: "canvas",
     surface: "assistant_message",
@@ -99,6 +114,19 @@ function coerceCanvasPreview(
     ...(typeof preview.style === "string" ? { style: preview.style } : {}),
     ...(preview.sandbox === "strict" || preview.sandbox === "scripts"
       ? { sandbox: preview.sandbox }
+      : {}),
+    ...(typeof mcpApp?.viewId === "string" && mcpApp.viewId.trim()
+      ? {
+          mcpApp: {
+            viewId: mcpApp.viewId,
+            ...(typeof mcpApp.serverName === "string" ? { serverName: mcpApp.serverName } : {}),
+            ...(typeof mcpApp.toolName === "string" ? { toolName: mcpApp.toolName } : {}),
+            ...(typeof mcpApp.uiResourceUri === "string"
+              ? { uiResourceUri: mcpApp.uiResourceUri }
+              : {}),
+            ...(typeof mcpApp.toolCallId === "string" ? { toolCallId: mcpApp.toolCallId } : {}),
+          },
+        }
       : {}),
   };
 }
@@ -345,7 +373,7 @@ function expandTextContent(text: string): {
  * Normalize a raw message object into a consistent structure.
  */
 export function normalizeMessage(message: unknown): NormalizedMessage {
-  const m = message as Record<string, unknown>;
+  const m = asMessageRecord(message);
   let role = typeof m.role === "string" ? m.role : "unknown";
 
   // Detect tool messages by common gateway shapes.
@@ -496,8 +524,21 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
 
   const timestamp = typeof m.timestamp === "number" ? m.timestamp : Date.now();
   const id = typeof m.id === "string" ? m.id : undefined;
+  const rawOpenClawMeta = m["__openclaw"];
+  const openClawMeta =
+    rawOpenClawMeta && typeof rawOpenClawMeta === "object" && !Array.isArray(rawOpenClawMeta)
+      ? (rawOpenClawMeta as Record<string, unknown>)
+      : undefined;
+  const sender = normalizeSenderIdentity({
+    id: openClawMeta?.senderId,
+    name: openClawMeta?.senderName,
+    username: openClawMeta?.senderUsername,
+    profileAvatarUrl: openClawMeta?.senderProfileAvatarUrl,
+  });
   const senderLabel =
-    typeof m.senderLabel === "string" && m.senderLabel.trim() ? m.senderLabel.trim() : null;
+    typeof m.senderLabel === "string" && m.senderLabel.trim()
+      ? m.senderLabel.trim()
+      : formatSenderLabel(sender);
 
   content = stripMessageDisplayMetadata(content);
 
@@ -507,6 +548,7 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
     timestamp,
     id,
     senderLabel,
+    ...(sender ? { sender } : {}),
     ...(audioAsVoice ? { audioAsVoice: true } : {}),
     ...(replyTarget ? { replyTarget } : {}),
   };

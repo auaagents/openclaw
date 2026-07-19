@@ -56,11 +56,11 @@ type IncompleteTurnAttempt = Pick<
   | "lastToolError"
   | "lastAssistant"
   | "itemLifecycle"
+  | "messagesSnapshot"
   | "replayMetadata"
   | "promptErrorSource"
   | "timedOutDuringCompaction"
   | "toolMetas"
-  | "successfulCronAdds"
 > &
   Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
 
@@ -133,10 +133,12 @@ const RETRY_GUARD_MODEL_APIS = new Set([
 // surfacing the existing incomplete-turn error path.
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
-export const REASONING_ONLY_RETRY_INSTRUCTION =
-  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch. If tool results are already present in the transcript, do not call tools; summarize the completed work or current blocker from those results.";
-export const EMPTY_RESPONSE_RETRY_INSTRUCTION =
-  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch. If tool results are already present in the transcript, do not call tools; summarize the completed work or current blocker from those results.";
+const REASONING_ONLY_RETRY_INSTRUCTION =
+  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+const EMPTY_RESPONSE_RETRY_INSTRUCTION =
+  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+const TOOL_USE_TERMINAL_CONTINUATION_INSTRUCTION =
+  "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
 
 /**
  * Marks whether retrying the attempt can safely replay the prompt. Concrete
@@ -294,22 +296,9 @@ export function resolveIncompleteTurnPayloadText(params: {
     return null;
   }
 
-  const reasonDetail =
-    stopReason === "length"
-      ? "length stop before a final visible answer"
-      : reasoningOnlyAssistant || thinkingOnlyTerminal
-        ? "reasoning-only assistant turn"
-        : emptyResponseAssistant
-          ? "empty assistant response"
-          : incompleteTerminalAssistant
-            ? "terminal tool-use turn without final answer"
-            : stopReason === "error"
-              ? "assistant stopReason=error"
-              : "non-deliverable terminal turn";
-  const reasonText = `Reason: non_deliverable_terminal_turn (${reasonDetail}).`;
   return resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
-    ? `⚠️ Agent couldn't generate a response. ${reasonText} Note: some tool actions may have already been executed — please verify before retrying.`
-    : `⚠️ Agent couldn't generate a response. ${reasonText} Please try again.`;
+    ? "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying."
+    : "⚠️ Agent couldn't generate a response. Please try again.";
 }
 
 /**
@@ -607,39 +596,6 @@ function isEmptyResponseAssistantTurn(params: {
   return true;
 }
 
-function isOllamaProvider(provider?: string): boolean {
-  return OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(
-    normalizeLowercaseStringOrEmpty(provider ?? ""),
-  );
-}
-
-function hasOnlyCompletedToolActivityReplayRisk(attempt: IncompleteTurnAttempt): boolean {
-  const replayMetadata = resolveAttemptReplayMetadata(attempt);
-  if (!replayMetadata.hadPotentialSideEffects) {
-    return false;
-  }
-  return (
-    attempt.toolMetas.length > 0 &&
-    !hasAsyncStartedToolActivity(attempt.toolMetas) &&
-    !hasCommittedMessagingToolDeliveryEvidence(attempt) &&
-    !hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) &&
-    (attempt.successfulCronAdds ?? 0) === 0
-  );
-}
-
-function shouldAllowOllamaCompletedToolContinuation(params: {
-  provider?: string;
-  attempt: IncompleteTurnAttempt;
-}): boolean {
-  if (!isOllamaProvider(params.provider)) {
-    return false;
-  }
-  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
-  return (
-    hasPositiveOutputTokenUsage(assistant) && hasOnlyCompletedToolActivityReplayRisk(params.attempt)
-  );
-}
-
 function isNonVisibleAssistantTurnEligibleForSilentReply(params: {
   payloadCount: number;
   attempt: Pick<
@@ -675,15 +631,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
-  allowCompletedToolContinuation?: boolean;
 }): boolean {
-  const replayMetadata = resolveAttemptReplayMetadata(params.attempt);
-  const replayUnsafe =
-    replayMetadata.hadPotentialSideEffects &&
-    !(
-      params.allowCompletedToolContinuation === true &&
-      hasOnlyCompletedToolActivityReplayRisk(params.attempt)
-    );
   return Boolean(
     params.aborted ||
     params.timedOut ||
@@ -692,7 +640,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
-    replayUnsafe,
+    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
   );
 }
 
@@ -748,8 +696,7 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  const allowCompletedToolContinuation = shouldAllowOllamaCompletedToolContinuation(params);
-  if (shouldSkipNonVisibleTurnRetry({ ...params, allowCompletedToolContinuation })) {
+  if (shouldSkipNonVisibleTurnRetry(params)) {
     return null;
   }
 
@@ -778,6 +725,82 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   return REASONING_ONLY_RETRY_INSTRUCTION;
 }
 
+/** Builds a fresh continuation for a clean tool-use terminal turn with settled tool activity. */
+export function resolveToolUseTerminalContinuationInstruction(params: {
+  provider?: string;
+  modelId?: string;
+  modelApi?: string;
+  executionContract?: string;
+  payloadCount: number;
+  hasTerminalToolPresentation?: boolean;
+  aborted: boolean;
+  promptError?: unknown;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  // Idle is not proof of completion: a toolUse terminal whose requested tools never
+  // (or only partially) dispatched must keep the incomplete-turn error, or the model
+  // could claim skipped side effects succeeded. Lifecycle counts are attempt-cumulative
+  // and alias across batches, so completion is proven per tool-call id: every toolCall
+  // in the terminal assistant needs a non-error toolResult in the message snapshot.
+  const requestedToolCallIds = Array.isArray(assistant?.content)
+    ? assistant.content.flatMap((item) => {
+        const block = item as { type?: unknown; id?: unknown } | null;
+        return block?.type === "toolCall" ? [typeof block.id === "string" ? block.id : null] : [];
+      })
+    : [];
+  // Scan only results AFTER the terminal assistant: the snapshot spans the whole
+  // session, and a prior turn's toolResult with a model-reused id would otherwise
+  // prove "completion" for a batch that never dispatched. Assistant not found in
+  // the snapshot fails closed to the existing incomplete-turn error.
+  const snapshot = params.attempt.messagesSnapshot ?? [];
+  const assistantIndex = assistant ? snapshot.indexOf(assistant) : -1;
+  const completedToolCallIds = new Set(
+    (assistantIndex >= 0 ? snapshot.slice(assistantIndex + 1) : []).flatMap((message) => {
+      const result = message as { role?: unknown; toolCallId?: unknown; isError?: unknown };
+      return result.role === "toolResult" &&
+        result.isError !== true &&
+        typeof result.toolCallId === "string"
+        ? [result.toolCallId]
+        : [];
+    }),
+  );
+  const allToolsProvenComplete =
+    params.attempt.itemLifecycle?.activeCount === 0 &&
+    requestedToolCallIds.length > 0 &&
+    requestedToolCallIds.every((id) => id !== null && completedToolCallIds.has(id));
+  if (
+    params.payloadCount !== 0 ||
+    params.hasTerminalToolPresentation ||
+    params.aborted ||
+    params.promptError != null ||
+    params.timedOut ||
+    assistant?.stopReason !== "toolUse" ||
+    !allToolsProvenComplete ||
+    params.attempt.lastToolError ||
+    params.attempt.clientToolCalls ||
+    params.attempt.yieldDetected ||
+    params.attempt.didSendDeterministicApprovalPrompt
+  ) {
+    return null;
+  }
+  if (hasMessagingToolDeliveryEvidence(params.attempt)) {
+    return null;
+  }
+  if (
+    !shouldApplyNonVisibleTurnRetryGuard({
+      provider: params.provider,
+      modelId: params.modelId,
+      modelApi: params.modelApi,
+      executionContract: params.executionContract,
+    })
+  ) {
+    return null;
+  }
+  return TOOL_USE_TERMINAL_CONTINUATION_INSTRUCTION;
+}
+
 /**
  * Builds the retry instruction for empty assistant turns when the provider/model
  * is eligible for non-visible turn recovery.
@@ -792,8 +815,7 @@ export function resolveEmptyResponseRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  const allowCompletedToolContinuation = shouldAllowOllamaCompletedToolContinuation(params);
-  if (shouldSkipNonVisibleTurnRetry({ ...params, allowCompletedToolContinuation })) {
+  if (shouldSkipNonVisibleTurnRetry(params)) {
     return null;
   }
 
@@ -809,7 +831,9 @@ export function resolveEmptyResponseRetryInstruction(params: {
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
   if (
     assistant?.stopReason === "stop" &&
-    isOllamaProvider(params.provider) &&
+    OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(
+      normalizeLowercaseStringOrEmpty(params.provider ?? ""),
+    ) &&
     !hasPositiveOutputTokenUsage(assistant)
   ) {
     return null;
@@ -876,3 +900,4 @@ function isIncompleteTurnRecoverySupportedProviderModel(params: {
   const modelId = typeof params.modelId === "string" ? params.modelId : "";
   return GEMINI_INCOMPLETE_TURN_MODEL_ID_PATTERN.test(stripProviderPrefix(modelId));
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

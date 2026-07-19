@@ -1,5 +1,6 @@
 // Control UI module implements app chat behavior.
 import { shouldForwardModelCommandToServer } from "../../../../src/auto-reply/commands-registry.shared.js";
+import type { QueueMode } from "../../../../src/auto-reply/reply/queue/types.js";
 import { isNonTerminalAgentRunStatus } from "../../../../src/shared/agent-run-status.js";
 import {
   GatewayRequestError,
@@ -7,13 +8,24 @@ import {
   type GatewayHelloOk,
 } from "../../api/gateway.ts";
 import type { AgentsListResult } from "../../api/types.ts";
-import { setLastActiveSessionKey } from "../../app/settings.ts";
+import {
+  normalizeChatFollowUpModeOverride,
+  setLastActiveSessionKey,
+  type ChatFollowUpMode,
+} from "../../app/settings.ts";
 import type {
   ChatAttachment,
   ChatQueueItem,
   ChatQueueSkillWorkshopRevision,
 } from "../../lib/chat/chat-types.ts";
 import { parseSlashCommand } from "../../lib/chat/commands.ts";
+import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
+import type { ControlUiFollowUpMode } from "../../lib/chat/follow-up-mode.ts";
+import { extractSideQuestionDisplayText } from "../../lib/chat/side-question.ts";
+import {
+  retirePendingChatSideQuestion,
+  type ChatSideResultPending,
+} from "../../lib/chat/side-result.ts";
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import {
   scopedAgentIdForSession,
@@ -28,12 +40,14 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import { normalizeLowercaseStringOrEmpty } from "../../lib/string-coerce.ts";
 import { generateUUID } from "../../lib/uuid.ts";
+import { buildChatApiAttachments } from "./attachment-api.ts";
 import {
   discardChatAttachmentDataUrls,
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
 import {
+  confirmConversationResetForCurrentSession,
   dispatchChatSlashCommand,
   type ChatCommandHost,
   type ChatCommandResetOptions,
@@ -78,19 +92,15 @@ import {
 } from "./composer-persistence.ts";
 import { formatConnectError } from "./connect-error.ts";
 import {
-  handleChatDraftChange,
-  handleChatInputHistoryKey,
-  navigateChatInputHistory,
   recordNonTranscriptInputHistory,
   resetChatInputHistoryNavigation,
-  type ChatInputHistoryKeyInput,
-  type ChatInputHistoryKeyResult,
   type ChatInputHistoryState,
 } from "./input-history.ts";
 import { controlUiNowMs, roundedControlUiDurationMs } from "./performance.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
 import {
   handleAbortChat,
+  hasAbortableSessionRun,
   isChatBusy,
   isChatStopCommand,
   reconcileChatRunLifecycle,
@@ -112,6 +122,7 @@ export type ChatHost = ChatInputHistoryState &
     chatRunId: string | null;
     chatSending: boolean;
     chatSendingScopeKey?: string | null;
+    chatRunError?: { summary: string } | null;
     lastError?: string | null;
     chatError?: string | null;
     hello: GatewayHelloOk | null;
@@ -123,8 +134,22 @@ export type ChatHost = ChatInputHistoryState &
     eventLogBuffer?: unknown[];
     assistantAgentId?: string | null;
     agentsList?: ChatAgentsListSnapshot | null;
+    settings?: { chatFollowUpMode?: ChatFollowUpMode };
+    /** Prepared from the browser override and current Gateway effective queue mode. */
+    chatFollowUpMode?: ControlUiFollowUpMode;
     /** Selected message to reply to (right-click / keyboard shortcut). */
-    chatReplyTarget?: { messageId: string; text: string; senderLabel?: string | null } | null;
+    chatReplyTarget?: {
+      messageId: string;
+      text: string;
+      senderLabel?: string | null;
+      sourceMessageId?: string | null;
+    } | null;
+    /** Placeholder for an in-flight /btw side question awaiting chat.side_result. */
+    chatSideResultPending?: ChatSideResultPending | null;
+    /** Retired/handled BTW run ids whose late events must not reach the transcript. */
+    chatSideResultTerminalRuns?: Set<string>;
+    /** Side-chat panel closed via X/Escape; a new question reopens it. */
+    chatSideChatHidden?: boolean;
   };
 
 type ChatAgentsListSnapshot = Partial<Omit<AgentsListResult, "agents">> & {
@@ -186,46 +211,20 @@ type ChatSendOptions = {
   confirmReset?: boolean;
   restoreDraft?: boolean;
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision;
+  /** Side-chat follow-ups embed prior-turn context in the /btw command; the
+   * pending turn must display the user's typed question instead. */
+  sideQuestionDisplayText?: string;
+  /** Lets the side-chat panel restore its typed follow-up when the detached
+   * send is not accepted (the panel input is not a managed draft). */
+  onSideQuestionSendRejected?: () => void;
+  /** Lets request-scoped UI actions recover when their local slash command
+   * fails before the Gateway accepts it. */
+  onLocalCommandSendRejected?: () => void;
 };
-
-function dataUrlToBase64(dataUrl: string): { content: string; mimeType: string } | null {
-  const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
-  if (!match) {
-    return null;
-  }
-  return { mimeType: match[1], content: match[2] };
-}
-
-function buildApiAttachments(attachments?: ChatAttachment[]) {
-  const hasAttachments = attachments && attachments.length > 0;
-  return hasAttachments
-    ? attachments
-        .map((att) => {
-          const dataUrl = getChatAttachmentDataUrl(att);
-          const parsed = dataUrl ? dataUrlToBase64(dataUrl) : null;
-          if (!parsed) {
-            return null;
-          }
-          return {
-            type: parsed.mimeType.startsWith("image/") ? "image" : "file",
-            mimeType: parsed.mimeType,
-            fileName: att.fileName,
-            content: parsed.content,
-          };
-        })
-        .filter((a): a is NonNullable<typeof a> => a !== null)
-    : undefined;
-}
 
 function normalizeAckTimingValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
-
-export type {
-  ChatSendAck,
-  ChatSendAckServerTiming,
-  ChatSendAckStatus,
-} from "./chat-send-contract.ts";
 
 function normalizeChatSendAckServerTiming(value: unknown): ChatSendAckServerTiming | undefined {
   if (!value || typeof value !== "object") {
@@ -262,18 +261,7 @@ function normalizeChatSendAck(payload: unknown, fallbackRunId: string): ChatSend
   };
 }
 
-function normalizeChatSendThinking(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function resolveChatSendThinking(state: ChatState, requested: unknown): string | undefined {
-  if (state.settings?.chatShowThinking === false) {
-    return "off";
-  }
-  return normalizeChatSendThinking(requested);
-}
-
-export async function requestChatSend(
+async function requestChatSend(
   state: ChatState,
   params: {
     message: string;
@@ -281,11 +269,11 @@ export async function requestChatSend(
     runId: string;
     sessionKey?: string;
     agentId?: string;
-    thinking?: unknown;
+    queueMode?: QueueMode;
+    replyToId?: string;
   },
 ): Promise<ChatSendAck> {
   const routing = resolveChatSendRouting(state, params);
-  const thinking = resolveChatSendThinking(state, params.thinking);
   const controlUiReconnectResume = Boolean(
     routing.sessionId && state.reconnectResumeSessionId === routing.sessionId,
   );
@@ -298,9 +286,10 @@ export async function requestChatSend(
     ...(controlUiReconnectResume ? { __controlUiReconnectResume: true } : {}),
     message: params.message,
     deliver: false,
+    ...(params.replyToId ? { replyToId: params.replyToId } : {}),
+    ...(params.queueMode ? { queueMode: params.queueMode } : {}),
     idempotencyKey: params.runId,
-    attachments: buildApiAttachments(params.attachments),
-    ...(thinking ? { thinking } : {}),
+    attachments: buildChatApiAttachments(params.attachments),
   });
   if (controlUiReconnectResume) {
     state.reconnectResumeSessionId = null;
@@ -336,7 +325,7 @@ function resolveChatSendRouting(
   };
 }
 
-export async function requestSkillWorkshopRevisionChatSend(
+async function requestSkillWorkshopRevisionChatSend(
   state: ChatState,
   params: {
     proposalId: string;
@@ -382,7 +371,11 @@ async function sendChatMessageWithGeneratedRunId(
   state: ChatState,
   message: string,
   attachments?: ChatAttachment[],
-  canApplyError: () => boolean = () => true,
+  options: {
+    canApplyError?: () => boolean;
+    queueMode?: QueueMode;
+    runId?: string;
+  } = {},
 ): Promise<ChatSendAck | null> {
   if (!state.client || !state.connected) {
     return null;
@@ -392,12 +385,18 @@ async function sendChatMessageWithGeneratedRunId(
   if (!msg && !hasAttachments) {
     return null;
   }
+  const canApplyError = options.canApplyError ?? (() => true);
   if (canApplyError()) {
     setChatError(state, null);
   }
-  const runId = generateUUID();
+  const runId = options.runId ?? generateUUID();
   try {
-    return await requestChatSend(state, { message: msg, attachments, runId });
+    return await requestChatSend(state, {
+      message: msg,
+      attachments,
+      runId,
+      ...(options.queueMode ? { queueMode: options.queueMode } : {}),
+    });
   } catch (err) {
     if (canApplyError()) {
       setChatError(state, formatConnectError(err));
@@ -406,29 +405,14 @@ async function sendChatMessageWithGeneratedRunId(
   }
 }
 
-export async function sendDetachedChatMessage(
+async function sendDetachedChatMessage(
   state: ChatState,
   message: string,
   attachments?: ChatAttachment[],
+  runId?: string,
 ): Promise<ChatSendAck | null> {
-  return sendChatMessageWithGeneratedRunId(state, message, attachments);
+  return sendChatMessageWithGeneratedRunId(state, message, attachments, { runId });
 }
-
-export async function sendSteerChatMessage(
-  state: ChatState,
-  message: string,
-  attachments?: ChatAttachment[],
-): Promise<ChatSendAck | null> {
-  return sendChatMessageWithGeneratedRunId(state, message, attachments);
-}
-
-export {
-  handleChatDraftChange,
-  handleChatInputHistoryKey,
-  navigateChatInputHistory,
-  resetChatInputHistoryNavigation,
-};
-export type { ChatInputHistoryKeyInput, ChatInputHistoryKeyResult };
 
 function isChatResetCommand(text: string) {
   const parsed = parseSlashCommand(text);
@@ -451,7 +435,7 @@ function confirmChatResetCommand(text: string) {
   if (typeof globalThis.confirm !== "function") {
     return false;
   }
-  return globalThis.confirm("Start a new session? This will reset the current chat.");
+  return globalThis.confirm("Start a new thread? This will reset the current chat.");
 }
 
 function isBtwCommand(text: string) {
@@ -466,12 +450,14 @@ function enqueuePendingSendMessage(
   submittedAtMs = controlUiNowMs(),
   sendState?: ChatQueueItem["sendState"],
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision,
+  replyToId?: string,
 ): ChatQueueItem | null {
   const trimmed = text.trim();
   const hasAttachments = Boolean(attachments && attachments.length > 0);
   if (!trimmed && !hasAttachments) {
     return null;
   }
+  const sender = resolveCurrentUserIdentity(host.hello, host.client?.instanceId);
   const pending: ChatQueueItem = {
     id: generateUUID(),
     text: trimmed,
@@ -484,7 +470,9 @@ function enqueuePendingSendMessage(
     sendSubmittedAtMs: submittedAtMs,
     sessionKey: host.sessionKey,
     agentId: scopedAgentIdForSession(host, host.sessionKey),
+    ...(sender ? { sender } : {}),
     ...(skillWorkshopRevision ? { skillWorkshopRevision } : {}),
+    ...(replyToId ? { replyToId } : {}),
   };
   host.chatQueue = [...host.chatQueue, pending];
   recordChatSendTiming(host, pending, "pending-visible", submittedAtMs);
@@ -627,6 +615,8 @@ const UNCONFIRMED_CHAT_SEND_ERROR =
   "Delivery could not be confirmed after reconnect. Check the conversation before retrying.";
 const UNCONFIRMED_STEER_ERROR =
   "Steer delivery could not be confirmed. Check the active run before retrying.";
+const UNCONFIRMED_FOLLOW_UP_ERROR =
+  "Follow-up delivery could not be confirmed. Check the conversation before retrying.";
 const UNCERTAIN_CLEAR_SUCCESSOR_ERROR =
   "A preceding /clear may have completed. Review the current conversation before retrying.";
 const STORED_OUTBOX_RETRY_DEFAULT_MS = 500;
@@ -859,6 +849,7 @@ async function sendQueuedChatMessage(
           runId,
           sessionKey,
           agentId: prepared.agentId,
+          ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
         });
     updateChatSendAckTiming(host, runId, ack, sendingItem, requestStartedAtMs);
     recordChatSendTiming(host, sendingItem, "ack", sendingItem.sendSubmittedAtMs, {
@@ -1272,11 +1263,13 @@ function clearSubmittedComposerState(
 } {
   const attachmentsUnchanged =
     host.chatAttachments.length === submittedAttachments.length &&
-    host.chatAttachments.every(
-      (attachment, index) =>
-        attachmentSubmitSignature(attachment) ===
-        attachmentSubmitSignature(submittedAttachments[index]),
-    );
+    host.chatAttachments.every((attachment, index) => {
+      const submitted = submittedAttachments[index];
+      return (
+        submitted !== undefined &&
+        attachmentSubmitSignature(attachment) === attachmentSubmitSignature(submitted)
+      );
+    });
   const clearedDraft = host.chatMessage === submittedDraft && attachmentsUnchanged;
   const clearedAttachments = clearedDraft;
   if (clearedDraft) {
@@ -1311,12 +1304,14 @@ async function sendDetachedCommandMessage(
     previousDraft?: string;
     attachments?: ChatAttachment[];
     previousAttachments?: ChatAttachment[];
+    runId?: string;
   },
 ) {
   const ack = await sendDetachedChatMessage(
     host as unknown as ChatState,
     message,
     opts?.attachments,
+    opts?.runId,
   );
   const ok = isAcceptedChatSendAck(ack);
   if (!ok && opts?.previousDraft != null) {
@@ -1335,13 +1330,19 @@ async function sendDetachedCommandMessage(
     );
     releaseChatAttachmentPayloads(excludeComposerAttachments(host, opts?.attachments));
   }
-  return ok;
+  return ack;
 }
 
-export async function steerQueuedChatMessage(host: ChatHost, id: string) {
-  if (!host.connected || !host.chatRunId) {
+async function sendQueuedChatMessageWithQueueMode(
+  host: ChatHost,
+  id: string,
+  queueMode?: QueueMode,
+) {
+  if (!host.connected || !hasAbortableSessionRun(host)) {
     return;
   }
+  const isSteer = queueMode === "steer";
+  const unconfirmedError = isSteer ? UNCONFIRMED_STEER_ERROR : UNCONFIRMED_FOLLOW_UP_ERROR;
   const activeRunId = host.chatRunId;
   const item = host.chatQueue.find(
     (entry) =>
@@ -1362,10 +1363,10 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
   }
 
   // Claim the durable row before transport so a crash or ambiguous ACK cannot
-  // replay the original queued turn after the steer may already be accepted.
+  // replay the original queued turn after active-run admission may have succeeded.
   const claimed = updateQueuedMessage(host, id, (entry) => ({
     ...entry,
-    sendError: UNCONFIRMED_STEER_ERROR,
+    sendError: unconfirmedError,
     sendState: "unconfirmed",
   }));
   if (!claimed) {
@@ -1376,18 +1377,20 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
     id: item.id,
     text: item.text,
     createdAt: item.createdAt,
-    kind: "steered",
+    ...(isSteer ? { kind: "steered" as const } : {}),
     ...(item.attachments?.length ? { attachments: item.attachments } : {}),
-    pendingRunId: activeRunId,
+    ...(isSteer && activeRunId
+      ? { pendingRunId: activeRunId }
+      : { sendState: isSteer ? ("steering" as const) : ("sending" as const) }),
   };
   const hasTransientProjection = setTransientQueuedMessageProjection(
     host,
     itemSessionKey,
     {
       ...claimed,
-      kind: "steered",
+      ...(isSteer ? { kind: "steered" as const } : {}),
       sendError: undefined,
-      sendState: "steering",
+      sendState: isSteer ? "steering" : "sending",
     },
     item.agentId,
   );
@@ -1404,26 +1407,32 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
     host as unknown as ChatState,
     message,
     hasAttachments ? attachments : undefined,
-    () => visibleSessionMatches(host, itemSessionKey, item.agentId),
+    {
+      canApplyError: () => visibleSessionMatches(host, itemSessionKey, item.agentId),
+      ...(queueMode ? { queueMode } : {}),
+    },
   );
-  const pendingStillVisible = host.chatQueue.some(
-    (entry) => entry.id === id && entry.pendingRunId === activeRunId,
-  );
-  replacePendingQueuedMessageProjection(
-    host,
-    itemSessionKey,
-    id,
-    activeRunId,
-    claimed,
-    item.agentId,
-  );
+  const pendingStillVisible =
+    isSteer && activeRunId
+      ? host.chatQueue.some((entry) => entry.id === id && entry.pendingRunId === activeRunId)
+      : false;
+  if (isSteer && activeRunId) {
+    replacePendingQueuedMessageProjection(
+      host,
+      itemSessionKey,
+      id,
+      activeRunId,
+      claimed,
+      item.agentId,
+    );
+  }
   clearTransientQueuedMessageProjection(host, itemSessionKey, id, item.agentId);
   const itemStillVisible = visibleSessionMatches(host, itemSessionKey, item.agentId);
   if (!ack) {
-    // A transport failure does not prove the steer was rejected. Keep the
+    // A transport failure does not prove active-run admission was rejected. Keep the
     // durable row parked so reconnect cannot replay it as a separate turn.
     if (itemStillVisible) {
-      setChatError(host, UNCONFIRMED_STEER_ERROR);
+      setChatError(host, unconfirmedError);
     }
     return;
   }
@@ -1434,11 +1443,11 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
     }));
     if (!restored) {
       if (itemStillVisible) {
-        setChatError(host, UNCONFIRMED_STEER_ERROR);
+        setChatError(host, unconfirmedError);
       }
     } else {
       if (itemStillVisible) {
-        setChatError(host, formatTerminalChatSendAckError(ack, "steer"));
+        setChatError(host, formatTerminalChatSendAckError(ack, isSteer ? "steer" : "chat"));
       }
       const restoredOutbox = listStoredChatOutboxes(host).find((outbox) =>
         outbox.queue.some((entry) => entry.id === id),
@@ -1452,11 +1461,12 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
   const removed = removeQueuedMessageWithoutReleasing(host, id, itemSessionKey, item.agentId);
   if (!removed) {
     if (itemStillVisible) {
-      setChatError(host, UNCONFIRMED_STEER_ERROR);
+      setChatError(host, unconfirmedError);
     }
     return;
   }
   if (
+    isSteer &&
     ack.status !== "ok" &&
     pendingStillVisible &&
     host.chatRunId === activeRunId &&
@@ -1475,6 +1485,10 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string) {
     );
     scheduleChatScroll(host as unknown as Parameters<typeof scheduleChatScroll>[0]);
   }
+}
+
+export function steerQueuedChatMessage(host: ChatHost, id: string) {
+  return sendQueuedChatMessageWithQueueMode(host, id, "steer");
 }
 
 type StoredChatOutboxDrainResult = "blocked" | "empty";
@@ -1772,18 +1786,41 @@ async function drainStoredChatOutbox(
       syncChatQueueFromStoredOutbox(host, outbox);
       if (item.localCommandName === "reset") {
         const resetText = item.localCommandArgs ? `/reset ${item.localCommandArgs}` : "/reset";
-        const converted = updateQueuedMessageForSession(
-          host,
-          outbox.sessionKey,
-          item.id,
-          (entry) => ({
+        const convertResetToMessage = (sendState?: ChatQueueItem["sendState"]) =>
+          updateQueuedMessageForSession(host, outbox.sessionKey, item.id, (entry) => ({
             ...entry,
             localCommandArgs: undefined,
             localCommandName: undefined,
             refreshSessions: true,
             text: resetText,
-          }),
-        );
+            ...(sendState ? { sendState } : {}),
+          }));
+        const confirmation = await confirmConversationResetForCurrentSession(host, {
+          sessionKey: outbox.sessionKey,
+          ...(outbox.agentId ? { agentId: outbox.agentId } : {}),
+        });
+        if (confirmation === "deferred") {
+          const approvedDuringRun =
+            visibleSessionMatches(host, outbox.sessionKey, outbox.agentId) && host.chatRunId;
+          const deferred = approvedDuringRun
+            ? convertResetToMessage("waiting-idle")
+            : updateQueuedMessageForSession(host, outbox.sessionKey, item.id, (entry) => ({
+                ...entry,
+                sendError: undefined,
+                sendState: "waiting-idle",
+              }));
+          if (!deferred) {
+            return "blocked";
+          }
+          return "blocked";
+        }
+        if (confirmation === "cancelled") {
+          if (!removeQueuedMessageWithoutReleasing(host, item.id, outbox.sessionKey)) {
+            return "blocked";
+          }
+          continue;
+        }
+        const converted = convertResetToMessage();
         if (!converted) {
           return "blocked";
         }
@@ -1829,6 +1866,14 @@ async function drainStoredChatOutbox(
               sendResetSlashCommand(host, message, resetOpts),
           },
         );
+        if (dispatchResult === "deferred") {
+          updateQueuedMessageForSession(host, outbox.sessionKey, item.id, (entry) => ({
+            ...entry,
+            sendError: undefined,
+            sendState: "waiting-idle",
+          }));
+          return "blocked";
+        }
         if (dispatchResult === "failed") {
           const commandStillCurrent = commandScopeIsCurrent();
           const error =
@@ -2155,8 +2200,15 @@ export async function handleSendChat(
     return;
   }
 
+  host.chatRunError = null;
+
   if (shouldInterpretChatCommands) {
-    if (isChatStopCommand(message)) {
+    // Natural words such as "wait" and "exit" are stop aliases only while a
+    // run exists. Keep the explicit /stop command available at any time.
+    const shouldAbort =
+      isChatStopCommand(message) &&
+      (message.trim().startsWith("/") || hasAbortableSessionRun(host));
+    if (shouldAbort) {
       if (messageOverride == null) {
         recordNonTranscriptInputHistory(host, message);
       }
@@ -2171,6 +2223,10 @@ export async function handleSendChat(
       isBtwCommand(message) || (parsed?.command.key === "approve" && isChatBusy(host));
     if (shouldSendDetachedCommand) {
       const submitKey = chatSubmitKey(host, "detached", message, attachmentsToSend);
+      // Covers every non-accepted path — early exits, guard dedupe, and
+      // rejected acks — so the side-chat panel can restore its typed
+      // follow-up even when no request was sent.
+      let detachedSendAccepted = false;
       await withChatSubmitGuard(host, submitKey, async () => {
         const pendingSettings = getPendingChatPickerPatch(host, submittedSessionKey);
         if (
@@ -2189,12 +2245,43 @@ export async function handleSendChat(
         if (messageOverride == null) {
           recordNonTranscriptInputHistory(host, message);
         }
-        await sendDetachedCommandMessage(host, message, {
+        // BTW runs detached and delivers via chat.side_result only; show a
+        // pending turn immediately so the send has visible feedback. The run
+        // id is generated upfront so the turn is correlatable before the ack
+        // returns.
+        const btwPending = isBtwCommand(message)
+          ? {
+              question: opts?.sideQuestionDisplayText ?? extractSideQuestionDisplayText(message),
+              ts: Date.now(),
+              runId: generateUUID(),
+            }
+          : null;
+        if (btwPending) {
+          // The superseded run loses its pending record; retire it so its
+          // late side_result/terminal events cannot reach the panel or the
+          // transcript. Completed turns stay: the panel is a conversation.
+          retirePendingChatSideQuestion(host);
+          host.chatSideResultPending = btwPending;
+          host.chatSideChatHidden = false;
+          host.requestUpdate?.();
+        }
+        const ack = await sendDetachedCommandMessage(host, message, {
           previousDraft: cleared.previousDraft,
           attachments: hasAttachments ? attachmentsToSend : undefined,
           previousAttachments: cleared.previousAttachments,
+          runId: btwPending?.runId,
         });
+        detachedSendAccepted = isAcceptedChatSendAck(ack);
+        // Touch only this send's card: a side_result (or a newer question)
+        // may already have replaced it while the ack was in flight.
+        if (btwPending && host.chatSideResultPending === btwPending && !detachedSendAccepted) {
+          host.chatSideResultPending = null;
+          host.requestUpdate?.();
+        }
       });
+      if (!detachedSendAccepted) {
+        opts?.onSideQuestionSendRejected?.();
+      }
       return;
     }
 
@@ -2209,10 +2296,17 @@ export async function handleSendChat(
           host.chatMessage = "";
           resetChatInputHistoryNavigation(host);
         }
-        const queued = enqueueChatMessage(host, message, undefined, isChatResetCommand(message), {
-          args: parsed.args,
-          name: parsed.command.key,
-        });
+        const queued = enqueueChatMessage(
+          host,
+          message,
+          undefined,
+          isChatResetCommand(message),
+          {
+            args: parsed.args,
+            name: parsed.command.key,
+          },
+          resolveCurrentUserIdentity(host.hello, host.client?.instanceId) ?? undefined,
+        );
         if (queued) {
           queued.sendState = reconnectSafeQueuedSendState(host);
         }
@@ -2280,7 +2374,13 @@ export async function handleSendChat(
               sendResetSlashCommand(host, resetMessage, resetOpts),
           },
         );
-        if (dispatchResult === "failed" && messageOverride == null) {
+        if (dispatchResult === "failed") {
+          opts?.onLocalCommandSendRejected?.();
+        }
+        if (
+          (dispatchResult === "failed" || dispatchResult === "cancelled") &&
+          messageOverride == null
+        ) {
           const restorePlan = pendingComposerRestorePlan(host, {
             previousAttachments: attachmentsToSend,
             previousDraft,
@@ -2304,7 +2404,11 @@ export async function handleSendChat(
   }
 
   const replyTarget = host.chatReplyTarget;
-  const effectiveMessage = replyTarget ? prependReplyQuote(message, replyTarget) : message;
+  // Persisted transcript ids ride chat.send as replyToId so the Gateway can
+  // hydrate reply context like Discord; synthetic ids fall back to a quote.
+  const replyToId = replyTarget?.sourceMessageId?.trim() || undefined;
+  const effectiveMessage =
+    replyTarget && !replyToId ? prependReplyQuote(message, replyTarget) : message;
 
   const refreshSessions = shouldInterpretChatCommands && isChatResetCommand(message);
   const submitKey = chatSubmitKey(
@@ -2339,6 +2443,7 @@ export async function handleSendChat(
       submittedAtMs,
       initialSendState,
       skillWorkshopRevision,
+      replyToId,
     );
     if (!queued) {
       return;
@@ -2421,7 +2526,7 @@ export async function handleSendChat(
     }
 
     let sendResult: QueuedChatSendResult;
-    if (isChatBusy(host)) {
+    if (isChatBusy(host) || hasAbortableSessionRun(host)) {
       const pending = updateQueuedMessage(host, queued.id, (item) => ({
         ...item,
         sendError: undefined,
@@ -2433,6 +2538,20 @@ export async function handleSendChat(
       } else {
         recordChatSendTiming(host, pending, "queued-busy", submittedAtMs);
         sendResult = "pending";
+        // Inherited policy belongs to the Gateway: preserve steer, followup,
+        // collect, and interrupt semantics. Browser-local queueing only applies
+        // to an explicit browser override.
+        const followUpMode =
+          host.chatFollowUpMode ??
+          normalizeChatFollowUpModeOverride(host.settings?.chatFollowUpMode);
+        if (
+          !skillWorkshopRevision &&
+          followUpMode !== "queue" &&
+          host.connected &&
+          hasAbortableSessionRun(host)
+        ) {
+          void sendQueuedChatMessageWithQueueMode(host, pending.id, followUpMode);
+        }
       }
     } else {
       sendResult = await sendChatMessageNow(host, effectiveMessage, {
@@ -2482,3 +2601,4 @@ function escapeMarkdownInline(value: string): string {
 }
 
 export const flushChatQueueForEvent = flushChatQueue;
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

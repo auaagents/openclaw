@@ -235,7 +235,7 @@ private struct IPadActivityStatesPreview: View {
                         tailRows: [
                             ActivityPreviewRow(
                                 icon: "hourglass",
-                                title: "Loading sessions",
+                                title: "Loading threads",
                                 detail: "Fetching recent activity from the gateway.",
                                 value: "loading",
                                 color: OpenClawBrand.accent),
@@ -251,7 +251,7 @@ private struct IPadActivityStatesPreview: View {
                         tailRows: [
                             ActivityPreviewRow(
                                 icon: "bubble.left.and.text.bubble.right",
-                                title: "No recent sessions",
+                                title: "No recent threads",
                                 detail: "Start a chat and it will appear here.",
                                 value: "empty",
                                 color: .secondary),
@@ -267,7 +267,7 @@ private struct IPadActivityStatesPreview: View {
                         tailRows: [
                             ActivityPreviewRow(
                                 icon: "exclamationmark.triangle.fill",
-                                title: "Sessions unavailable",
+                                title: "Threads unavailable",
                                 detail: "Try again after the gateway reconnects.",
                                 value: "error",
                                 color: OpenClawBrand.warn),
@@ -303,8 +303,8 @@ private struct IPadActivityStatesPreview: View {
                     action: {})
                 ProStatusRow(
                     icon: gatewayValue == "online" ? "network" : "wifi.slash",
-                    title: gatewayTitle,
-                    detail: gatewayDetail,
+                    title: .localized(gatewayTitle),
+                    detail: .localized(gatewayDetail),
                     value: gatewayValue,
                     color: gatewayColor,
                     actionTitle: gatewayValue == "online" ? nil : "Settings",
@@ -322,8 +322,8 @@ private struct IPadActivityStatesPreview: View {
                     Divider().padding(.leading, 58)
                     ProStatusRow(
                         icon: row.icon,
-                        title: row.title,
-                        detail: row.detail,
+                        title: .localized(row.title),
+                        detail: .localized(row.detail),
                         value: row.state,
                         color: row.color,
                         actionTitle: "Open",
@@ -333,8 +333,8 @@ private struct IPadActivityStatesPreview: View {
                     Divider().padding(.leading, 58)
                     ProStatusRow(
                         icon: row.icon,
-                        title: row.title,
-                        detail: row.detail,
+                        title: .localized(row.title),
+                        detail: .localized(row.detail),
                         value: row.value,
                         color: row.color,
                         actionTitle: nil,
@@ -661,13 +661,11 @@ private enum IPadSkillWorkshopPreviewFixtures {
         return IPadSkillProposal(
             entry: IPadSkillProposalManifestEntry(
                 id: id,
-                kind: "skill",
                 status: status,
                 title: title,
                 description: description,
                 skillName: title,
                 skillKey: id,
-                createdAt: updatedAt,
                 updatedAt: updatedAt,
                 scanState: "complete"),
             previous: nil)
