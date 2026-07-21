@@ -13,9 +13,9 @@ import {
   type ChatEventPayload,
   type ChatState,
 } from "./chat-history.ts";
-import { clearPendingQueueItemsForRun } from "./chat-queue.ts";
 import { reconcileChatRunLifecycle } from "./run-lifecycle.ts";
 import { appendChatMessageToCache } from "./session-message-cache.ts";
+import { retireSteeredChipsForTerminalRun } from "./steer-lifecycle.ts";
 import {
   appendTerminalAssistantMessage,
   clearToolStreamSegments,
@@ -316,7 +316,7 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
           state,
           {
             isHiddenStreamText: isHiddenAssistantStreamText,
-            persistCommentary: state.settings?.chatPersistCommentary === true,
+            persistCommentary: state.settings?.chatPersistCommentary !== false,
           },
         );
         if (replacesVisibleStream) {
@@ -394,13 +394,17 @@ export function handleChatGatewayEvent(state: ChatState, payload?: ChatEventPayl
     return null;
   }
   const activeRunIdBeforeEvent = state.chatRunId;
-  const result = handleChatEvent(state, payload);
   if (
-    isTerminalChatState(result) &&
+    isTerminalChatState(payload?.state) &&
+    payload !== undefined &&
+    (chatEventSessionMatches(state, payload) || payload.runId === activeRunIdBeforeEvent) &&
     !isEventForDifferentActiveRun(payload, activeRunIdBeforeEvent)
   ) {
-    clearPendingQueueItemsForRun(state, payload?.runId);
+    // A steered chip can be the only local copy while transcript persistence lags.
+    // Materialize it before the terminal assistant so user/assistant order stays stable.
+    retireSteeredChipsForTerminalRun(state, payload?.runId);
   }
+  const result = handleChatEvent(state, payload);
   return result;
 }
 

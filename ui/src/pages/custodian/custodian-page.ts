@@ -21,10 +21,14 @@ import "../../styles/chat/layout.css";
 import "../../styles/chat/text.css";
 import "../../styles/custodian.css";
 import { renderChatAvatar } from "../chat/chat-avatar.ts";
-import { renderMessageGroup } from "../chat/components/chat-message.ts";
 import { renderCustodianChangeHistory } from "./custodian-history.ts";
-import { renderCustodianQuestionCard } from "./custodian-question-card.ts";
 import * as eventNudgeState from "./event-nudge.ts";
+import {
+  isCustodianSessionInvalidatedError,
+  sessionVariant,
+  type CustodianSessionVariant,
+  welcomeVariant,
+} from "./session-lifecycle.ts";
 import { parseCustodianQuestion, type CustodianStructuredQuestion } from "./structured-question.ts";
 import {
   createCustodianSessionId,
@@ -32,14 +36,14 @@ import {
   custodianErrorMessage,
   hasUnresolvedCustodianQuestion,
   readCustodianTranscript,
-  renderCustodianEarlierDivider,
+  renderCustodianTranscriptEntry,
   retireCustodianQuestions,
-  toCustodianMessageGroup,
   type CustodianMessage,
 } from "./transcript.ts";
 
 const SYSTEM_AGENT_CHAT_TIMEOUT_MS = 190_000;
 const SYSTEM_CHANGE_PAGE_SIZE = 50;
+const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
 export class CustodianPage extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true })
@@ -76,7 +80,7 @@ export class CustodianPage extends OpenClawLightDomElement {
   private requestEpoch = 0;
   private nextMessageId = 1;
   private retryParams: SystemAgentChatParams | null = null;
-  private sessionVariant: "onboarding" | "new-agent" | "caretaker" | null = null;
+  private sessionVariant: CustodianSessionVariant | null = null;
   private sessionClient: GatewayBrowserClient | null = null;
   private sessionOwnershipKey: string | null = null;
   private sessionStarted = false;
@@ -121,20 +125,6 @@ export class CustodianPage extends OpenClawLightDomElement {
     }
   }
 
-  private currentSessionVariant(): "onboarding" | "new-agent" | "caretaker" {
-    return this.onboarding ? "onboarding" : this.newAgentIntent ? "new-agent" : "caretaker";
-  }
-
-  private welcomeVariant(): Pick<SystemAgentChatParams, "welcomeVariant"> {
-    if (this.onboarding) {
-      return { welcomeVariant: "onboarding" };
-    }
-    if (this.newAgentIntent) {
-      return { welcomeVariant: "new-agent" };
-    }
-    return {};
-  }
-
   /**
    * Transcript rows are durable and admin-scoped, but the live engine session
    * owns wizard and approval state. Rotate only that volatile state when its
@@ -151,7 +141,7 @@ export class CustodianPage extends OpenClawLightDomElement {
 
   private startSession(
     client: GatewayBrowserClient,
-    variant: "onboarding" | "new-agent" | "caretaker",
+    variant: CustodianSessionVariant,
     loadTranscript: boolean,
   ): void {
     this.sessionId = createCustodianSessionId();
@@ -161,7 +151,7 @@ export class CustodianPage extends OpenClawLightDomElement {
     this.sessionStarted = true;
     void this.initializeSession(
       client,
-      { sessionId: this.sessionId, ...this.welcomeVariant() },
+      { sessionId: this.sessionId, ...welcomeVariant(variant) },
       loadTranscript,
     );
   }
@@ -182,7 +172,7 @@ export class CustodianPage extends OpenClawLightDomElement {
 
   private rotateVolatileSession(
     client: GatewayBrowserClient,
-    variant: "onboarding" | "new-agent" | "caretaker",
+    variant: CustodianSessionVariant,
   ): void {
     this.answeredQuestions = retireCustodianQuestions(this.messages, this.answeredQuestions);
     this.retryParams = null;
@@ -207,7 +197,7 @@ export class CustodianPage extends OpenClawLightDomElement {
         this.resetHistory();
       }
     }
-    const variant = this.currentSessionVariant();
+    const variant = sessionVariant(this.onboarding, this.newAgentIntent);
     const variantChanged = this.sessionStarted && this.sessionVariant !== variant;
     const ownershipKey = this.currentSessionOwnershipKey();
     const clientReplaced =
@@ -437,7 +427,12 @@ export class CustodianPage extends OpenClawLightDomElement {
       this.sensitive = result.sensitive === true;
       this.wizardInputPending = result.wizardInputPending === true;
       this.retryParams = null;
-      this.appendAssistant(result.reply, parseCustodianQuestion(result.question));
+      const question = parseCustodianQuestion(result.question);
+      // Match regular chat: NO_REPLY is a delivery sentinel, not transcript content.
+      const silentReply = SILENT_REPLY_PATTERN.test(result.reply);
+      if (!silentReply || question) {
+        this.appendAssistant(silentReply ? "" : result.reply, question);
+      }
       if (result.action === "open-agent") {
         let sessionKey = this.context.gateway.snapshot.sessionKey?.trim();
         if (result.agentId) {
@@ -467,6 +462,12 @@ export class CustodianPage extends OpenClawLightDomElement {
     } catch (error) {
       if (epoch === this.requestEpoch && client === this.activeClient) {
         this.error = custodianErrorMessage(error);
+        if (params.message !== undefined && isCustodianSessionInvalidatedError(error)) {
+          // Adopt a new id before another visible turn; retained rows are not live context.
+          // Welcome requests never rotate, so even a mis-marked outage stops after one attempt.
+          this.rotateVolatileSession(client, sessionVariant(this.onboarding, this.newAgentIntent));
+          this.error = t("custodian.sessionRestarted", { error: custodianErrorMessage(error) });
+        }
       }
       // A failed user turn may still have reached the agent and acted; there is
       // no turn idempotency, so never keep it replayable (or its raw text).
@@ -515,7 +516,7 @@ export class CustodianPage extends OpenClawLightDomElement {
     this.input = "";
     const reply = this.requestReply(client, {
       sessionId: this.sessionId,
-      ...this.welcomeVariant(),
+      ...welcomeVariant(sessionVariant(this.onboarding, this.newAgentIntent)),
       message,
     });
     const replyEpoch = this.requestEpoch;
@@ -546,6 +547,10 @@ export class CustodianPage extends OpenClawLightDomElement {
   private async dismissQuestion(message: CustodianMessage): Promise<void> {
     const question = message.question;
     if (!question) {
+      return;
+    }
+    if (question.skipAction === "exit") {
+      this.exitSetup();
       return;
     }
     // Closed wizard selects accept cancel; open "other" prompts use their visible free-form reply.
@@ -655,26 +660,15 @@ export class CustodianPage extends OpenClawLightDomElement {
             const questionKey = message.question ? `${message.id}:${message.question.id}` : "";
             const showQuestion =
               message.question !== null && !this.dismissedQuestions.has(questionKey);
-            return html`
-              ${renderMessageGroup(toCustodianMessageGroup(message), {
-                showReasoning: false,
-                showToolCalls: false,
-                assistantName: t("custodian.title"),
-                assistantAvatar: "OC",
-              })}
-              ${renderCustodianEarlierDivider(message, this.earlierBoundaryAfterId)}
-              ${showQuestion
-                ? renderCustodianQuestionCard({
-                    question: message.question!,
-                    disabled:
-                      this.sending ||
-                      !this.chatAvailable ||
-                      this.answeredQuestions.has(questionKey),
-                    onSelect: (label) => this.answerQuestion(message, label),
-                    onSkip: () => void this.dismissQuestion(message),
-                  })
-                : nothing}
-            `;
+            return renderCustodianTranscriptEntry({
+              message,
+              boundaryAfterId: this.earlierBoundaryAfterId,
+              showQuestion,
+              questionDisabled:
+                this.sending || !this.chatAvailable || this.answeredQuestions.has(questionKey),
+              onSelect: (label) => this.answerQuestion(message, label),
+              onSkip: () => void this.dismissQuestion(message),
+            });
           })}
           ${this.sending
             ? html`<div class="chat-group assistant custodian__thinking-row" role="status">

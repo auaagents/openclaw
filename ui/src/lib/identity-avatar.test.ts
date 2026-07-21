@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveAvatar, setAvatarGatewayOrigin } from "./identity-avatar.ts";
+import { resolveAvatar, resolveIdentityHue, setAvatarGatewayOrigin } from "./identity-avatar.ts";
 
 afterEach(() => {
   setAvatarGatewayOrigin(null);
@@ -28,6 +28,18 @@ describe("resolveAvatar", () => {
     expect(second.kind).toBe("initials");
     if (first.kind === "initials" && second.kind === "initials") {
       expect(first.colorSeed).toBe(second.colorSeed);
+    }
+  });
+
+  it("derives a stable identity hue from the same seed as the initials color", () => {
+    const first = resolveIdentityHue({ id: "profile_123", name: "Ada Lovelace" });
+    const second = resolveIdentityHue({ id: "profile_123", name: "Renamed User" });
+    expect(first).toBe(second);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(360);
+    const resolved = resolveAvatar({ id: "profile_123" });
+    if (resolved.kind === "initials") {
+      expect(first).toBe(resolved.colorSeed % 360);
     }
   });
 
@@ -123,5 +135,38 @@ describe("resolveAvatar gateway origin trust", () => {
     expect(
       resolveAvatar({ id: "a@example.com", profileAvatarUrl: "/api/users/p1/avatar" }),
     ).toEqual({ kind: "profile", url: "https://gw.example.com/api/users/p1/avatar" });
+  });
+});
+
+describe("resolveAvatar profile-id senders", () => {
+  it("derives the canonical avatar route from a UUID-shaped sender id", () => {
+    expect(resolveAvatar({ id: "c3e32452-0467-47e5-aafa-233cd5dae29f", name: "steipete" })).toEqual(
+      {
+        kind: "profile",
+        url: "/api/users/c3e32452-0467-47e5-aafa-233cd5dae29f/avatar",
+      },
+    );
+  });
+
+  it("resolves the derived route against the gateway origin", () => {
+    setAvatarGatewayOrigin("wss://gw.example.com/ws");
+    expect(resolveAvatar({ id: "c3e32452-0467-47e5-aafa-233cd5dae29f" })).toEqual({
+      kind: "profile",
+      url: "https://gw.example.com/api/users/c3e32452-0467-47e5-aafa-233cd5dae29f/avatar",
+    });
+  });
+
+  it("keeps non-UUID sender ids on initials (no route probing)", () => {
+    expect(resolveAvatar({ id: "alice@example.com" })).toMatchObject({ kind: "initials" });
+    expect(resolveAvatar({ id: "+436641234567" })).toMatchObject({ kind: "initials" });
+  });
+
+  it("prefers an explicit trusted route over the derived one", () => {
+    expect(
+      resolveAvatar({
+        id: "c3e32452-0467-47e5-aafa-233cd5dae29f",
+        profileAvatarUrl: "/api/users/other-profile/avatar?v=9",
+      }),
+    ).toEqual({ kind: "profile", url: "/api/users/other-profile/avatar?v=9" });
   });
 });

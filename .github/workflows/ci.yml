@@ -104,6 +104,7 @@ jobs:
       strict_control_ui_i18n: ${{ steps.changed_scope.outputs.strict_control_ui_i18n }}
       run_ui_tests: ${{ steps.manifest.outputs.run_ui_tests }}
       run_native_i18n: ${{ steps.manifest.outputs.run_native_i18n }}
+      strict_native_i18n: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.changed_scope.outputs.strict_native_i18n }}
       run_checks_windows: ${{ steps.manifest.outputs.run_checks_windows }}
       checks_windows_matrix: ${{ steps.manifest.outputs.checks_windows_matrix }}
       run_macos_node: ${{ steps.manifest.outputs.run_macos_node }}
@@ -877,6 +878,33 @@ jobs:
           base-sha: ${{ steps.diff_base.outputs.sha }}
           fetch-ref: ${{ github.event_name == 'push' && github.ref_name || github.event.pull_request.base.ref }}
 
+      - name: Fetch pull request scan history
+        if: github.event_name == 'pull_request'
+        env:
+          PR_COMMIT_COUNT: ${{ github.event.pull_request.commits }}
+          PR_MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PR_COMMIT_COUNT" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid pull request commit count: $PR_COMMIT_COUNT"
+            exit 2
+          fi
+          # Include the synthetic merge, every pull request commit, and one
+          # ancestor so TruffleHog can clone and resolve the bounded range.
+          fetch_depth=$((PR_COMMIT_COUNT + 2))
+          timeout --signal=TERM --kill-after=10s 120s git \
+            -c protocol.version=2 \
+            fetch --no-tags --no-recurse-submodules --depth="$fetch_depth" origin "$PR_MERGE_SHA"
+
+      - name: Scan pull request for leaked credentials
+        if: github.event_name == 'pull_request'
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
+        with:
+          base: ${{ steps.diff_base.outputs.sha }}
+          head: ${{ github.sha }}
+          version: "3.95.9@sha256:59b244249d1a1aef4baa24fe73d3c931616264482580d806d77f6c74d26b3e42"
+          extra_args: --results=verified,unknown --fail-on-scan-errors
+
       - name: Prepare trusted pre-commit config
         if: github.event_name == 'pull_request'
         env:
@@ -1275,14 +1303,25 @@ jobs:
           sticky-disk: ${{ github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
           use-actions-cache: ${{ github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'false' || 'true' }}
 
-      - name: Check native app i18n inventory
-        run: pnpm native:i18n:check
+      - name: Verify native app i18n source
+        run: |
+          if node -e 'const scripts = require("./package.json").scripts ?? {}; process.exit(scripts["native:i18n:verify"] ? 0 : 1)'; then
+            pnpm native:i18n:verify
+          else
+            # Historical release targets predate the source/generated split.
+            pnpm native:i18n:check
+            pnpm android:i18n:check
+            pnpm apple:i18n:check
+          fi
 
-      - name: Check Android app i18n resources
-        run: pnpm android:i18n:check
-
-      - name: Check Apple app i18n catalogs
-        run: pnpm apple:i18n:check
+      - name: Check native app generated locale parity
+        if: ${{ needs.preflight.outputs.strict_native_i18n == 'true' }}
+        run: |
+          if node -e 'const scripts = require("./package.json").scripts ?? {}; process.exit(scripts["native:i18n:verify"] ? 0 : 1)'; then
+            pnpm native:i18n:check
+          else
+            echo "Historical target was validated by the legacy native checks."
+          fi
 
   checks-ui:
     permissions:
@@ -1329,7 +1368,9 @@ jobs:
             # Do not retry whole files: several rely on one-shot mocked browser globals.
             pnpm --dir ui test --testTimeout=30000 --isolate
           else
-            pnpm --dir ui test
+            # Three workers deliberately exercise stable non-default file packing so
+            # isolate:false mock-registry leaks fail close to the introducing change.
+            pnpm --dir ui test --maxWorkers 3
           fi
 
   control-ui-i18n:
