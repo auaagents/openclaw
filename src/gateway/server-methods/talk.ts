@@ -204,7 +204,7 @@ function buildTalkTtsConfig(
   }
 
   const baseTts = withTalkBaseTtsSpeakerSelectionCompat(
-    asOptionalRecord(config.messages?.tts) ?? {},
+    asOptionalRecord(config.tts) ?? {},
   ) as TtsConfig;
   const resolvedMatchesProvider = resolvedProvider === provider;
   const providerConfig = withSpeakerSelectionFallbackCompat(
@@ -232,10 +232,7 @@ function buildTalkTtsConfig(
     providerConfig,
     cfg: {
       ...config,
-      messages: {
-        ...config.messages,
-        tts: talkTts,
-      },
+      tts: talkTts,
     },
   };
 }
@@ -532,10 +529,10 @@ async function resolveTalkResponseFromConfig(params: {
 
   const speechProvider = getSpeechProvider(provider, params.runtimeConfig);
   const sourceBaseTts = withTalkBaseTtsSpeakerSelectionCompat(
-    asOptionalRecord(params.sourceConfig.messages?.tts) ?? {},
+    asOptionalRecord(params.sourceConfig.tts) ?? {},
   );
   const runtimeBaseTts = withTalkBaseTtsSpeakerSelectionCompat(
-    asOptionalRecord(params.runtimeConfig.messages?.tts) ?? {},
+    asOptionalRecord(params.runtimeConfig.tts) ?? {},
   );
   const sourceProviderConfig = withSpeakerSelectionFallbackCompat(sourceResolved?.config);
   const runtimeProviderConfig = withSpeakerSelectionFallbackCompat(runtimeResolved?.config);
