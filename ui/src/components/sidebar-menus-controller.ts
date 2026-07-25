@@ -26,6 +26,7 @@ import { fetchSessionMenuWork } from "./session-menu-work.ts";
 import type { SessionMenuWork } from "./session-menu.ts";
 import type { SessionOrganizerController } from "./session-organizer-controller.ts";
 import type { SessionOrganizerControllerHost } from "./session-organizer-operations.runtime.ts";
+import type { SessionCreatorOption } from "./session-owner-chip.ts";
 
 type SidebarMenuAgent = {
   id: string;
@@ -40,9 +41,9 @@ interface SidebarMenusControllerState {
   sessionMenuWork: SessionMenuWork | null;
   sessionGroupMenu: SidebarSessionGroupMenuState | null;
   sessionSortMenuPosition: { x: number; y: number } | null;
-  agentMenuPosition: { x: number; bottom: number } | null;
+  agentMenuPosition: { x: number; top: number } | null;
   agentMenuFilter: string;
-  identityMenuPosition: { x: number; bottom: number } | null;
+  identityMenuPosition: { x: number; bottom: number; width: number } | null;
 }
 
 type SidebarMenusRenderer = {
@@ -55,13 +56,14 @@ type SidebarMenusRenderer = {
   renderSidebarSessionSortMenuForController(controller: SidebarMenusController): unknown;
 };
 
-interface SidebarMenusControllerHost
+export interface SidebarMenusControllerHost
   extends ReactiveControllerHost, SessionOrganizerControllerHost {
   readonly activeRouteId?: NavigationRouteId;
   readonly activeWorkboardBoardId: string;
   readonly basePath: string;
   readonly canPairDevice: boolean;
   readonly connected: boolean;
+  readonly offline: boolean;
   readonly enabledRouteIds?: readonly NavigationRouteId[];
   readonly gatewayVersion: string | null;
   readonly onNavigate?: (
@@ -69,13 +71,22 @@ interface SidebarMenusControllerHost
     options?: ApplicationNavigationOptions,
   ) => void;
   readonly onPairMobile?: () => void;
+  readonly onRetryConnect?: () => void;
+  readonly onUpdateSidebarEntries?: (entries: string[]) => void;
   readonly onPreloadRoute?: (routeId: NavigationRouteId) => Promise<void>;
   readonly pinnedAgentIds: readonly string[];
   readonly selectedSessionKeys: ReadonlySet<string>;
   readonly sessionData: SessionOrganizerControllerHost["sessionData"] &
-    Pick<SessionDataController, "approvalBadgeSnapshot" | "sessionsLoading">;
+    Pick<
+      SessionDataController,
+      "approvalBadgeSnapshot" | "presenceInstanceId" | "presencePayload" | "sessionsLoading"
+    >;
   readonly sessionDataContext: ApplicationContext<RouteId> | undefined;
   readonly sessionOrganizer: SessionOrganizerController;
+  readonly sessionCreatorFilterActive: boolean;
+  sessionCreatorFilterId: string | null;
+  readonly sessionCreatorOptions: readonly SessionCreatorOption[];
+  readonly sessionOwnershipVisible: boolean;
   readonly sidebarEntries: readonly string[];
   sessionSortMode: SidebarSessionSortMode;
   readonly terminalAvailable: boolean;
@@ -107,10 +118,10 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
   sessionMenuWork: SessionMenuWork | null = null;
   sessionGroupMenu: SidebarSessionGroupMenuState | null = null;
   sessionSortMenuPosition: { x: number; y: number } | null = null;
-  agentMenuPosition: { x: number; bottom: number } | null = null;
+  agentMenuPosition: { x: number; top: number } | null = null;
   agentMenuFilter = "";
   // Anchored by its bottom edge so the footer menu grows upward regardless of height.
-  identityMenuPosition: { x: number; bottom: number } | null = null;
+  identityMenuPosition: { x: number; bottom: number; width: number } | null = null;
 
   customizeMenuTrigger: HTMLElement | null = null;
   moreMenuTrigger: HTMLElement | null = null;
@@ -404,9 +415,11 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
     this.closeIdentityMenu();
     this.agentMenuTrigger = trigger;
     this.updateState("agentMenuFilter", "");
+    // The agent card sits at the top of the sidebar, so the menu drops below it
+    // and shares its left edge; anchoring above would cover the card you clicked.
     this.updateState("agentMenuPosition", {
-      x: Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8)),
-      bottom: Math.max(8, window.innerHeight - rect.top + 4),
+      x: Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8)),
+      top: Math.min(rect.bottom + 4, window.innerHeight - 8),
     });
   }
 
@@ -430,13 +443,14 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
       return;
     }
     this.loadMenuRenderer();
-    const menuWidth = 240;
     const rect = trigger.getBoundingClientRect();
+    const menuWidth = Math.max(240, rect.width);
     this.dismissTransientMenus();
     this.identityMenuTrigger = trigger;
     this.updateState("identityMenuPosition", {
       x: Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8)),
       bottom: Math.max(8, window.innerHeight - rect.top + 4),
+      width: rect.width,
     });
   }
 

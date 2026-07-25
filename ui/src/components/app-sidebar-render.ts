@@ -20,17 +20,14 @@ import type { AppSidebarSessionNavigationElement } from "./app-sidebar-session-n
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import type { SidebarWorkboardBoard } from "./app-sidebar-workboard.ts";
 import { icons } from "./icons.ts";
-import { redactLoginFailureError } from "./login-gate.ts";
-import { renderOfflineSidebarStatus, renderSessionRowBadges } from "./session-row-badges.ts";
+import { renderSessionGlyph, renderSessionUnreadBadge } from "./session-glyph.ts";
+import { renderSessionRowBadges } from "./session-row-badges.ts";
 
 type AppSidebarRenderHost = AppSidebarSessionNavigationElement & {
   activePluginTabId: string;
   activeWorkboardBoardId: string;
   offline: boolean;
-  queuedOutboxCount: number;
-  lastError: string | null;
   onOpenApprovals?: () => void;
-  onRetryConnect?: () => void;
   getRouteSessionKey(): string;
   renderPinnedSidebarSession(session: SidebarRecentSession): unknown;
 };
@@ -94,21 +91,15 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
   const outboxCount = host.outboxCountForSessionKey(mainKey);
   const active =
     host.activeRouteId === "chat" && areUiSessionKeysEquivalent(host.getRouteSessionKey(), mainKey);
-  const stateBadge = mainRow?.hasActiveRun
-    ? html`<openclaw-tooltip .content=${t("sessionsView.activeRun")}>
-        <span
-          class="session-run-spinner"
-          role="img"
-          aria-label=${t("sessionsView.activeRun")}
-        ></span>
-      </openclaw-tooltip>`
-    : mainRow?.unread === true && !active
-      ? html`<span
-          class="session-unread-dot"
-          role="img"
-          aria-label=${t("sessionsView.unread")}
-        ></span>`
-      : nothing;
+  const running = mainRow?.hasActiveRun === true;
+  const unread = mainRow?.unread === true && !active;
+  // Home shares the sidebar's leading-slot contract: run state rings its icon
+  // instead of drifting to the row edge, which stays reserved for counts.
+  const homeGlyph = renderSessionGlyph({
+    content: html`<span class="nav-item__icon" aria-hidden="true">${icons.home}</span>`,
+    running,
+    badge: unread ? renderSessionUnreadBadge() : nothing,
+  });
   return html`
     <a
       href=${`${pathForRoute("chat", host.basePath)}${searchForSession(mainKey)}`}
@@ -122,7 +113,11 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
         host.openMainSession(agentId);
       }}
     >
-      <span class="nav-item__icon" aria-hidden="true">${icons.home}</span>
+      ${running
+        ? html`<openclaw-tooltip .content=${t("sessionsView.activeRun")}
+            >${homeGlyph}</openclaw-tooltip
+          >`
+        : homeGlyph}
       <span class="nav-item__text">${t("nav.home")}</span>
       ${sessionHasBoard(mainKey)
         ? html`<openclaw-tooltip .content=${t("sessionsView.dashboardAvailable")}>
@@ -134,9 +129,8 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
             >
           </openclaw-tooltip>`
         : nothing}
-      ${stateBadge !== nothing || approvalNeeded || outboxCount > 0
+      ${approvalNeeded || outboxCount > 0
         ? html`<span class="nav-item__state sidebar-home-session-states">
-            ${stateBadge}
             ${approvalNeeded
               ? html`<openclaw-tooltip .content=${t("sessionsView.approvalNeeded")}>
                   <span
@@ -175,55 +169,45 @@ export function renderAppSidebarPagesHead(host: AppSidebarRenderHost) {
 
 /** Zone 5: product chrome recedes to one slim footer bar. */
 export function renderAppSidebarFooterBar(host: AppSidebarRenderHost) {
-  const reconnecting = t("connection.reconnecting");
-  const selfUser = host.connected
-    ? resolveCurrentSelfUser({
-        snapshotUser: host.sessionDataContext?.gateway.snapshot.selfUser,
-        presenceEntries: readPresenceEntries(host.sessionData.presencePayload),
-        presenceInstanceId: host.sessionData.presenceInstanceId,
-      })
-    : null;
-  const selfLabel = selfUser?.name ?? selfUser?.email ?? selfUser?.id;
+  const selfUser = resolveCurrentSelfUser({
+    snapshotUser: host.sessionDataContext?.gateway.snapshot.selfUser,
+    presenceEntries: readPresenceEntries(host.sessionData.presencePayload),
+    presenceInstanceId: host.sessionData.presenceInstanceId,
+  });
+  const selfLabel = selfUser?.name ?? selfUser?.email ?? t("nav.account");
+  const avatarUser = {
+    ...(selfUser ?? { id: "account", name: selfLabel }),
+    watchedSessions: [],
+  };
   return html`
     <div class="sidebar-footer-bar">
-      ${selfUser && selfLabel
-        ? html`<openclaw-tooltip .content=${selfLabel}>
-            <button
-              type="button"
-              class="sidebar-footer-bar__identity"
-              aria-haspopup="menu"
-              aria-expanded=${String(host.sidebarMenus.identityMenuPosition !== null)}
-              aria-label=${t("profilePage.identity.menuButtonLabel", { name: selfLabel })}
-              @click=${(event: MouseEvent) =>
-                host.sidebarMenus.toggleIdentityMenu(event.currentTarget as HTMLElement)}
-            >
-              <openclaw-viewer-avatar
-                .user=${{ ...selfUser, watchedSessions: [] }}
-                variant="footer"
-              ></openclaw-viewer-avatar>
-              <span class="sidebar-footer-bar__identity-name">${selfLabel}</span>
-            </button>
-          </openclaw-tooltip>`
-        : nothing}
-      <span class="sidebar-footer-bar__spacer" aria-hidden="true"></span>
-      ${host.offline
-        ? renderOfflineSidebarStatus({
-            queuedOutboxCount: host.queuedOutboxCount,
-            reconnecting,
-            title: host.lastError ? redactLoginFailureError(host.lastError) : reconnecting,
-            onRetry: () => host.onRetryConnect?.(),
-          })
-        : nothing}
-      <openclaw-tooltip .content=${t("nav.settings")}>
+      <openclaw-tooltip .content=${selfLabel}>
         <button
           type="button"
-          class="sidebar-footer-bar__settings"
-          aria-label=${t("nav.settings")}
-          @click=${() => host.onNavigate?.("config")}
+          class="sidebar-identity-card"
+          aria-haspopup="menu"
+          aria-expanded=${String(host.sidebarMenus.identityMenuPosition !== null)}
+          aria-label=${t("profilePage.identity.menuButtonLabel", { name: selfLabel })}
+          @click=${(event: MouseEvent) =>
+            host.sidebarMenus.toggleIdentityMenu(event.currentTarget as HTMLElement)}
         >
-          ${icons.settings}
+          <openclaw-viewer-avatar .user=${avatarUser} variant="footer"></openclaw-viewer-avatar>
+          <span class="sidebar-identity-card__text">
+            <span class="sidebar-identity-card__name">${selfLabel}</span>
+            ${host.offline
+              ? html`<span class="sidebar-identity-card__subtitle" aria-hidden="true"
+                  >${t("connection.reconnecting")}</span
+                >`
+              : nothing}
+          </span>
+          <span class="sidebar-identity-card__chevron" aria-hidden="true"
+            >${icons.chevronDown}</span
+          >
         </button>
       </openclaw-tooltip>
+      <span class="sidebar-identity-card__status" role="status" aria-live="polite"
+        >${host.offline ? t("connection.reconnecting") : ""}</span
+      >
     </div>
   `;
 }

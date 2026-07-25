@@ -8,6 +8,10 @@ import {
   type LegacyConfigRule,
 } from "../../../config/legacy.shared.js";
 import {
+  hasConfigTrancheLegacyKeys,
+  migrateConfigTranche,
+} from "./legacy-config-migrations.runtime.config-tranche.js";
+import {
   consolidateMediaCapabilityConfig,
   hasDiscordRealtimeVoice,
   hasLegacyMediaCapabilityConfig,
@@ -18,6 +22,7 @@ import {
   stripRetiredTuningKnobs,
 } from "./legacy-config-migrations.runtime.retired-media.js";
 import { migrateTierEvalTranche } from "./legacy-config-migrations.runtime.tier-eval.js";
+import { visitChannelEntries } from "./legacy-config-record-shared.js";
 
 const rule = (
   path: string[],
@@ -194,42 +199,9 @@ function migrateFinalLayoutRenames(raw: Record<string, unknown>, changes: string
     }
   }
 
-  const slack = getRecord(getRecord(raw.channels)?.slack);
-  moveKey(slack, "identity", "postAs", "channels.slack", changes);
-  const slackAccounts = getRecord(slack?.accounts);
-  if (slackAccounts) {
-    for (const [accountId, value] of Object.entries(slackAccounts)) {
-      moveKey(
-        getRecord(value),
-        "identity",
-        "postAs",
-        `channels.slack.accounts.${accountId}`,
-        changes,
-      );
-    }
-  }
-}
-
-function visitChannelEntries(
-  raw: Record<string, unknown>,
-  channelId: string,
-  visitor: (entry: Record<string, unknown>, path: string) => void,
-): void {
-  const channel = getRecord(getRecord(raw.channels)?.[channelId]);
-  if (!channel) {
-    return;
-  }
-  visitor(channel, `channels.${channelId}`);
-  const accounts = getRecord(channel.accounts);
-  if (!accounts) {
-    return;
-  }
-  for (const [accountId, value] of Object.entries(accounts)) {
-    const account = getRecord(value);
-    if (account) {
-      visitor(account, `channels.${channelId}.accounts.${accountId}`);
-    }
-  }
+  visitChannelEntries(raw, "slack", (entry, path) => {
+    moveKey(entry, "identity", "postAs", path, changes);
+  });
 }
 
 function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]): void {
@@ -425,14 +397,8 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
   }
   const controlUi = getRecord(gateway?.controlUi);
   if (controlUi && Object.hasOwn(controlUi, "chatMessageMaxWidth")) {
-    const prefs = ensureRecord(ensureRecord(raw, "ui"), "prefs");
-    if (prefs.chatMessageMaxWidth === undefined) {
-      prefs.chatMessageMaxWidth = controlUi.chatMessageMaxWidth;
-      changes.push("Moved gateway.controlUi.chatMessageMaxWidth → ui.prefs.chatMessageMaxWidth.");
-    } else {
-      changes.push("Removed gateway.controlUi.chatMessageMaxWidth (ui.prefs value already set).");
-    }
     delete controlUi.chatMessageMaxWidth;
+    changes.push("Removed gateway.controlUi.chatMessageMaxWidth; chat width is now browser-local.");
   }
 }
 
@@ -487,6 +453,18 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
       migrateMediaDeepgram(raw, changes);
       consolidateMediaCapabilityConfig(raw, changes);
     },
+  }),
+  defineLegacyConfigMigration({
+    id: "runtime.config-tranche",
+    describe: "Migrate retired config-tranche options",
+    legacyRules: [
+      rule(
+        [],
+        "Presentation-only preferences and duplicate tuning options moved to canonical defaults.",
+        (_value, root) => hasConfigTrancheLegacyKeys(root),
+      ),
+    ],
+    apply: migrateConfigTranche,
   }),
   defineLegacyConfigMigration({
     id: "runtime.tuning-knobs-purge",

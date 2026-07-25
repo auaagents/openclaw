@@ -25,7 +25,6 @@ import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { isRenderableControlUiAvatarUrl } from "../../lib/avatar.ts";
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
-import { retirePendingChatSideQuestion, type ChatSideResult } from "../../lib/chat/side-result.ts";
 import type { EmbedSandboxMode } from "../../lib/chat/tool-display.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { loadModelAuthStatus } from "../../lib/model-auth.ts";
@@ -50,11 +49,7 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import { refreshChatAvatar, resolveAgentIdForSession } from "./chat-avatar.ts";
 import { applyRemoteSlashCommandsResult, refreshSlashCommands } from "./chat-commands.ts";
-import {
-  handleChatGatewayEvent,
-  handleChatSideResultGatewayEvent,
-  type ChatEventPayload,
-} from "./chat-gateway.ts";
+import { handleChatGatewayEvent, type ChatEventPayload } from "./chat-gateway.ts";
 import {
   chatScopedEventSessionMatches,
   isHiddenAssistantStreamText,
@@ -130,6 +125,7 @@ import {
   reconcileChatRunFromSessionRow,
   reconcileChatRunLifecycle,
   reconcileStaleChatRunAfterSessionStatePublication,
+  type PendingChatAbort,
 } from "./run-lifecycle.ts";
 import {
   cancelChatScroll,
@@ -215,7 +211,6 @@ export type ChatPageHost = ChatHost &
     localMediaPreviewRoots: string[];
     embedSandboxMode: EmbedSandboxMode;
     allowExternalEmbedUrls: boolean;
-    chatMessageMaxWidth: string | null;
     chatToolMessages: Record<string, unknown>[];
     chatAttachments: ChatAttachment[];
     chatQueue: ChatQueueItem[];
@@ -228,7 +223,6 @@ export type ChatPageHost = ChatHost &
     chatAvatarSource: string | null;
     chatAvatarStatus: "none" | "local" | "remote" | "data" | null;
     chatAvatarReason: string | null;
-    chatSideResultTerminalRuns: Set<string>;
     chatModelSwitchPromises: Record<string, Promise<boolean>>;
     chatModelCatalog: ModelCatalogEntry[];
     modelAuthStatusResult: ModelAuthStatusResult | null;
@@ -241,7 +235,7 @@ export type ChatPageHost = ChatHost &
     agentsList: AgentsListResult | null;
     agentsSelectedId: string | null;
     refreshSessionsAfterChat: Map<string, { sessionKey: string; agentId?: string }>;
-    pendingAbort: { runId?: string | null; sessionKey: string; agentId?: string } | null;
+    pendingAbort: PendingChatAbort | null;
     pendingSessionMessageReloadSessionKey: string | null;
     chatSubmitGuards: Map<string, Promise<void>>;
     chatSendTimingsByRun: Map<string, ChatSendTimingEntry>;
@@ -565,8 +559,6 @@ export function resetChatStateForRouteSession(
   state.chatRunUsageById = new Map();
   state.chatSending = false;
   state.chatSendingScopeKey = null;
-  state.chatSideChatTurns = [];
-  state.chatSideChatHidden = false;
   state.lastError = null;
   state.chatError = null;
   state.chatRunError = null;
@@ -600,16 +592,11 @@ export function resetChatStateForRouteSession(
     clearLocalRun: true,
     clearChatStream: true,
     clearToolStream: true,
-    clearSideResultTerminalRuns: true,
     clearRunStatus: true,
     // chat-pane adopts the new composer owner before it renders. Rendering
     // here would persist the hydrated target through the previous owner.
     requestUpdate: false,
   });
-  // After the suppression-set wipe above: retire (not just drop) a pending
-  // BTW run so its late resultless terminal event cannot be adopted into the
-  // old session's cached transcript.
-  retirePendingChatSideQuestion(state);
   state.resetChatScroll();
   // Deliberately no saveRouteSessionSettings here: this runs for every split
   // pane, and only the active pane may write the global sessionKey /
@@ -1271,7 +1258,6 @@ export function createPageState(
     localMediaPreviewRoots: appConfig.localMediaPreviewRoots,
     embedSandboxMode: appConfig.embedSandboxMode,
     allowExternalEmbedUrls: appConfig.allowExternalEmbedUrls,
-    chatMessageMaxWidth: appConfig.chatMessageMaxWidth,
     client: null,
     connected: false,
     connectionEpoch: 0,
@@ -1306,10 +1292,6 @@ export function createPageState(
     chatRunError: null,
     agentsError: null,
     chatStreamSegments: [] as Array<{ text: string; ts: number }>,
-    chatSideChatTurns: [] as ChatSideResult[],
-    chatSideResultPending: null,
-    chatSideResultTerminalRuns: new Set<string>(),
-    chatSideChatHidden: false,
     chatRunStatus: null,
     compactionStatus: null,
     fallbackStatus: null,
@@ -1612,12 +1594,6 @@ export function handlePageGatewayEvent(state: ChatPageHost, event: GatewayEventF
       void resumeStoredChatOutboxes(state);
     }
     requestChatPageUpdate(state, payload?.state === "delta" ? "animation-frame" : "immediate");
-    return;
-  }
-  if (event.event === "chat.side_result") {
-    if (handleChatSideResultGatewayEvent(state as unknown as ChatState, event.payload)) {
-      requestChatPageUpdate(state);
-    }
     return;
   }
   if (event.event === "session.observer") {

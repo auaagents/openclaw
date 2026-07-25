@@ -28,6 +28,7 @@ import {
   buildSystemRunApprovalEnvBinding,
 } from "../../infra/system-run-approval-binding.js";
 import { resetLogger, setLoggerOverride } from "../../logging.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
   augmentChatHistoryWithCanvasBlocks,
@@ -37,6 +38,7 @@ import {
   sanitizeChatHistoryMessages,
 } from "../chat-display-projection.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
+import { createChatRunState } from "../server-chat-state.js";
 import { waitForAgentJob } from "./agent-job.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
@@ -2174,26 +2176,39 @@ describe("projectRecentChatDisplayMessages", () => {
     expect(result).toEqual([{ role: "assistant", content: "older answer", timestamp: 2 }]);
   });
 
-  it("keeps media-only user messages while dropping empty text-only user messages", () => {
-    const mediaOnly = {
-      role: "user",
-      content: "",
-      MediaPath: "/tmp/openclaw/user-upload.png",
-      timestamp: 1,
-    };
-    const multiMediaOnly = {
-      role: "user",
-      content: "",
-      MediaPaths: ["/tmp/openclaw/first.png", "/tmp/openclaw/second.jpg"],
-      timestamp: 2,
-    };
+  it.each([
+    {
+      name: "facts-only",
+      message: { __openclaw: { media: [{ path: "/tmp/openclaw/fact.png" }] } },
+      expectedPath: "/tmp/openclaw/fact.png",
+    },
+    {
+      name: "sparse",
+      message: { __openclaw: { media: [{}, { path: "/tmp/openclaw/sparse.png" }] } },
+      expectedPath: "/tmp/openclaw/sparse.png",
+      expectedIndex: 1,
+    },
+    {
+      name: "type-only",
+      message: { __openclaw: { media: [{ contentType: "image/png" }] } },
+      expectedPath: undefined,
+    },
+    {
+      name: "media-only",
+      message: { __openclaw: { media: [{ path: "/tmp/openclaw/media-only.png" }] } },
+      expectedPath: "/tmp/openclaw/media-only.png",
+    },
+  ])("keeps $name media-only users through canonical display projection", (testCase) => {
     const result = projectRecentChatDisplayMessages([
-      mediaOnly,
-      multiMediaOnly,
-      { role: "user", content: "", timestamp: 3 },
+      { role: "user", content: "", timestamp: 1, ...testCase.message },
+      { role: "user", content: "", timestamp: 2 },
     ]);
 
-    expect(result).toEqual([mediaOnly, multiMediaOnly]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty("MediaPath");
+    const media = (result[0]?.["__openclaw"] as { media?: Array<{ path?: string }> })?.media;
+    const expectedIndex = "expectedIndex" in testCase ? (testCase.expectedIndex ?? 0) : 0;
+    expect(media?.[expectedIndex]?.path).toBe(testCase.expectedPath);
   });
 
   it("merges delayed TTS supplements into their original assistant message", () => {
@@ -2955,7 +2970,7 @@ describe("exec approval handlers", () => {
         broadcasts.push({ event, payload });
       },
       hasExecApprovalClients: () => true,
-      chatAbortedRuns: new Map<string, number>(),
+      chatRunState: createChatRunState(),
     };
     return { manager, handlers, broadcasts, respond, context };
   }
@@ -3144,7 +3159,7 @@ describe("exec approval handlers", () => {
 
   it("rejects approval registration after the owning run was aborted", async () => {
     const { manager, handlers, broadcasts, respond, context } = createExecApprovalFixture();
-    context.chatAbortedRuns.set("run-aborted", Date.now());
+    context.chatRunState.getOrCreate("run-aborted").abortMarker = Date.now();
 
     await requestExecApproval({
       handlers,
@@ -3194,7 +3209,7 @@ describe("exec approval handlers", () => {
       "approval-allowed-before-abort",
     );
     expect(manager.resolve("approval-allowed-before-abort", "allow-once")).toBe(true);
-    context.chatAbortedRuns.set("run-allowed-before-abort", Date.now());
+    context.chatRunState.getOrCreate("run-allowed-before-abort").abortMarker = Date.now();
     await requestPromise;
 
     const waitRespond = vi.fn();
@@ -5327,9 +5342,10 @@ describe("gateway healthHandlers.health cache freshness", () => {
   });
 
   it("merges live dead-lettered delivery queue counts into cached health responses", async () => {
-    const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-health-cached-dq-"));
-    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
-    process.env.OPENCLAW_STATE_DIR = tmpStateDir;
+    const openClawState = await createOpenClawTestState({
+      layout: "state-only",
+      prefix: "openclaw-health-cached-dq-",
+    });
     try {
       const { moveDeliveryQueueEntryToFailed, upsertDeliveryQueueEntry } =
         await import("../../infra/delivery-queue-sqlite.js");
@@ -5387,12 +5403,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       expect(typeof payload?.deliveryQueues?.failed?.[0]?.oldestFailedAt).toBe("number");
       expect(mockCallArg(respond, 0, 3)).toEqual({ cached: true });
     } finally {
-      if (previousStateDir === undefined) {
-        delete process.env.OPENCLAW_STATE_DIR;
-      } else {
-        process.env.OPENCLAW_STATE_DIR = previousStateDir;
-      }
-      fs.rmSync(tmpStateDir, { recursive: true, force: true });
+      await openClawState.cleanup();
     }
   });
 
