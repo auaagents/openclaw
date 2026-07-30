@@ -77,6 +77,7 @@ export function buildGatewaySessionEventFields(params: {
     localMoe: sessionRow.localMoe,
     effectiveLocalMoe: sessionRow.effectiveLocalMoe,
     localMoeDefault: sessionRow.localMoeDefault,
+    toolOverrides: sessionRow.toolOverrides ?? null,
     verboseLevel: sessionRow.verboseLevel,
     reasoningLevel: sessionRow.reasoningLevel,
     elevatedLevel: sessionRow.elevatedLevel,

@@ -561,6 +561,7 @@ export function createAgentEventHandler({
       localMoe: row?.localMoe,
       effectiveLocalMoe: row?.effectiveLocalMoe,
       localMoeDefault: row?.localMoeDefault,
+      toolOverrides: row?.toolOverrides,
       verboseLevel: row?.verboseLevel,
       traceLevel: row?.traceLevel,
       reasoningLevel: row?.reasoningLevel,
