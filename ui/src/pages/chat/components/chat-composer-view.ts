@@ -50,7 +50,11 @@ import {
   renderFallbackIndicator,
   type ComposerRunStatus,
 } from "./chat-composer-status.ts";
-import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
+import type {
+  ChatComposerDictationController,
+  ChatComposerProps,
+  ChatComposerState,
+} from "./chat-composer-types.ts";
 import {
   ensureChatComposerPickerDismissal,
   handleChatComposerDropdownShow,
@@ -84,7 +88,7 @@ type ChatComposerViewContext = {
   draftKey: string;
   handleCompositionEnd: (event: CompositionEvent) => void;
   handleBlur: (event: FocusEvent) => void;
-  dictation: ComposerDictationController | undefined;
+  dictation: ChatComposerDictationController | undefined;
   runControlsProps: ChatRunControlsProps;
   mirrorCameraPreview: boolean;
   slashMenuVisible: boolean;
