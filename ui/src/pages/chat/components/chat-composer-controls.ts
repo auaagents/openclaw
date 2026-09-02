@@ -5,7 +5,6 @@ import { icons } from "../../../components/icons.ts";
 import { syncDropdownItemRadio } from "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ControlUiFollowUpMode } from "../../../lib/chat/follow-up-mode.ts";
-import type { ComposerDictationController } from "../composer-dictation.ts";
 import type { ComposerTalkCapabilityStatus } from "../composer-microphone-picker.ts";
 import {
   realtimeTalkDeviceIssueMessage,
@@ -14,6 +13,7 @@ import {
 } from "../realtime-talk-input.ts";
 import type { RealtimeTalkLevelSignal } from "../realtime-talk-level.ts";
 import type { RealtimeTalkStatus } from "../realtime-talk.ts";
+import type { ChatComposerDictationController } from "./chat-composer-types.ts";
 import { renderMicrophoneActivity, voiceStatusLabel } from "./chat-voice-activity.ts";
 
 export type ChatRunControlsProps = {
@@ -35,7 +35,8 @@ export type ChatRunControlsProps = {
   voiceVideoCapable?: boolean;
   voiceVideoEnabled?: boolean;
   voiceVideoPending?: boolean;
-  dictation?: ComposerDictationController;
+  dictation?: ChatComposerDictationController;
+  dictationStartsDirectly?: boolean;
   onDictationPointerDown?: (event: PointerEvent) => void;
   onPrimaryActionPointerDown?: (event: PointerEvent) => void;
   onAbort?: () => void;
@@ -284,7 +285,8 @@ type ComposerVoiceButtonProps = {
   connected: boolean;
   sending: boolean;
   isBusy: boolean;
-  dictation?: ComposerDictationController;
+  dictation?: ChatComposerDictationController;
+  dictationStartsDirectly?: boolean;
   microphonePicker?: TemplateResult | typeof nothing;
   /**
    * What the control offers at rest. The chat composer's microphone also starts
@@ -303,7 +305,8 @@ export function renderComposerVoiceButton(props: ComposerVoiceButtonProps) {
   const finalizing = props.dictation?.finalizing === true;
   const holding = props.dictation?.locksComposer === true;
   const startsDictationDirectly =
-    props.dictation !== undefined && props.onToggleVoice === undefined;
+    props.dictation !== undefined &&
+    (props.dictationStartsDirectly || props.onToggleVoice === undefined);
   const label = active
     ? t("chat.composer.dictationStopAndKeep")
     : (props.idleLabel ?? t("chat.composer.startVoiceInput"));
@@ -361,7 +364,7 @@ export function renderComposerVoiceButton(props: ComposerVoiceButtonProps) {
 }
 
 export function renderComposerDictationSendAction(
-  dictation: ComposerDictationController,
+  dictation: ChatComposerDictationController,
   onSend: () => void,
   onPointerDown?: (event: PointerEvent) => void,
 ) {
@@ -397,7 +400,7 @@ export function renderComposerDictationSendAction(
   `;
 }
 
-export function renderComposerDictationStatus(dictation?: ComposerDictationController) {
+export function renderComposerDictationStatus(dictation?: ChatComposerDictationController) {
   if (!dictation?.active) {
     return nothing;
   }

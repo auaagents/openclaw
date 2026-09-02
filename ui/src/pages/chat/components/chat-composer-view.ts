@@ -9,7 +9,6 @@ import { icons } from "../../../components/icons.ts";
 import { renderSessionProgressCard } from "../../../components/session-progress-card.ts";
 import { t } from "../../../i18n/index.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
-import type { ComposerDictationController } from "../composer-dictation.ts";
 import { insertComposerDictation } from "../composer-dictation.ts";
 import {
   handleChatAttachmentPaste,
@@ -42,7 +41,11 @@ import {
   renderFallbackIndicator,
   type ComposerRunStatus,
 } from "./chat-composer-status.ts";
-import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
+import type {
+  ChatComposerDictationController,
+  ChatComposerProps,
+  ChatComposerState,
+} from "./chat-composer-types.ts";
 import {
   ensureChatComposerPickerDismissal,
   handleChatComposerDropdownShow,
@@ -76,7 +79,7 @@ type ChatComposerViewContext = {
   draftKey: string;
   handleCompositionEnd: (event: CompositionEvent) => void;
   handleBlur: (event: FocusEvent) => void;
-  dictation: ComposerDictationController | undefined;
+  dictation: ChatComposerDictationController | undefined;
   runControlsProps: ChatRunControlsProps;
   mirrorCameraPreview: boolean;
   slashMenuVisible: boolean;
