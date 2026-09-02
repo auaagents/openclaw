@@ -9989,6 +9989,25 @@ describe("handleSendChat", () => {
     );
   });
 
+  it("preserves a browser hands-free voice handoff request through the durable outbox", async () => {
+    const host = makeChatHost({
+      requestHandlers: {
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "hands-free send payload");
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatMessage: "summarize the deployment",
+    });
+
+    await handleSendChat(host, undefined, { voiceHandoff: true });
+
+    expect(findRequestPayload(host.request, "chat.send", "hands-free send")).toMatchObject({
+      message: "summarize the deployment",
+      voiceHandoff: true,
+    });
+  });
+
   it("waits for terminal history reconciliation before sending a follow-up", async () => {
     const history = createDeferred<unknown>();
     const host = makeChatHost({

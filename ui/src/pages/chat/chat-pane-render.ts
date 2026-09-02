@@ -589,6 +589,10 @@ export class ChatPane extends ChatPaneLayoutRender {
                   followUpModeOverride ? { followUpMode: followUpModeOverride } : undefined,
                   submissionAction,
                 ),
+      onSendHandsFree: () =>
+        !composerAvailability.canSend || catalogKey || suggestionViewer
+          ? undefined
+          : state.handleSendChat(undefined, { voiceHandoff: true }),
       // Checkpoint deep-link carries the archived filter so the row stays findable.
       onOpenSessionCheckpoints: () => {
         const status = selectedSessionArchived ? "&status=archived" : "";

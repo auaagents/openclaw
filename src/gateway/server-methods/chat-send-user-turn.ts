@@ -118,6 +118,7 @@ export function prepareChatSendUserTurn(params: {
     | "suppressCommandInterpretation"
     | "systemInputProvenance"
     | "systemProvenanceReceipt"
+    | "voiceHandoffRequested"
     | "toolBindings"
   >;
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey"> &
@@ -239,6 +240,7 @@ export function prepareChatSendUserTurn(params: {
     ...resolveChatSendCallerContext(client, request.clientInfo, originatingChannel),
     GatewayRunToolBindings: request.toolBindings,
     GatewayUiCommandTarget: gatewayUiCommandTarget,
+    ...(request.voiceHandoffRequested ? { VoiceHandoffRequested: true } : {}),
   };
   if (attachments.mediaPathOffloadPaths.length > 0) {
     // Pre-staged offloads must use structured facts and marker text so the

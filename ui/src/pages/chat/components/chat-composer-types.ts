@@ -163,6 +163,8 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
     followUpModeOverride?: ChatFollowUpMode,
     submissionAction?: Event,
   ) => void | Promise<boolean | void>;
+  /** Sends the current draft through the one-turn hands-free voice contract. */
+  onSendHandsFree?: () => void | Promise<boolean | void>;
   onToggleRealtimeTalk?: () => void;
   onSelectRealtimeVoice?: (voice: string) => void;
   onToggleRealtimeCamera?: () => void;
