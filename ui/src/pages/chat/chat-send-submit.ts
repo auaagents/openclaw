@@ -102,6 +102,8 @@ export type ChatSendSubmitOptions = {
   restoreDraft?: boolean;
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
+  /** Browser hands-free dictation requests an explicit final voice handoff. */
+  voiceHandoff?: boolean;
 };
 
 async function waitForSubmittedRoute(host: ChatHost, sessionKey: string): Promise<boolean> {
@@ -574,6 +576,7 @@ export async function handleSendChat(
       expectedLeafEntryId,
       effectiveMentions,
       workContext,
+      opts?.voiceHandoff === true,
     );
     if (!submission) {
       return;

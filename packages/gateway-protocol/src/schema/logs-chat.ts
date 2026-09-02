@@ -323,6 +323,11 @@ export const ChatSendParamsSchema = closedObject({
   systemInputProvenance: Type.Optional(InputProvenanceSchema),
   systemProvenanceReceipt: Type.Optional(Type.String()),
   suppressCommandInterpretation: Type.Optional(Type.Boolean()),
+  /**
+   * Requests the bounded voice handoff contract for this one turn. This is a
+   * presentation preference only; it grants no additional tool or authority.
+   */
+  voiceHandoff: Type.Optional(Type.Boolean()),
   // Transcript-branch CAS for non-steer interactive sends: the client's displayed
   // branch leaf (null = authoritative empty transcript). Steer sends ignore it;
   // the Gateway steers the session's direct run or starts a turn when idle.

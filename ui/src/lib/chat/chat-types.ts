@@ -138,6 +138,8 @@ export type ChatQueueItem = {
   refreshSessions?: boolean;
   /** Transcript id of the replied-to message; Gateway hydrates reply context. */
   replyToId?: string;
+  /** Preserve a browser hands-free voice handoff request across retries. */
+  voiceHandoffRequested?: boolean;
   localCommandArgs?: string;
   localCommandName?: string;
   pendingRunId?: string;

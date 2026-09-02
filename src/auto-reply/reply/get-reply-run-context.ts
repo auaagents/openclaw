@@ -40,6 +40,7 @@ import {
 import { resolvePromptSourceReplyMode } from "./get-reply-run-source-mode.js";
 import type { RunPreparedReplyParams } from "./get-reply-run.types.js";
 import { buildDirectChatContext, buildGroupChatContext, buildGroupIntro } from "./groups.js";
+import { buildHandsFreeVoiceHandoffPrompt } from "./hands-free-voice-handoff.js";
 import { hasInboundMedia } from "./inbound-media.js";
 import {
   buildInboundMetaSystemPrompt,
@@ -245,8 +246,14 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     fullAccessAvailable: fullAccessState.available,
     fullAccessBlockedReason: fullAccessState.blockedReason,
   });
+  // This is turn-scoped, not session-stable: later typed messages must never
+  // accidentally inherit the spoken-summary contract from a dictated turn.
+  const handsFreeVoiceHandoffPrompt = buildHandsFreeVoiceHandoffPrompt(
+    promptSessionCtx.VoiceHandoffRequested,
+  );
   const extraSystemPromptParts = [
     inboundMetaPrompt,
+    handsFreeVoiceHandoffPrompt,
     sessionStableConversationContext,
     groupIntro,
     groupSystemPrompt,

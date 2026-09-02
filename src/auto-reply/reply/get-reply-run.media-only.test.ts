@@ -838,6 +838,22 @@ describe("runPreparedReply media-only handling", () => {
     expect(prompt).toContain("Do not assume a prior denial still applies");
   });
 
+  it("injects the hands-free voice contract only for the marked current turn", async () => {
+    await runPrepared({
+      sessionCtx: {
+        ...createSessionBody("dictated request"),
+        Provider: "slack",
+        ChatType: "direct",
+        VoiceHandoffRequested: true,
+      } as never,
+    });
+
+    const run = requireRunReplyAgentCall().followupRun.run;
+    expect(run.extraSystemPrompt).toContain("hands-free-conversation skill");
+    expect(run.extraSystemPrompt).toContain("Voice handoff:");
+    expect(run.extraSystemPromptStatic ?? "").not.toContain("hands-free-conversation skill");
+  });
+
   it("preserves parent session provenance in queued runs", async () => {
     const spawnedBy = "agent:main:telegram:group:parent";
 

@@ -71,6 +71,7 @@ export function createPendingSendMessage(
   expectedLeafEntryId?: string | null,
   mentions?: readonly HumanMention[],
   workContext?: ChatWorkContext,
+  voiceHandoffRequested?: boolean,
 ): { item: ChatQueueItem; admission: ReturnType<typeof captureChatOutboxAdmission> } | null {
   const submitted = trimHumanMentions(text, mentions);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
@@ -98,6 +99,7 @@ export function createPendingSendMessage(
       ? { intent, ...(host.currentSessionId ? { sessionId: host.currentSessionId } : {}) }
       : {}),
     ...(intent && expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
+    ...(voiceHandoffRequested ? { voiceHandoffRequested: true } : {}),
     sendSubmittedAtMs: submittedAtMs,
     ...admission.scope,
     ...(sender ? { sender } : {}),

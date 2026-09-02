@@ -49,12 +49,18 @@ afterEach(() => {
 });
 
 describe("hands-free response readback", () => {
-  it("keeps a concise final-answer digest and replaces code details", () => {
+  it("reads only the explicit voice handoff, never a heuristic final-answer digest", () => {
     expect(
       summarizeHandsFreeResponse(
-        "# Finished\n\nThe gateway is healthy. It is serving the updated UI.\n\n```ts\nsecret details\n```",
+        "Voice handoff: The gateway is healthy and serving the update. Next, reload the Control UI.\n\n# Finished\n\n```ts\nsecret details\n```",
       ),
-    ).toBe("Response complete. Finished The gateway is healthy. It is serving the updated UI.");
+    ).toBe("The gateway is healthy and serving the update. Next, reload the Control UI.");
+  });
+
+  it("uses a truthful fixed fallback when the final answer misses the voice contract", () => {
+    expect(summarizeHandsFreeResponse("# Finished\n\nThe gateway is healthy.")).toBe(
+      "Response complete. The detailed response is available in chat.",
+    );
   });
 
   it("reads only the latest final assistant phase, not commentary or tool chatter", () => {
@@ -97,10 +103,10 @@ describe("hands-free response readback", () => {
     }));
     const speaker = new HandsFreeResponseSpeaker({ request } as unknown as GatewayBrowserClient);
 
-    await speaker.speak("The update is ready for review.");
+    await speaker.speak("Voice handoff: The update is ready for review.");
 
     expect(request).toHaveBeenCalledWith("tts.speak", {
-      text: "Response complete. The update is ready for review.",
+      text: "The update is ready for review.",
       provider: "microsoft",
       voiceId: "en-US-JennyNeural",
     });

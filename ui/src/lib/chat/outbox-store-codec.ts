@@ -209,6 +209,9 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   if (replyToId) {
     item.replyToId = replyToId;
   }
+  if (entry.voiceHandoffRequested === true) {
+    item.voiceHandoffRequested = true;
+  }
   if (entry.sendState === "steering" || entry.sendState === "executing-command") {
     item.sendState = "unconfirmed";
   } else if (entry.sendState === "submitting") {

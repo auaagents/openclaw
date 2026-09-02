@@ -446,7 +446,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     props.onTypingChange?.(false);
   };
-  const handleSend = (submissionAction?: Event): boolean => {
+  const submitComposerDraft = (
+    submissionAction: Event | undefined,
+    handsFree: boolean,
+  ): boolean => {
     const draft = state.composerTextarea?.value ?? props.draft;
     if (!canSubmitDraft(draft)) {
       return false;
@@ -462,10 +465,17 @@ export function renderChatComposer(props: ChatComposerProps) {
       void goalComposer.submit(submissionAction);
       return false;
     }
-    void props.onSend(undefined, submissionAction);
+    if (handsFree && props.onSendHandsFree) {
+      void props.onSendHandsFree();
+    } else {
+      void props.onSend(undefined, submissionAction);
+    }
     syncComposerDraftAfterSend(state.composerTextarea);
     return true;
   };
+  const handleSend = (submissionAction?: Event): boolean =>
+    submitComposerDraft(submissionAction, false);
+  const handleHandsFreeSend = (): boolean => submitComposerDraft(undefined, true);
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
   devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected);
@@ -619,7 +629,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       commitDictation(transcript, (text, existing) =>
         formatBrowserDictationTranscript(text, existing),
       ),
-    submit: handleSend,
+    submit: handleHandsFreeSend,
     onError: reportDictationError,
     onStateChange: requestUpdate,
   });

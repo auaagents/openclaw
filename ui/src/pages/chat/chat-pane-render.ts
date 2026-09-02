@@ -604,6 +604,10 @@ export class ChatPane extends ChatPaneLayoutRender {
                   followUpModeOverride ? { followUpMode: followUpModeOverride } : undefined,
                   submissionAction,
                 ),
+      onSendHandsFree: () =>
+        !composerAvailability.canSend || catalogKey || suggestionViewer
+          ? undefined
+          : state.handleSendChat(undefined, { voiceHandoff: true }),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => {
         if (!providerPaused) {

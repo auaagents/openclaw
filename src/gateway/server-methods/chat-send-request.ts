@@ -72,6 +72,7 @@ export type NormalizedChatSendRequest = {
   systemInputProvenance?: InputProvenance;
   systemProvenanceReceipt?: string;
   suppressCommandInterpretation: boolean;
+  voiceHandoffRequested?: boolean;
   toolBindings?: Readonly<Record<string, unknown>>;
   stopCommand: boolean;
   turnKind: "btw" | "main";
@@ -333,6 +334,7 @@ export function normalizeChatSendRequest(params: {
       systemInputProvenance,
       systemProvenanceReceipt,
       suppressCommandInterpretation: commandInterpretationSuppressed,
+      voiceHandoffRequested: p.voiceHandoff === true,
       toolBindings: p.toolBindings,
       stopCommand,
       turnKind,

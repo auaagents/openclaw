@@ -115,6 +115,11 @@ export type CanonicalInboundText = {
 /** Raw inbound message context accepted from channels before finalization. */
 export type MsgContext = Partial<CanonicalInboundText> & {
   Body?: string;
+  /**
+   * This turn originated from a hands-free UI flow and needs a short, explicit
+   * final voice handoff. It is presentation metadata, never input authority.
+   */
+  VoiceHandoffRequested?: boolean;
   InboundEventKind?: InboundEventKind;
   /**
    * Agent prompt body (may include envelope/history/context). Prefer this for prompt shaping.

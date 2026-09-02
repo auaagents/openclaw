@@ -292,6 +292,15 @@ describe("normalizeChatSendRequest", () => {
     });
   });
 
+  it("preserves the bounded voice handoff request without granting system-input authority", () => {
+    const result = normalizeChatSendRequest({
+      params: validParams({ voiceHandoff: true }),
+      client: null,
+    });
+
+    expect(result).toMatchObject({ ok: true, value: { voiceHandoffRequested: true } });
+  });
+
   it("rejects an empty text-and-attachment request", () => {
     const result = normalizeChatSendRequest({
       params: validParams({ message: "  " }),
