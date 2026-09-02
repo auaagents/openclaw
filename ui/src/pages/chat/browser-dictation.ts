@@ -23,9 +23,7 @@ export type BrowserSpeechRecognition = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
-  onresult: ((event: BrowserSpeechRecognitionResultEvent) => void) | null;
-  onerror: ((event: { error?: string; message?: string }) => void) | null;
-  onend: (() => void) | null;
+  addEventListener: (type: "result" | "error" | "end", listener: (event: unknown) => void) => void;
   start: () => void;
   stop: () => void;
 };
@@ -50,7 +48,11 @@ export type BrowserDictationControllerOptions = {
    * "send message". The composer owns validation, so an empty draft remains
    * harmless and cannot create an empty run.
    */
-  onSend: () => void;
+  /**
+   * Returns true only when the composer accepted the dictated prompt. A false
+   * result (for example an empty draft) immediately resumes recognition.
+   */
+  onSend: () => boolean;
   onError: (message: string, failure: BrowserDictationFailure) => void;
   onStateChange: () => void;
 };
@@ -219,6 +221,10 @@ export class BrowserDictationController {
   private options: BrowserDictationControllerOptions;
   private recognition: BrowserSpeechRecognition | null = null;
   private restartTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  // `active` is the operator's hands-free mode. `listening` is the browser
+  // recognition session, which is deliberately paused while the assistant's
+  // completion readback plays so TTS cannot dictate itself back into the draft.
+  private activeSession = false;
   private listening = false;
   private interim = "";
   private disposed = false;
@@ -228,7 +234,7 @@ export class BrowserDictationController {
   }
 
   get active(): boolean {
-    return this.listening;
+    return this.activeSession;
   }
 
   get connecting(): boolean {
@@ -253,18 +259,18 @@ export class BrowserDictationController {
 
   update(options: BrowserDictationControllerOptions): void {
     this.options = options;
-    if (!options.enabled && this.listening) {
+    if (!options.enabled && this.activeSession) {
       void this.finishActive();
     }
   }
 
   handlePointerDown(event: PointerEvent): boolean {
-    return event.button === 0 && !this.listening && this.options.enabled;
+    return event.button === 0 && !this.activeSession && this.options.enabled;
   }
 
   handleClick(event: MouseEvent): void {
     event.preventDefault();
-    if (this.listening) {
+    if (this.activeSession) {
       void this.finishActive();
       return;
     }
@@ -272,21 +278,44 @@ export class BrowserDictationController {
   }
 
   handleContextMenu(event: MouseEvent): void {
-    if (this.listening) {
+    if (this.activeSession) {
       event.preventDefault();
     }
   }
 
   startDirect(): boolean {
-    if (this.listening || !this.options.enabled || this.disposed) {
+    if (this.activeSession || !this.options.enabled || this.disposed) {
       return false;
     }
+    this.activeSession = true;
+    return this.startRecognition("start");
+  }
+
+  /** Pauses browser capture until the final response has been read aloud. */
+  pauseForResponse(): boolean {
+    if (!this.activeSession) {
+      return false;
+    }
+    this.stopRecognition();
+    return true;
+  }
+
+  /** Resumes the same operator-started hands-free session after readback. */
+  resumeAfterResponse(): boolean {
+    if (!this.activeSession || this.listening || this.disposed || !this.options.enabled) {
+      return false;
+    }
+    return this.startRecognition("interrupted");
+  }
+
+  private startRecognition(kind: BrowserDictationFailure["kind"]): boolean {
     const recognition = createBrowserSpeechRecognition();
     if (!recognition) {
       this.options.onError(
         "Browser dictation needs Microsoft Edge or Google Chrome speech recognition support.",
         { kind: "start", preservesText: false },
       );
+      this.activeSession = false;
       return false;
     }
     this.listening = true;
@@ -297,27 +326,28 @@ export class BrowserDictationController {
       recognition.start();
       return true;
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : String(error), "start");
+      this.fail(error instanceof Error ? error.message : String(error), kind);
       return false;
     }
   }
 
   finishActive(): Promise<boolean> {
-    if (!this.listening) {
+    if (!this.activeSession) {
       return Promise.resolve(false);
     }
-    this.stop();
+    this.stop(true);
     return Promise.resolve(true);
   }
 
   dispose(): void {
     this.disposed = true;
-    this.stop();
+    this.stop(true);
   }
 
   private attachRecognition(recognition: BrowserSpeechRecognition): void {
     this.recognition = recognition;
-    recognition.onresult = (event) => {
+    recognition.addEventListener("result", (rawEvent) => {
+      const event = rawEvent as BrowserSpeechRecognitionResultEvent;
       if (this.recognition !== recognition || !this.listening) {
         return;
       }
@@ -329,17 +359,20 @@ export class BrowserDictationController {
           this.options.onCommit(text);
         }
         if (shouldSend) {
-          // Stop first so one stale browser event cannot add text after the
-          // composer submits. onCommit is synchronous and updates the live
-          // textarea before onSend reads it.
-          this.stop();
-          this.options.onSend();
+          // Pause before submission so one stale browser event cannot add text
+          // after the composer submits. The operator-selected session remains
+          // active and resumes only after the completion readback.
+          this.pauseForResponse();
+          if (!this.options.onSend()) {
+            this.resumeAfterResponse();
+          }
           return;
         }
       }
       this.options.onStateChange();
-    };
-    recognition.onerror = (event) => {
+    });
+    recognition.addEventListener("error", (rawEvent) => {
+      const event = rawEvent as { error?: string; message?: string };
       if (this.recognition !== recognition || !this.listening) {
         return;
       }
@@ -347,21 +380,21 @@ export class BrowserDictationController {
         return;
       }
       this.fail(dictationErrorMessage(event.error, event.message), "interrupted");
-    };
-    recognition.onend = () => {
+    });
+    recognition.addEventListener("end", () => {
       if (this.recognition !== recognition) {
         return;
       }
       this.recognition = null;
       this.interim = "";
-      if (!this.listening || this.disposed) {
+      if (!this.listening || !this.activeSession || this.disposed) {
         this.options.onStateChange();
         return;
       }
       this.options.onStateChange();
       this.restartTimer = globalThis.setTimeout(() => {
         this.restartTimer = null;
-        if (!this.listening || this.disposed || this.recognition) {
+        if (!this.listening || !this.activeSession || this.disposed || this.recognition) {
           return;
         }
         const replacement = createBrowserSpeechRecognition();
@@ -379,16 +412,16 @@ export class BrowserDictationController {
           this.fail(error instanceof Error ? error.message : String(error), "interrupted");
         }
       }, RESTART_DELAY_MS);
-    };
+    });
   }
 
   private fail(message: string, kind: BrowserDictationFailure["kind"]): void {
     const preservesText = Boolean(this.interim);
-    this.stop();
+    this.stop(true);
     this.options.onError(message, { kind, preservesText });
   }
 
-  private stop(): void {
+  private stopRecognition(): void {
     if (this.restartTimer !== null) {
       globalThis.clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -399,5 +432,12 @@ export class BrowserDictationController {
     this.interim = "";
     recognition?.stop();
     this.options.onStateChange();
+  }
+
+  private stop(clearActiveSession: boolean): void {
+    if (clearActiveSession) {
+      this.activeSession = false;
+    }
+    this.stopRecognition();
   }
 }

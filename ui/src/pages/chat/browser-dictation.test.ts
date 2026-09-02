@@ -12,17 +12,39 @@ import {
 
 class FakeSpeechRecognition implements BrowserSpeechRecognition {
   static instances: FakeSpeechRecognition[] = [];
+  private listeners = new Map<string, Set<(event: unknown) => void>>();
   continuous = false;
   interimResults = false;
   lang = "";
-  onresult: ((event: BrowserSpeechRecognitionResultEvent) => void) | null = null;
-  onerror: ((event: { error?: string; message?: string }) => void) | null = null;
-  onend: (() => void) | null = null;
   start = vi.fn();
   stop = vi.fn();
 
   constructor() {
     FakeSpeechRecognition.instances.push(this);
+  }
+
+  addEventListener(type: "result" | "error" | "end", listener: (event: unknown) => void): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  emitResult(event: BrowserSpeechRecognitionResultEvent): void {
+    this.emit("result", event);
+  }
+
+  emitError(event: { error?: string; message?: string }): void {
+    this.emit("error", event);
+  }
+
+  emitEnd(): void {
+    this.emit("end", new Event("end"));
+  }
+
+  private emit(type: "result" | "error" | "end", event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
   }
 }
 
@@ -48,7 +70,7 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: (text) => onCommit(formatBrowserDictationTranscript(text)),
-      onSend: vi.fn(),
+      onSend: () => true,
       onError: vi.fn(),
       onStateChange,
     });
@@ -63,7 +85,7 @@ describe("browser dictation", () => {
     expect(recognition.interimResults).toBe(true);
     expect(recognition.lang).toBe("en-US");
 
-    recognition?.onresult?.({
+    recognition?.emitResult({
       resultIndex: 0,
       results: { length: 2, 0: result("hello comma world", true), 1: result("how are", false) },
     });
@@ -77,13 +99,13 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: vi.fn(),
-      onSend: vi.fn(),
+      onSend: () => true,
       onError: vi.fn(),
       onStateChange: vi.fn(),
     });
     controller.startDirect();
     const first = FakeSpeechRecognition.instances[0];
-    first?.onend?.();
+    first?.emitEnd();
     vi.advanceTimersByTime(250);
     expect(FakeSpeechRecognition.instances).toHaveLength(2);
     expect(controller.active).toBe(true);
@@ -102,12 +124,12 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: vi.fn(),
-      onSend: vi.fn(),
+      onSend: () => true,
       onError,
       onStateChange: vi.fn(),
     });
     controller.startDirect();
-    FakeSpeechRecognition.instances[0]?.onerror?.({ error: "not-allowed" });
+    FakeSpeechRecognition.instances[0]?.emitError({ error: "not-allowed" });
     vi.advanceTimersByTime(250);
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("permission was blocked"), {
       kind: "interrupted",
@@ -146,9 +168,9 @@ describe("browser dictation", () => {
     });
   });
 
-  it("commits speech before submitting on a final send command, then stops listening", () => {
+  it("commits speech before submitting, pauses during the response, then resumes hands-free", () => {
     const onCommit = vi.fn();
-    const onSend = vi.fn();
+    const onSend = vi.fn(() => true);
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit,
@@ -162,7 +184,7 @@ describe("browser dictation", () => {
       throw new Error("expected browser recognition to start");
     }
 
-    recognition.onresult?.({
+    recognition.emitResult({
       resultIndex: 0,
       results: { length: 1, 0: result("Explain the failure period send a prompt", true) },
     });
@@ -170,6 +192,37 @@ describe("browser dictation", () => {
     expect(onCommit).toHaveBeenCalledWith("Explain the failure period");
     expect(onSend).toHaveBeenCalledOnce();
     expect(recognition.stop).toHaveBeenCalledOnce();
-    expect(controller.active).toBe(false);
+    expect(controller.active).toBe(true);
+    expect(controller.locksComposer).toBe(false);
+
+    expect(controller.resumeAfterResponse()).toBe(true);
+    expect(FakeSpeechRecognition.instances).toHaveLength(2);
+    expect(FakeSpeechRecognition.instances[1]?.start).toHaveBeenCalledOnce();
+  });
+
+  it("resumes immediately when the composer rejects a spoken send command", () => {
+    const onSend = vi.fn(() => false);
+    const controller = new BrowserDictationController({
+      enabled: true,
+      onCommit: vi.fn(),
+      onSend,
+      onError: vi.fn(),
+      onStateChange: vi.fn(),
+    });
+    controller.startDirect();
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("expected browser recognition to start");
+    }
+
+    recognition.emitResult({
+      resultIndex: 0,
+      results: { length: 1, 0: result("send", true) },
+    });
+
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(recognition.stop).toHaveBeenCalledOnce();
+    expect(controller.active).toBe(true);
+    expect(FakeSpeechRecognition.instances).toHaveLength(2);
   });
 });

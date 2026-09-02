@@ -48,6 +48,9 @@ export const TalkSpeakParamsSchema = closedObject({
  */
 export const TtsSpeakParamsSchema = closedObject({
   text: NonEmptyString,
+  provider: Type.Optional(Type.String()),
+  modelId: Type.Optional(Type.String()),
+  voiceId: Type.Optional(Type.String()),
 });
 
 /** Supported Talk session shapes exposed to clients and providers. */
