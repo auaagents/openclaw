@@ -5,6 +5,8 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { extractTextCached } from "../../lib/chat/message-extract.ts";
 
 const MAX_READBACK_CHARS = 420;
+const MAX_READBACK_WORDS = 60;
+const HANDOFF_FALLBACK = "Response complete. The detailed response is available in chat.";
 
 type TtsSpeakResult = {
   audioBase64?: unknown;
@@ -29,29 +31,29 @@ function cleanReadbackText(text: string): string {
 }
 
 /**
- * Makes a short, deterministic spoken handoff without asking another model to
- * summarize. The source is already the final assistant phase, so reasoning,
- * commentary, and tool output cannot reach speech.
+ * Reads only the agent-authored Voice handoff paragraph. A fixed fallback is
+ * safer than guessing from a partial final answer when a model misses the
+ * contract: it never implies that arbitrary visible prose was summarized.
  */
 export function summarizeHandsFreeResponse(text: string): string | null {
-  const cleaned = cleanReadbackText(text);
-  if (!cleaned) {
-    return null;
+  const handoff = text.match(/(?:^|\n)\s*voice\s+handoff\s*:\s*([^\n]+(?:\n(?!\s*\n)[^\n]+)?)/iu);
+  if (!handoff?.[1]) {
+    return HANDOFF_FALLBACK;
   }
-  const sentences = cleaned.match(/[^.!?]+(?:[.!?]+|$)/gu) ?? [cleaned];
-  const selected = sentences
-    .slice(0, 2)
-    .map((sentence) => sentence.trim())
-    .join(" ")
-    .trim();
+  const cleaned = cleanReadbackText(handoff[1]);
+  if (!cleaned) {
+    return HANDOFF_FALLBACK;
+  }
+  const words = cleaned.split(/\s+/u).slice(0, MAX_READBACK_WORDS);
+  const bounded = words.join(" ");
   const clipped =
-    selected.length > MAX_READBACK_CHARS
-      ? `${selected
+    bounded.length > MAX_READBACK_CHARS
+      ? `${bounded
           .slice(0, MAX_READBACK_CHARS)
           .replace(/\s+\S*$/u, "")
           .trim()}…`
-      : selected;
-  return clipped ? `Response complete. ${clipped}` : "Response complete.";
+      : bounded;
+  return clipped || HANDOFF_FALLBACK;
 }
 
 /** Returns only the latest visible final assistant reply, never commentary. */

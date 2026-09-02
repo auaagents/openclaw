@@ -281,6 +281,7 @@ describe("prepareChatSendUserTurn", () => {
           systemInputProvenance: { kind: "internal_system", sourceTool: "test" },
           systemProvenanceReceipt: "[System receipt]",
           toolBindings: { browser: { kind: "tab", targetId: "target-1" } },
+          voiceHandoffRequested: true,
         },
         session: {
           agentId: "main",
@@ -325,6 +326,7 @@ describe("prepareChatSendUserTurn", () => {
         ],
         InputProvenance: { kind: "internal_system", sourceTool: "test" },
         GatewayRunToolBindings: { browser: { kind: "tab", targetId: "target-1" } },
+        VoiceHandoffRequested: true,
         OriginatingChannel: "discord",
         OriginatingTo: "channel:1",
         AccountId: "account-1",

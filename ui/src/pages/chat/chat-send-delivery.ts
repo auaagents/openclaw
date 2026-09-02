@@ -313,6 +313,7 @@ async function sendQueuedChatMessage(
         ? { expectedLeafEntryId }
         : {}),
       ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
+      ...(prepared.voiceHandoffRequested ? { voiceHandoff: true } : {}),
     });
     if (!requestConnectionIsCurrent()) {
       return "pending";

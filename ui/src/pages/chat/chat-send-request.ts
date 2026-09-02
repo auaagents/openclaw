@@ -26,6 +26,7 @@ export async function requestChatSend(
     intent?: ChatSendIntent;
     sessionId?: string;
     replyToId?: string;
+    voiceHandoff?: boolean;
     expectedLeafEntryId?: string | null;
   },
 ): Promise<ChatSendAck> {
@@ -46,6 +47,7 @@ export async function requestChatSend(
     ...(params.intent ? { intent: params.intent } : {}),
     deliver: false,
     ...(params.replyToId ? { replyToId: params.replyToId } : {}),
+    ...(params.voiceHandoff ? { voiceHandoff: true } : {}),
     ...(params.queueMode ? { queueMode: params.queueMode } : {}),
     ...(params.expectedLeafEntryId !== undefined
       ? { expectedLeafEntryId: params.expectedLeafEntryId }

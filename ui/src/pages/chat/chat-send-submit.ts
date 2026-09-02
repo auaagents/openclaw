@@ -92,6 +92,8 @@ export type ChatSendSubmitOptions = {
   restoreDraft?: boolean;
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
+  /** Browser hands-free dictation requests an explicit final voice handoff. */
+  voiceHandoff?: boolean;
 };
 
 function isChatResetCommand(text: string) {
@@ -595,6 +597,7 @@ export async function handleSendChat(
       intent,
       expectedLeafEntryId,
       effectiveMentions,
+      opts?.voiceHandoff === true,
     );
     if (!submission) {
       return;
