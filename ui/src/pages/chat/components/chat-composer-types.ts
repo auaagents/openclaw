@@ -23,6 +23,7 @@ import type { HumanMentionInput } from "../../../lib/chat/human-mentions.ts";
 import type { ProviderUsageDisplayProps } from "../../../lib/provider-quota-summary.ts";
 import type { SessionToolOverrides } from "../../../lib/sessions/patch.ts";
 import type { ChatTypingActorView, ChatTypingOverflow } from "../chat-typing-presence.ts";
+import type { BrowserDictationController } from "../browser-dictation.ts";
 import type { ComposerDictationController } from "../composer-dictation.ts";
 import type { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
 import type { ChatInputHistoryKeyInput, ChatInputHistoryKeyResult } from "../input-history.ts";
@@ -195,6 +196,10 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onGatewayQuestionSkip?: (id: string) => void | Promise<void>;
 };
 
+export type ChatComposerDictationController =
+  | ComposerDictationController
+  | BrowserDictationController;
+
 type PendingClearedSubmittedDraft = {
   key: string;
   value: string;
@@ -232,7 +237,8 @@ export type ChatComposerState = SkillMenuState &
     // layout observers to detach and reconnect on every chat update.
     composerInputRef: ((element?: Element) => void) | null;
     textareaRef: ((element?: Element) => void) | null;
-    dictation: ComposerDictationController | null;
+    dictation: ChatComposerDictationController | null;
+    dictationSource: "browser" | "gateway" | null;
     composerDraftScopeKey: string | null;
     dictationError: string | null;
     dictationSelection: { start: number; end: number; value: string } | null;
