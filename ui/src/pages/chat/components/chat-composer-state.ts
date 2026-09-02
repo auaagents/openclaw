@@ -39,6 +39,8 @@ function createChatComposerState(): ChatComposerState {
     composerInputRef: null,
     dictation: null,
     dictationSource: null,
+    handsFreeSpeaker: null,
+    handsFreePendingResponse: null,
     composerDraftScopeKey: null,
     dictationError: null,
     dictationSelection: null,
@@ -171,6 +173,7 @@ function disposeChatComposerState(state: ChatComposerState) {
   state.mentionMenu.dispose();
   state.composerDraftScopeKey = null;
   state.dictation?.dispose();
+  state.handsFreeSpeaker?.stop();
   state.microphonePicker?.dispose();
   if (state.composerInput) {
     disconnectComposerPopoverAnchorObserver(state.composerInput);

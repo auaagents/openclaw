@@ -26,6 +26,7 @@ import type { ChatTypingActorView, ChatTypingOverflow } from "../chat-typing-pre
 import type { BrowserDictationController } from "../browser-dictation.ts";
 import type { ComposerDictationController } from "../composer-dictation.ts";
 import type { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
+import type { HandsFreeResponseSpeaker } from "../hands-free-response.ts";
 import type { ChatInputHistoryKeyInput, ChatInputHistoryKeyResult } from "../input-history.ts";
 import type { ChatRunError, ChatRunUiStatus } from "../run-lifecycle.ts";
 import type { RealtimeTalkConversationEntry } from "../talk/conversation.ts";
@@ -210,6 +211,11 @@ type ComposingDraft = {
   value: string;
 };
 
+type PendingHandsFreeResponse = {
+  previousResponseKey: string | null;
+  observedWorking: boolean;
+};
+
 export type ChatComposerState = SkillMenuState &
   SlashMenuState & {
     composerComposing: boolean;
@@ -239,6 +245,8 @@ export type ChatComposerState = SkillMenuState &
     textareaRef: ((element?: Element) => void) | null;
     dictation: ChatComposerDictationController | null;
     dictationSource: "browser" | "gateway" | null;
+    handsFreeSpeaker: HandsFreeResponseSpeaker | null;
+    handsFreePendingResponse: PendingHandsFreeResponse | null;
     composerDraftScopeKey: string | null;
     dictationError: string | null;
     dictationSelection: { start: number; end: number; value: string } | null;

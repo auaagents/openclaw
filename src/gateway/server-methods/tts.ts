@@ -179,6 +179,9 @@ export const ttsHandlers: GatewayRequestHandlers = {
     }
     try {
       const cfg = context.getRuntimeConfig();
+      const providerRaw = normalizeOptionalString(params.provider);
+      const modelId = normalizeOptionalString(params.modelId);
+      const voiceId = normalizeOptionalString(params.voiceId);
       // synthesizeSpeech enforces the same tts.maxTextLength bound but
       // reports it as a synthesis failure; pre-check to return a request error.
       const maxTextLength = resolveTtsConfig(cfg).maxTextLength;
@@ -194,7 +197,23 @@ export const ttsHandlers: GatewayRequestHandlers = {
         return;
       }
       assertSecretOwnerAvailable("capability", "tts");
-      const result = await synthesizeSpeech({ text, cfg });
+      let overrides;
+      try {
+        overrides = resolveExplicitTtsOverrides({
+          cfg,
+          provider: providerRaw,
+          modelId,
+          voiceId,
+        });
+      } catch (err) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
+        return;
+      }
+      const result = await synthesizeSpeech(
+        overrides.provider || modelId || voiceId
+          ? { text, cfg, overrides, disableFallback: true }
+          : { text, cfg },
+      );
       const provider = normalizeOptionalString(result.provider);
       if (!result.success || !result.audioBuffer || result.audioBuffer.length === 0 || !provider) {
         respond(

@@ -360,6 +360,44 @@ describe("ttsHandlers", () => {
     });
   });
 
+  it("tts.speak validates an explicit provider and voice and disables fallback", async () => {
+    mocks.resolveExplicitTtsOverrides.mockReturnValue({
+      provider: "microsoft",
+      providerConfig: { voice: "en-US-JennyNeural" },
+    });
+    const { ttsHandlers } = await import("./tts.js");
+    const respond = vi.fn();
+
+    await expectDefined(
+      ttsHandlers["tts.speak"],
+      'ttsHandlers["tts.speak"] test invariant',
+    )({
+      params: {
+        text: "Response complete.",
+        provider: "microsoft",
+        voiceId: "en-US-JennyNeural",
+      },
+      respond,
+      context: { getRuntimeConfig: mocks.getRuntimeConfig },
+    } as never);
+
+    expect(mocks.resolveExplicitTtsOverrides).toHaveBeenCalledWith({
+      cfg: {},
+      provider: "microsoft",
+      modelId: undefined,
+      voiceId: "en-US-JennyNeural",
+    });
+    expect(mocks.synthesizeSpeech).toHaveBeenCalledWith({
+      text: "Response complete.",
+      cfg: {},
+      overrides: {
+        provider: "microsoft",
+        providerConfig: { voice: "en-US-JennyNeural" },
+      },
+      disableFallback: true,
+    });
+  });
+
   it("tts.speak rejects blank text without synthesizing", async () => {
     const respond = await callTts("tts.speak", { text: "   " });
 

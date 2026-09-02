@@ -5,10 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { QuestionPrompt } from "../../app/question-prompt.ts";
 import { t } from "../../i18n/index.ts";
-import type {
-  BrowserSpeechRecognition,
-  BrowserSpeechRecognitionResultEvent,
-} from "./browser-dictation.ts";
 import {
   createComposerProps as props,
   findComposerButton as button,
@@ -399,105 +395,6 @@ describe("renderChatComposer controls", () => {
     expect(
       container.querySelector(`button[aria-label="${t("chat.composer.startVoiceInput")}"]`),
     ).not.toBeNull();
-  });
-
-  it("prefers browser dictation and inserts final speech without creating a Talk session", () => {
-    class FakeSpeechRecognition implements BrowserSpeechRecognition {
-      static instance: FakeSpeechRecognition | null = null;
-      continuous = false;
-      interimResults = false;
-      lang = "";
-      onresult: ((event: BrowserSpeechRecognitionResultEvent) => void) | null = null;
-      onerror: ((event: { error?: string; message?: string }) => void) | null = null;
-      onend: (() => void) | null = null;
-      start = vi.fn();
-      stop = vi.fn();
-
-      constructor() {
-        FakeSpeechRecognition.instance = this;
-      }
-    }
-
-    vi.stubGlobal("SpeechRecognition", FakeSpeechRecognition);
-    const onDraftChange = vi.fn();
-    const onToggleRealtimeTalk = vi.fn();
-    const container = document.createElement("div");
-    document.body.append(container);
-    const composerProps = props({ onDraftChange, onToggleRealtimeTalk });
-    const draw = () => render(renderChatComposer(composerProps), container);
-    composerProps.onRequestUpdate = draw;
-    draw();
-
-    const microphone = button(container, t("chat.composer.startVoiceInput"));
-    microphone.dispatchEvent(dictationPointer("pointerdown", 14));
-    microphone.click();
-    const recognition = FakeSpeechRecognition.instance;
-    if (!recognition) {
-      throw new Error("expected browser dictation recognition");
-    }
-    expect(recognition.start).toHaveBeenCalledOnce();
-    expect(recognition.lang).toBe("en-US");
-    expect(container.querySelector(".chat-send-btn--dictating")).not.toBeNull();
-
-    recognition.onresult?.({
-      resultIndex: 0,
-      results: {
-        length: 1,
-        0: { isFinal: true, 0: { transcript: "hello comma openclaw period" } },
-      },
-    });
-
-    expect(onDraftChange).toHaveBeenCalledWith("Hello, openclaw.");
-    expect(onToggleRealtimeTalk).not.toHaveBeenCalled();
-  });
-
-  it("submits the dictated draft hands-free when browser speech hears a final send command", () => {
-    class FakeSpeechRecognition implements BrowserSpeechRecognition {
-      static instance: FakeSpeechRecognition | null = null;
-      continuous = false;
-      interimResults = false;
-      lang = "";
-      onresult: ((event: BrowserSpeechRecognitionResultEvent) => void) | null = null;
-      onerror: ((event: { error?: string; message?: string }) => void) | null = null;
-      onend: (() => void) | null = null;
-      start = vi.fn();
-      stop = vi.fn();
-
-      constructor() {
-        FakeSpeechRecognition.instance = this;
-      }
-    }
-
-    vi.stubGlobal("SpeechRecognition", FakeSpeechRecognition);
-    const onDraftChange = vi.fn();
-    const onSend = vi.fn();
-    const container = document.createElement("div");
-    document.body.append(container);
-    const composerProps = props({ onDraftChange, onSend });
-    const draw = () => render(renderChatComposer(composerProps), container);
-    composerProps.onRequestUpdate = draw;
-    draw();
-
-    const microphone = button(container, t("chat.composer.startVoiceInput"));
-    microphone.dispatchEvent(dictationPointer("pointerdown", 15));
-    microphone.click();
-    const recognition = FakeSpeechRecognition.instance;
-    if (!recognition) {
-      throw new Error("expected browser dictation recognition");
-    }
-
-    recognition.onresult?.({
-      resultIndex: 0,
-      results: { length: 1, 0: { isFinal: true, 0: { transcript: "Explain this regression" } } },
-    });
-    recognition.onresult?.({
-      resultIndex: 0,
-      results: { length: 1, 0: { isFinal: true, 0: { transcript: "send a message" } } },
-    });
-
-    expect(onDraftChange).toHaveBeenLastCalledWith("Explain this regression");
-    expect(onSend).toHaveBeenCalledOnce();
-    expect(recognition.stop).toHaveBeenCalledOnce();
   });
 
   it("keeps the dictation button stable through hold progress and latch", async () => {

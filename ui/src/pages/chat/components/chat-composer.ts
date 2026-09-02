@@ -16,11 +16,10 @@ import {
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import {
-  BrowserDictationController,
   formatBrowserDictationTranscript,
   supportsBrowserDictation,
 } from "../browser-dictation.ts";
-import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
+import { insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
 import { renderContextNotice } from "./chat-composer-context.ts";
@@ -35,6 +34,11 @@ import {
   scheduleTextareaHeightAdjustment,
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
+import {
+  advanceHandsFreeDictationForComposer,
+  createHandsFreeBrowserDictationOptions,
+  syncComposerDictationController,
+} from "./chat-composer-hands-free.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
@@ -99,6 +103,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     state.dictation?.dispose();
     state.dictation = null;
     state.dictationSelection = null;
+    state.handsFreeSpeaker?.stop();
+    state.handsFreePendingResponse = null;
   }
   state.composerDraftScopeKey = draftKey;
   const visibleDraft =
@@ -440,10 +446,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     props.onTypingChange?.(false);
   };
-  const handleSend = (submissionAction?: Event) => {
+  const handleSend = (submissionAction?: Event): boolean => {
     const draft = state.composerTextarea?.value ?? props.draft;
     if (!canSubmitDraft(draft)) {
-      return;
+      return false;
     }
     state.composerComposing = false;
     state.composingDraft = null;
@@ -454,10 +460,11 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     if (goalComposer.active) {
       void goalComposer.submit(submissionAction);
-      return;
+      return false;
     }
     void props.onSend(undefined, submissionAction);
     syncComposerDraftAfterSend(state.composerTextarea);
+    return true;
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
@@ -604,36 +611,32 @@ export function renderChatComposer(props: ChatComposerProps) {
         ? startRealtimeTalk
         : handleVoicePrimaryAction,
   };
-  const browserDictationOptions = {
+  const browserDictationOptions = createHandsFreeBrowserDictationOptions({
     enabled: props.realtimeTalkActive !== true,
-    onCommit: (transcript: string) =>
+    state,
+    messages: props.messages,
+    onCommit: (transcript) =>
       commitDictation(transcript, (text, existing) =>
         formatBrowserDictationTranscript(text, existing),
       ),
-    onSend: () => handleSend(),
+    submit: handleSend,
     onError: reportDictationError,
     onStateChange: requestUpdate,
-  };
-  if (state.dictationSource !== dictationSource) {
-    state.dictation?.dispose();
-    state.dictation = null;
-    state.dictationSource = dictationSource;
-    state.dictationSelection = null;
-  }
-  if (dictationSource === "browser") {
-    if (!(state.dictation instanceof BrowserDictationController)) {
-      state.dictation = new BrowserDictationController(browserDictationOptions);
-    } else {
-      state.dictation.update(browserDictationOptions);
-    }
-  } else if (dictationSource === "gateway") {
-    if (!(state.dictation instanceof ComposerDictationController)) {
-      state.dictation = new ComposerDictationController(gatewayDictationOptions);
-    } else {
-      state.dictation.update(gatewayDictationOptions);
-    }
-  }
-  const dictation = state.dictation ?? undefined;
+  });
+  const dictation = syncComposerDictationController({
+    state,
+    source: dictationSource,
+    browserOptions: browserDictationOptions,
+    gatewayOptions: gatewayDictationOptions,
+  });
+  advanceHandsFreeDictationForComposer({
+    state,
+    props,
+    dictation,
+    isBusy,
+    hasTerminalStatus,
+    requestUpdate,
+  });
   const handleDictationPointerDown = (event: PointerEvent) => {
     if (state.dictationError) {
       state.dictationError = null;
