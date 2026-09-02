@@ -45,11 +45,25 @@ export type BrowserDictationFailure = {
 export type BrowserDictationControllerOptions = {
   enabled: boolean;
   onCommit: (text: string) => void;
+  /**
+   * Runs only for an explicit final browser-speech command such as
+   * "send message". The composer owns validation, so an empty draft remains
+   * harmless and cannot create an empty run.
+   */
+  onSend: () => void;
   onError: (message: string, failure: BrowserDictationFailure) => void;
   onStateChange: () => void;
 };
 
 const RESTART_DELAY_MS = 250;
+
+const BROWSER_DICTATION_SEND_COMMAND =
+  "(?:send|submit)(?:\\s+(?:(?:a|the)\\s+)?(?:message|prompt|it|this))?";
+const browserDictationSendCommand = new RegExp(`^${BROWSER_DICTATION_SEND_COMMAND}[.!?]*$`, "i");
+const browserDictationSendCommandAfterPunctuation = new RegExp(
+  `^([\\s\\S]*?(?:[.!?]+|\\b(?:period|full stop|question mark|exclamation point|exclamation mark|new line|newline|new paragraph)\\b))\\s+(${BROWSER_DICTATION_SEND_COMMAND})[.!?]*$`,
+  "i",
+);
 
 function browserSpeechConstructor(): BrowserSpeechRecognitionConstructor | null {
   const speechGlobal = globalThis as BrowserSpeechWindow;
@@ -99,6 +113,31 @@ export function collectBrowserSpeechRecognitionText(event: BrowserSpeechRecognit
     finalText: finalParts.join(" ").trim(),
     interimText: interimParts.join(" ").trim(),
   };
+}
+
+/**
+ * Recognize an intentionally spoken send command without treating ordinary
+ * prose as executable. A command must be the entire final recognition result,
+ * or follow explicit punctuation in that same result. This lets someone say
+ * "summarize the update. Send prompt" hands-free, while prose such as
+ * "please send message details to the team" stays in the draft.
+ */
+export function splitBrowserDictationSendCommand(input: string): {
+  text: string;
+  shouldSend: boolean;
+} {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return { text: "", shouldSend: false };
+  }
+  if (browserDictationSendCommand.test(trimmed)) {
+    return { text: "", shouldSend: true };
+  }
+  const match = trimmed.match(browserDictationSendCommandAfterPunctuation);
+  if (!match?.[1]) {
+    return { text: trimmed, shouldSend: false };
+  }
+  return { text: match[1].trim(), shouldSend: true };
 }
 
 function replacePunctuationCommands(input: string): string {
@@ -285,7 +324,18 @@ export class BrowserDictationController {
       const { finalText, interimText } = collectBrowserSpeechRecognitionText(event);
       this.interim = interimText;
       if (finalText) {
-        this.options.onCommit(finalText);
+        const { text, shouldSend } = splitBrowserDictationSendCommand(finalText);
+        if (text) {
+          this.options.onCommit(text);
+        }
+        if (shouldSend) {
+          // Stop first so one stale browser event cannot add text after the
+          // composer submits. onCommit is synchronous and updates the live
+          // textarea before onSend reads it.
+          this.stop();
+          this.options.onSend();
+          return;
+        }
       }
       this.options.onStateChange();
     };

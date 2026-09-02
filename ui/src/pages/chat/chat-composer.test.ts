@@ -451,6 +451,55 @@ describe("renderChatComposer controls", () => {
     expect(onToggleRealtimeTalk).not.toHaveBeenCalled();
   });
 
+  it("submits the dictated draft hands-free when browser speech hears a final send command", () => {
+    class FakeSpeechRecognition implements BrowserSpeechRecognition {
+      static instance: FakeSpeechRecognition | null = null;
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      onresult: ((event: BrowserSpeechRecognitionResultEvent) => void) | null = null;
+      onerror: ((event: { error?: string; message?: string }) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn();
+
+      constructor() {
+        FakeSpeechRecognition.instance = this;
+      }
+    }
+
+    vi.stubGlobal("SpeechRecognition", FakeSpeechRecognition);
+    const onDraftChange = vi.fn();
+    const onSend = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const composerProps = props({ onDraftChange, onSend });
+    const draw = () => render(renderChatComposer(composerProps), container);
+    composerProps.onRequestUpdate = draw;
+    draw();
+
+    const microphone = button(container, t("chat.composer.startVoiceInput"));
+    microphone.dispatchEvent(dictationPointer("pointerdown", 15));
+    microphone.click();
+    const recognition = FakeSpeechRecognition.instance;
+    if (!recognition) {
+      throw new Error("expected browser dictation recognition");
+    }
+
+    recognition.onresult?.({
+      resultIndex: 0,
+      results: { length: 1, 0: { isFinal: true, 0: { transcript: "Explain this regression" } } },
+    });
+    recognition.onresult?.({
+      resultIndex: 0,
+      results: { length: 1, 0: { isFinal: true, 0: { transcript: "send a message" } } },
+    });
+
+    expect(onDraftChange).toHaveBeenLastCalledWith("Explain this regression");
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(recognition.stop).toHaveBeenCalledOnce();
+  });
+
   it("keeps the dictation button stable through hold progress and latch", async () => {
     vi.useFakeTimers();
     openMicrophoneMock.mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });

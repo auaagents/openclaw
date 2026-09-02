@@ -610,6 +610,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       commitDictation(transcript, (text, existing) =>
         formatBrowserDictationTranscript(text, existing),
       ),
+    onSend: () => handleSend(),
     onError: reportDictationError,
     onStateChange: requestUpdate,
   };

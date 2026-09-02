@@ -4,6 +4,7 @@ import {
   BrowserDictationController,
   collectBrowserSpeechRecognitionText,
   formatBrowserDictationTranscript,
+  splitBrowserDictationSendCommand,
   supportsBrowserDictation,
   type BrowserSpeechRecognition,
   type BrowserSpeechRecognitionResultEvent,
@@ -47,6 +48,7 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: (text) => onCommit(formatBrowserDictationTranscript(text)),
+      onSend: vi.fn(),
       onError: vi.fn(),
       onStateChange,
     });
@@ -75,6 +77,7 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: vi.fn(),
+      onSend: vi.fn(),
       onError: vi.fn(),
       onStateChange: vi.fn(),
     });
@@ -99,6 +102,7 @@ describe("browser dictation", () => {
     const controller = new BrowserDictationController({
       enabled: true,
       onCommit: vi.fn(),
+      onSend: vi.fn(),
       onError,
       onStateChange: vi.fn(),
     });
@@ -125,5 +129,47 @@ describe("browser dictation", () => {
         },
       }),
     ).toEqual({ finalText: "final", interimText: "partial" });
+  });
+
+  it("recognizes explicit final send commands without treating ordinary prose as a command", () => {
+    expect(splitBrowserDictationSendCommand("Send a message.")).toEqual({
+      text: "",
+      shouldSend: true,
+    });
+    expect(splitBrowserDictationSendCommand("Summarize the update. Send prompt")).toEqual({
+      text: "Summarize the update.",
+      shouldSend: true,
+    });
+    expect(splitBrowserDictationSendCommand("Please send message details to the team")).toEqual({
+      text: "Please send message details to the team",
+      shouldSend: false,
+    });
+  });
+
+  it("commits speech before submitting on a final send command, then stops listening", () => {
+    const onCommit = vi.fn();
+    const onSend = vi.fn();
+    const controller = new BrowserDictationController({
+      enabled: true,
+      onCommit,
+      onSend,
+      onError: vi.fn(),
+      onStateChange: vi.fn(),
+    });
+    controller.startDirect();
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("expected browser recognition to start");
+    }
+
+    recognition.onresult?.({
+      resultIndex: 0,
+      results: { length: 1, 0: result("Explain the failure period send a prompt", true) },
+    });
+
+    expect(onCommit).toHaveBeenCalledWith("Explain the failure period");
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(recognition.stop).toHaveBeenCalledOnce();
+    expect(controller.active).toBe(false);
   });
 });
