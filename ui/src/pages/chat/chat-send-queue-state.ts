@@ -52,6 +52,11 @@ export function setChatError(
   host.chatError = message;
 }
 
+type PendingSendMetadata = {
+  mentions?: readonly HumanMention[];
+  voiceHandoff?: boolean;
+};
+
 export function createPendingSendMessage(
   host: ChatHost,
   text: string,
@@ -64,10 +69,9 @@ export function createPendingSendMessage(
   queueMode?: ChatQueueItem["queueMode"],
   intent?: ChatQueueItem["intent"],
   expectedLeafEntryId?: string | null,
-  mentions?: readonly HumanMention[],
-  voiceHandoffRequested?: boolean,
+  metadata?: PendingSendMetadata,
 ): { item: ChatQueueItem; admission: ReturnType<typeof captureChatOutboxAdmission> } | null {
-  const submitted = trimHumanMentions(text, mentions);
+  const submitted = trimHumanMentions(text, metadata?.mentions);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
   if (!submitted.text && !hasAttachments) {
     return null;
@@ -92,7 +96,7 @@ export function createPendingSendMessage(
       ? { intent, ...(host.currentSessionId ? { sessionId: host.currentSessionId } : {}) }
       : {}),
     ...(intent && expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
-    ...(voiceHandoffRequested ? { voiceHandoffRequested: true } : {}),
+    ...(metadata?.voiceHandoff ? { voiceHandoffRequested: true } : {}),
     sendSubmittedAtMs: submittedAtMs,
     ...admission.scope,
     ...(sender ? { sender } : {}),

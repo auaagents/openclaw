@@ -11,7 +11,6 @@ import { renderSessionProgressCard } from "../../../components/session-progress-
 import { t } from "../../../i18n/index.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import "../../../styles/chat/reply-preview.css";
-import type { ComposerDictationController } from "../composer-dictation.ts";
 import { insertComposerDictation } from "../composer-dictation.ts";
 import {
   handleChatAttachmentPaste,
