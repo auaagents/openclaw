@@ -112,7 +112,7 @@ describe("hands-free browser dictation", () => {
       },
     });
 
-    expect(onDraftChange).toHaveBeenCalledWith("Hello, openclaw.");
+    expect(onDraftChange).toHaveBeenCalledWith("Hello, openclaw.", undefined);
     expect(onToggleRealtimeTalk).not.toHaveBeenCalled();
   });
 
@@ -146,7 +146,7 @@ describe("hands-free browser dictation", () => {
       results: { length: 1, 0: { isFinal: true, 0: { transcript: "send a message" } } },
     });
 
-    expect(onDraftChange).toHaveBeenLastCalledWith("Explain this regression");
+    expect(onDraftChange).toHaveBeenLastCalledWith("Explain this regression", undefined);
     expect(onSend).toHaveBeenCalledOnce();
     expect(recognition.stop).toHaveBeenCalledOnce();
 
@@ -161,7 +161,7 @@ describe("hands-free browser dictation", () => {
         content: [
           {
             type: "output_text",
-            text: "The regression is fixed and ready to verify.",
+            text: "Voice handoff: The regression is fixed and ready to verify.",
             textSignature: JSON.stringify({ v: 1, phase: "final_answer" }),
           },
         ],
@@ -171,7 +171,7 @@ describe("hands-free browser dictation", () => {
 
     await vi.waitFor(() =>
       expect(request).toHaveBeenCalledWith("tts.speak", {
-        text: "Response complete. The regression is fixed and ready to verify.",
+        text: "The regression is fixed and ready to verify.",
         provider: "microsoft",
         voiceId: "en-US-JennyNeural",
       }),
