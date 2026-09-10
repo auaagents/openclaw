@@ -57,6 +57,12 @@ import { scheduleChatScroll } from "./scroll.ts";
 
 registerChatMessageMetadataEnglish();
 
+type PendingSendMetadata = {
+  mentions?: readonly HumanMention[];
+  workContext?: ChatWorkContext;
+  voiceHandoff?: boolean;
+};
+
 export function createPendingSendMessage(
   host: ChatHost,
   text: string,
@@ -69,11 +75,9 @@ export function createPendingSendMessage(
   queueMode?: ChatQueueItem["queueMode"],
   intent?: ChatQueueItem["intent"],
   expectedLeafEntryId?: string | null,
-  mentions?: readonly HumanMention[],
-  workContext?: ChatWorkContext,
-  voiceHandoffRequested?: boolean,
+  metadata?: PendingSendMetadata,
 ): { item: ChatQueueItem; admission: ReturnType<typeof captureChatOutboxAdmission> } | null {
-  const submitted = trimHumanMentions(text, mentions);
+  const submitted = trimHumanMentions(text, metadata?.mentions);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
   if (!submitted.text && !hasAttachments) {
     return null;
@@ -86,7 +90,7 @@ export function createPendingSendMessage(
     id: generateUUID(),
     text: intent ? text : submitted.text,
     ...(submitted.mentions ? { mentions: submitted.mentions } : {}),
-    ...(workContext ? { workContext } : {}),
+    ...(metadata?.workContext ? { workContext: metadata.workContext } : {}),
     createdAt: Date.now(),
     ...(resumedOrderKey !== undefined ? { orderKey: resumedOrderKey } : {}),
     attachments: hasAttachments ? attachments : undefined,
@@ -99,7 +103,7 @@ export function createPendingSendMessage(
       ? { intent, ...(host.currentSessionId ? { sessionId: host.currentSessionId } : {}) }
       : {}),
     ...(intent && expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
-    ...(voiceHandoffRequested ? { voiceHandoffRequested: true } : {}),
+    ...(metadata?.voiceHandoff ? { voiceHandoffRequested: true } : {}),
     sendSubmittedAtMs: submittedAtMs,
     ...admission.scope,
     ...(sender ? { sender } : {}),

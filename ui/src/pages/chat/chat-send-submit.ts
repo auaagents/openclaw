@@ -102,7 +102,6 @@ export type ChatSendSubmitOptions = {
   restoreDraft?: boolean;
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
-  /** Browser hands-free dictation requests an explicit final voice handoff. */
   voiceHandoff?: boolean;
 };
 
@@ -145,8 +144,7 @@ export async function handleSendChat(
   const submitted = trimHumanMentions(rawMessage, draftMentions);
   const userMessage = intent ? rawMessage : submitted.text;
   const submittedAtMs = controlUiNowMs();
-  const submittedSessionKey = host.sessionKey;
-  const submittedClient = host.client;
+  const { sessionKey: submittedSessionKey, client: submittedClient } = host;
   const submittedEpoch = host.connectionEpoch;
   const submittedOwnerIsCurrent = captureOutboxPayloadOwner(host);
   let expectedLeafEntryId = resolveDisplayedLeafEntryId(host);
@@ -574,9 +572,11 @@ export async function handleSendChat(
       activeRunQueueMode,
       intent,
       expectedLeafEntryId,
-      effectiveMentions,
-      workContext,
-      opts?.voiceHandoff === true,
+      {
+        mentions: effectiveMentions,
+        workContext,
+        voiceHandoff: opts?.voiceHandoff === true,
+      },
     );
     if (!submission) {
       return;

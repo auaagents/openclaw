@@ -68,6 +68,7 @@ const browserDictationSendCommandAfterPunctuation = new RegExp(
 );
 
 function browserSpeechConstructor(): BrowserSpeechRecognitionConstructor | null {
+  // SAFETY: these optional browser-hosted SpeechRecognition globals are feature-detected first.
   const speechGlobal = globalThis as BrowserSpeechWindow;
   return speechGlobal.SpeechRecognition ?? speechGlobal.webkitSpeechRecognition ?? null;
 }
@@ -347,6 +348,7 @@ export class BrowserDictationController {
   private attachRecognition(recognition: BrowserSpeechRecognition): void {
     this.recognition = recognition;
     recognition.addEventListener("result", (rawEvent) => {
+      // SAFETY: this callback is registered for the result event and reads only optional fields.
       const event = rawEvent as BrowserSpeechRecognitionResultEvent;
       if (this.recognition !== recognition || !this.listening) {
         return;
@@ -372,6 +374,7 @@ export class BrowserDictationController {
       this.options.onStateChange();
     });
     recognition.addEventListener("error", (rawEvent) => {
+      // SAFETY: this callback is registered for the error event and reads only optional strings.
       const event = rawEvent as { error?: string; message?: string };
       if (this.recognition !== recognition || !this.listening) {
         return;

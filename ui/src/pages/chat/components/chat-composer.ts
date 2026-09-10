@@ -1,9 +1,5 @@
 import { nothing } from "lit";
-import {
-  normalizeChatSendShortcut,
-  patchSettings,
-  type ChatFollowUpMode,
-} from "../../../app/settings.ts";
+import { normalizeChatSendShortcut, type ChatFollowUpMode } from "../../../app/settings.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerChatGoalsEnglish } from "../../../i18n/locales/en-chat-goals.ts";
@@ -15,15 +11,10 @@ import {
 } from "../../../lib/chat/commands.ts";
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
-import {
-  formatBrowserDictationTranscript,
-  supportsBrowserDictation,
-} from "../browser-dictation.ts";
-import { insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
 import { renderContextNotice } from "./chat-composer-context.ts";
-import { renderMicrophonePicker, type ChatRunControlsProps } from "./chat-composer-controls.ts";
+import type { ChatRunControlsProps } from "./chat-composer-controls.ts";
 import {
   adjustTextareaHeight,
   disconnectTextareaOverflowObserver,
@@ -34,11 +25,7 @@ import {
   scheduleTextareaHeightAdjustment,
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
-import {
-  advanceHandsFreeDictationForComposer,
-  createHandsFreeBrowserDictationOptions,
-  syncComposerDictationController,
-} from "./chat-composer-hands-free.ts";
+import { setupComposerDictation } from "./chat-composer-hands-free.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
@@ -503,170 +490,19 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     startRealtimeTalk();
   };
-  const selectedMicrophoneId = props.realtimeTalkInputDeviceId?.trim() ?? "";
-  const browserDictationAvailable = supportsBrowserDictation();
-  const dictationSource = browserDictationAvailable
-    ? "browser"
-    : props.onToggleRealtimeTalk && props.composerHoldToRecord !== false
-      ? "gateway"
-      : null;
-  const microphonePicker =
-    props.onToggleRealtimeTalk && dictationSource !== "browser"
-      ? renderMicrophonePicker({
-          devices: devicePicker.devices,
-          loading: devicePicker.loading,
-          open: devicePicker.open,
-          selectedDeviceId: selectedMicrophoneId,
-          voiceActive: Boolean(props.realtimeTalkActive),
-          issue: devicePicker.issue,
-          holdToDictate: props.composerHoldToRecord !== false,
-          realtimeStatus: devicePicker.realtimeStatus,
-          dictationStatus: devicePicker.dictationStatus,
-          onOpen: devicePicker.handleOpen,
-          onClose: devicePicker.handleClose,
-          onSelect: (deviceId: string) => {
-            patchSettings({ realtimeTalkInputDeviceId: deviceId.trim() || undefined });
-            devicePicker.handleClose();
-          },
-          onHoldToDictateChange: (enabled: boolean) => {
-            if (props.onComposerHoldToRecordChange) {
-              props.onComposerHoldToRecordChange(enabled);
-            } else {
-              patchSettings({ composerHoldToRecord: enabled });
-            }
-            requestUpdate();
-          },
-          onOpenTalkSettings: props.onOpenTalkSettings,
-          onOpenDictationSettings: props.onOpenDictationSettings,
-        })
-      : nothing;
-  const commitDictation = (
-    transcript: string,
-    formatter?: (text: string, existing: string) => string,
-    late?: true,
-  ) => {
-    const target = state.composerTextarea;
-    const captured = state.dictationSelection;
-    const liveValue = target?.value ?? props.getDraft?.() ?? props.draft;
-    // Stop unlocks the draft. Preserve later edits by using the live caret only
-    // when a delayed final finds that the captured draft has changed.
-    const selection =
-      captured && (!late || captured.value === liveValue)
-        ? captured
-        : {
-            start: target?.selectionStart ?? liveValue.length,
-            end: target?.selectionEnd ?? liveValue.length,
-            value: liveValue,
-          };
-    const formatted = formatter?.(transcript, selection.value) ?? transcript;
-    if (!formatted) {
-      return;
-    }
-    const insertion = insertComposerDictation(
-      selection.value,
-      formatted,
-      selection.start,
-      selection.end,
-    );
-    if (target) {
-      target.value = insertion.value;
-      adjustTextareaHeight(target);
-    }
-    commitComposerDraft(props, insertion.value);
-    state.dictationSelection = null;
-    requestUpdate();
-    queueMicrotask(() => {
-      const textarea = state.composerTextarea;
-      if (!textarea) {
-        return;
-      }
-      textarea.focus({ preventScroll: true });
-      textarea.selectionStart = insertion.caret;
-      textarea.selectionEnd = insertion.caret;
+  const { microphonePicker, dictation, dictationSource, handleDictationPointerDown } =
+    setupComposerDictation({
+      state,
+      props,
+      visibleDraft,
+      devicePicker,
+      startRealtimeTalk,
+      handleVoicePrimaryAction,
+      submitHandsFree: handleHandsFreeSend,
+      isBusy,
+      hasTerminalStatus,
+      requestUpdate,
     });
-  };
-  const reportDictationError = (
-    message: string,
-    failure: { kind: "interrupted" | "start"; preservesText: boolean },
-  ) => {
-    const recovery =
-      failure.kind === "interrupted" && failure.preservesText
-        ? t("chat.composer.dictationInterruptedRecovery")
-        : t("chat.composer.dictationStartRecovery");
-    state.dictationError = `${message} ${recovery}`;
-    requestUpdate();
-  };
-  const gatewayDictationOptions = {
-    client: props.gatewayClient ?? null,
-    connected: props.connected,
-    enabled: props.composerHoldToRecord !== false,
-    dictationAvailable: devicePicker.dictationStatus === "ready",
-    realtimeTalkActive: props.realtimeTalkActive === true,
-    onCommit: (transcript: string, late?: true) => commitDictation(transcript, undefined, late),
-    onError: reportDictationError,
-    onStateChange: () => {
-      // A new dictation gesture retires an earlier Talk recovery offer before
-      // either can acquire another microphone, including queued button clicks.
-      if (state.dictation?.locksComposer) {
-        state.editRevision += 1;
-        props.onDismissRealtimeTalkError?.();
-      }
-      requestUpdate();
-    },
-    onDictationUnavailable: devicePicker.handleOpen,
-    // With an initial empty composer, this button retains the existing
-    // send-after-typing behavior until the host rerenders the primary actions.
-    // Once a draft is rendered, the separate voice control starts Talk directly.
-    onTap:
-      visibleDraft.trim() || props.attachments?.length
-        ? startRealtimeTalk
-        : handleVoicePrimaryAction,
-  };
-  const browserDictationOptions = createHandsFreeBrowserDictationOptions({
-    enabled: props.realtimeTalkActive !== true,
-    state,
-    messages: props.messages,
-    onCommit: (transcript) =>
-      commitDictation(transcript, (text, existing) =>
-        formatBrowserDictationTranscript(text, existing),
-      ),
-    submit: handleHandsFreeSend,
-    onError: reportDictationError,
-    onStateChange: requestUpdate,
-  });
-  const dictation = syncComposerDictationController({
-    state,
-    source: dictationSource,
-    browserOptions: browserDictationOptions,
-    gatewayOptions: gatewayDictationOptions,
-  });
-  advanceHandsFreeDictationForComposer({
-    state,
-    props,
-    dictation,
-    isBusy,
-    hasTerminalStatus,
-    requestUpdate,
-  });
-  const handleDictationPointerDown = (event: PointerEvent) => {
-    if (state.dictationError) {
-      state.dictationError = null;
-      requestUpdate();
-    }
-    const target = state.composerTextarea;
-    const selection = {
-      start: target?.selectionStart ?? visibleDraft.length,
-      end: target?.selectionEnd ?? visibleDraft.length,
-      value: target?.value ?? visibleDraft,
-    };
-    if (dictation?.handlePointerDown(event)) {
-      // Stop also emits pointerdown; only a new gesture owns a draft snapshot.
-      state.dictationSelection = selection;
-      if (target) {
-        target.readOnly = true;
-      }
-    }
-  };
   const runControlsProps: ChatRunControlsProps = {
     canAbort: showAbortableUi,
     canSend: canSubmitDraft(visibleDraft),
