@@ -447,7 +447,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
     if (goalComposer.activateDraft(draft, true)) {
-      return;
+      return false;
     }
     if (goalComposer.active) {
       void goalComposer.submit(submissionAction);

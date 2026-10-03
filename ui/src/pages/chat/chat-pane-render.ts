@@ -358,12 +358,9 @@ export class ChatPane extends ChatPaneLayoutRender {
       disabledBanner:
         sessionDisabledBanner ?? placementComposer.disabledBanner ?? modelUnavailableBanner,
     };
+    const canInteract = composerAvailability.canSend && !catalogKey && !suggestionViewer;
     const progressCardRefresh =
-      canDismissProgressCard &&
-      composerAvailability.canSend &&
-      !catalogKey &&
-      !suggestionViewer &&
-      progressPresentation
+      canDismissProgressCard && canInteract && progressPresentation
         ? this.captureProgressCardRefreshAction()
         : undefined;
     const selfProfileId = selfUser?.identity?.type === "profile" ? selfUser.identity.id : null;
@@ -432,8 +429,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       ...createChatQuestionActions({
         state,
         questionState: this.questionPromptState,
-        canSend:
-          composerAvailability.canSend && !catalogKey && !suggestionViewer && state.connected,
+        canSend: canInteract && state.connected,
         isCurrent: () => this.state === state,
       }),
       messages: catalogKey ? this.catalogMessages : state.chatMessages,
@@ -605,9 +601,7 @@ export class ChatPane extends ChatPaneLayoutRender {
                   submissionAction,
                 ),
       onSendHandsFree: () =>
-        !composerAvailability.canSend || catalogKey || suggestionViewer
-          ? undefined
-          : state.handleSendChat(undefined, { voiceHandoff: true }),
+        void (canInteract && state.handleSendChat(undefined, { voiceHandoff: true })),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => {
         if (!providerPaused) {
