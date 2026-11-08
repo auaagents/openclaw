@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { withTriageTerminal } from "../../commands/triage.test-support.js";
+import * as processAncestors from "../../infra/restart-stale-pids.js";
 import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import { defaultRuntime, ExitError } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
@@ -58,7 +59,7 @@ it.each(["runtime", "missing updater"] as const)(
     prompts.confirm.mockReset().mockResolvedValue(false);
     const message =
       failure === "runtime"
-        ? "Target package: openclaw@2026.9.4; Minimum Node engine: 24.16.0; Running Node: 22.23.2"
+        ? "Target package: openclaw@2026.9.4; Minimum Node engine: 24.22.1; Running Node: 22.23.2"
         : "Cannot locate the installed updater; run `openclaw doctor` before retrying.";
 
     await withTriageTerminal(true, async () => {
@@ -67,6 +68,10 @@ it.each(["runtime", "missing updater"] as const)(
           metadata.unavailable = true;
           if (failure === "missing updater") {
             mockProcessPlatform("linux");
+            vi.spyOn(processAncestors, "inspectSelfAndAncestorPidsSync").mockReturnValue({
+              pids: new Set([process.pid, 1]),
+              complete: true,
+            });
             vi.stubEnv("OPENCLAW_SYSTEMD_UNIT", "openclaw-gateway.service");
             try {
               await handoffUpdateFromGateway({

@@ -138,7 +138,7 @@ Configure the tunnel ingress rules to route only the webhook path:
    - `audienceType: "project-number"` → audience is the Cloud project number.
    - Add-on tokens under `app-url` additionally require `appPrincipal` set to the app's numeric OAuth 2.0 client ID (21 digits, not an email). Otherwise verification fails with a logged warning.
 4. Messages route by space:
-   - Spaces get per-space sessions `agent:<agentId>:googlechat:group:<spaceId>`. Replies go to the message thread.
+   - Spaces get per-space sessions `agent:<agentId>:googlechat:group:<spaceId>`. With `replyToMode: "first"` or `"all"`, automatic replies stay in the inbound thread. The default and explicit `"off"` modes keep replies top-level, whether typing indicators are enabled or disabled.
    - DMs collapse into the agent's main session by default. Set `session.dmScope` for per-peer DM sessions (see [Session](/concepts/session)).
 5. DM access is pairing by default. Unknown senders receive a pairing code. Approve with:
    - `openclaw pairing approve googlechat <code>`
@@ -203,7 +203,7 @@ Notes:
 - `dangerouslyAllowNameMatching` re-enables mutable email principal matching for allowlists (break-glass compatibility mode). Doctor warns about email entries.
 - Google Chat reaction actions are not exposed. The plugin uses service-account authentication, while Google Chat reaction endpoints require user authentication. Remove unsupported legacy reaction settings with `openclaw doctor --fix`.
 - Native approval cards use Google Chat `cardsV2` button clicks, not reaction events. Approvers come from `allowFrom` or `defaultTo` and must be stable numeric `users/<id>` values.
-- Message actions expose text `send` only. Google Chat attachment upload requires user authentication, while this plugin uses service-account authentication, so outbound file upload is not exposed.
+- Message actions expose `send`. Remote HTTP(S) attachments are delivered as visible links alongside their captions. Google Chat attachment upload requires user authentication, while this plugin uses service-account authentication, so local files and native uploads are not supported.
 - `typingIndicator`: `message` (default) posts a `_<Bot> is typing..._` placeholder and edits it into the first reply. `none` disables it. `reaction` requires user OAuth and currently falls back to `message` with a logged error under service-account auth.
 - OpenClaw downloads the first inbound attachment per message through the Chat API into the media pipeline. `mediaMaxMb` caps that download (default 20). Google Drive files are not downloaded. The agent receives an unavailable-attachment notice asking for a direct file upload instead. Other unsupported attachment sources receive the same upload guidance. Messages with multiple attachments include a counted notice for the additional attachments that were not processed. Oversize attachments retain their size-limit notice.
 - Bot-authored messages are ignored by default. With `allowBots: true`, accepted bot messages use shared [bot loop protection](/channels/bot-loop-protection): configure `channels.defaults.botLoopProtection`, then override with `channels.googlechat.botLoopProtection` or `channels.googlechat.groups.<space>.botLoopProtection`.

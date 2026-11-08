@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Creates isolated OpenClaw test HOME/state directories and shell snippets.
-import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -267,23 +265,6 @@ function renderExports(env: Record<string, string>) {
     .join("\n");
 }
 
-function renderAuthProfileSecretKeyExport() {
-  return [
-    'OPENCLAW_AUTH_PROFILE_SECRET_KEY_FILE="$OPENCLAW_TEST_STATE_HOME/.openclaw-test-auth-profile-secret-key"',
-    'if [ -s "$OPENCLAW_AUTH_PROFILE_SECRET_KEY_FILE" ]; then',
-    '  OPENCLAW_AUTH_PROFILE_SECRET_KEY="$(cat "$OPENCLAW_AUTH_PROFILE_SECRET_KEY_FILE")"',
-    "else",
-    '  OPENCLAW_AUTH_PROFILE_SECRET_KEY="$(od -An -N 32 -tx1 /dev/urandom | tr -d " \\n")"',
-    '  ( umask 077; printf "%s\\n" "$OPENCLAW_AUTH_PROFILE_SECRET_KEY" > "$OPENCLAW_AUTH_PROFILE_SECRET_KEY_FILE" )',
-    "fi",
-    'if [ -z "$OPENCLAW_AUTH_PROFILE_SECRET_KEY" ]; then',
-    '  echo "failed to generate OPENCLAW_AUTH_PROFILE_SECRET_KEY" >&2',
-    "  return 1 2>/dev/null || exit 1",
-    "fi",
-    "export OPENCLAW_AUTH_PROFILE_SECRET_KEY",
-  ];
-}
-
 function renderConfigWrite(configPathExpression: string, config: unknown) {
   if (config === undefined) {
     return "";
@@ -311,7 +292,6 @@ async function createState(options: TestStateOptions = {}) {
     OPENCLAW_HOME: home,
     OPENCLAW_STATE_DIR: stateDir,
     OPENCLAW_CONFIG_PATH: configPath,
-    OPENCLAW_AUTH_PROFILE_SECRET_KEY: randomBytes(32).toString("hex"),
     ...scenarioEnv(scenario),
   };
   await fs.mkdir(stateDir, { recursive: true });
@@ -351,7 +331,6 @@ function renderShellSnippet(options: TestStateOptions = {}) {
     'export OPENCLAW_HOME="$OPENCLAW_TEST_STATE_HOME"',
     'export OPENCLAW_STATE_DIR="$OPENCLAW_TEST_STATE_HOME/.openclaw"',
     'export OPENCLAW_CONFIG_PATH="$OPENCLAW_STATE_DIR/openclaw.json"',
-    ...renderAuthProfileSecretKeyExport(),
     'export OPENCLAW_TEST_WORKSPACE_DIR="$OPENCLAW_TEST_STATE_HOME/workspace"',
     'mkdir -p "$OPENCLAW_STATE_DIR" "$OPENCLAW_TEST_WORKSPACE_DIR"',
   ];
@@ -366,16 +345,6 @@ function renderShellSnippet(options: TestStateOptions = {}) {
 }
 
 function renderShellFunction() {
-  const survivor = upgradeSurvivorConfig();
-  const { entries, ...agents } = survivor.agents;
-  // The reusable function seeds published baselines that still use agents.list.
-  const legacySurvivor = {
-    ...survivor,
-    agents: {
-      ...agents,
-      list: Object.entries(entries).map(([id, agent]) => Object.assign({ id }, agent)),
-    },
-  };
   return `openclaw_test_state_create() {
   local raw_label="\${1:-state}"
   local label="$raw_label"
@@ -407,7 +376,6 @@ function renderShellFunction() {
   export OPENCLAW_HOME="$OPENCLAW_TEST_STATE_HOME"
   export OPENCLAW_STATE_DIR="$OPENCLAW_TEST_STATE_HOME/.openclaw"
   export OPENCLAW_CONFIG_PATH="$OPENCLAW_STATE_DIR/openclaw.json"
-  ${renderAuthProfileSecretKeyExport().join("\n  ")}
   export OPENCLAW_TEST_WORKSPACE_DIR="$OPENCLAW_TEST_STATE_HOME/workspace"
   unset OPENCLAW_AGENT_DIR
   unset OPENCLAW_SERVICE_REPAIR_POLICY
@@ -420,7 +388,7 @@ function renderShellFunction() {
       ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', scenarioConfig("update-stable"))}
       ;;
     upgrade-survivor)
-      ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', legacySurvivor)}
+      ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', upgradeSurvivorConfig())}
       ;;
     gateway-loopback)
       ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', scenarioConfig("gateway-loopback"))}

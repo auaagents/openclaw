@@ -16,6 +16,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { resolveEffectiveToolPolicy } from "./agent-tools.policy.js";
+import { expectOwnerGated } from "./agent-tools.turn-authority.test-support.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import type { SandboxDockerConfig } from "./sandbox/types.docker.js";
 import { createRestrictedAgentSandboxConfig } from "./test-helpers/sandbox-agent-config-fixtures.js";
@@ -120,18 +121,17 @@ describe("Agent-specific tool filtering", () => {
 
   function createMainAgentConfig(params: {
     tools: NonNullable<OpenClawConfig["tools"]>;
-    agentTools?: NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number]["tools"];
+    agentTools?: NonNullable<NonNullable<OpenClawConfig["agents"]>["entries"]>[string]["tools"];
   }): OpenClawConfig {
     return {
       tools: params.tools,
       agents: {
-        list: [
-          {
-            id: "main",
+        entries: {
+          main: {
             workspace: "~/openclaw",
             ...(params.agentTools ? { tools: params.agentTools } : {}),
           },
-        ],
+        },
       },
     };
   }
@@ -176,15 +176,13 @@ describe("Agent-specific tool filtering", () => {
   it("uses the configured default agent for lean local-model filtering on legacy session keys", () => {
     const cfg: OpenClawConfig = {
       agents: {
-        list: [
-          {
-            id: "local",
-            default: true,
+        entries: {
+          local: {
             experimental: {
               localModelLean: true,
             },
           },
-        ],
+        },
       },
     };
 
@@ -259,16 +257,15 @@ describe("Agent-specific tool filtering", () => {
         deny: [],
       },
       agents: {
-        list: [
-          {
-            id: "restricted",
+        entries: {
+          restricted: {
             workspace: "~/openclaw-restricted",
             tools: {
               allow: ["read"], // Agent override: only read
               deny: ["exec", "write", "edit"],
             },
           },
-        ],
+        },
       },
     };
 
@@ -337,21 +334,19 @@ describe("Agent-specific tool filtering", () => {
   it("should resolve different tool policies for different agents", () => {
     const cfg: OpenClawConfig = {
       agents: {
-        list: [
-          {
-            id: "main",
+        entries: {
+          main: {
             workspace: "~/openclaw",
             // No tools restriction - all tools available
           },
-          {
-            id: "family",
+          family: {
             workspace: "~/openclaw-family",
             tools: {
               allow: ["read"],
               deny: ["exec", "write", "edit", "process"],
             },
           },
-        ],
+        },
       },
     };
 
@@ -458,7 +453,7 @@ describe("Agent-specific tool filtering", () => {
     expect(names).not.toContain("process");
   });
 
-  it("keeps core tools for owner WebChat while restricting non-owners", () => {
+  it("keeps core tools for owner WebChat while restricting non-owners", async () => {
     const cfg: OpenClawConfig = {
       tools: {
         toolsBySender: {
@@ -473,29 +468,27 @@ describe("Agent-specific tool filtering", () => {
         senderIsOwner,
         workspaceDir: "/tmp/test-webchat-owner-policy",
         agentDir: "/tmp/agent-webchat-owner-policy",
-      }).map((tool) => tool.name);
+      });
+    const ownerOnly = [
+      "automations",
+      "gateway",
+      "nodes",
+      "openclaw",
+      "conversations_list",
+      "conversations_send",
+      "conversations_turn",
+    ];
 
-    const ownerTools = createWebChatTools(true);
+    const ownerTools = createWebChatTools(true).map((tool) => tool.name);
     const nonOwnerTools = createWebChatTools(false);
-
-    expect(ownerTools).toContain("exec");
-    expect(ownerTools).toContain("process");
-    expect(ownerTools).toContain("automations");
-    expect(ownerTools).toContain("gateway");
-    expect(ownerTools).toContain("nodes");
-    expect(ownerTools).toContain("openclaw");
-    expect(ownerTools).toContain("conversations_list");
-    expect(ownerTools).toContain("conversations_send");
-    expect(ownerTools).toContain("conversations_turn");
-    expect(nonOwnerTools).not.toContain("exec");
-    expect(nonOwnerTools).not.toContain("process");
-    expect(nonOwnerTools).not.toContain("automations");
-    expect(nonOwnerTools).not.toContain("gateway");
-    expect(nonOwnerTools).not.toContain("nodes");
-    expect(nonOwnerTools).not.toContain("openclaw");
-    expect(nonOwnerTools).not.toContain("conversations_list");
-    expect(nonOwnerTools).not.toContain("conversations_send");
-    expect(nonOwnerTools).not.toContain("conversations_turn");
+    for (const name of ["exec", "process", ...ownerOnly]) {
+      expect(ownerTools).toContain(name);
+    }
+    for (const name of ["exec", "process"]) {
+      expect(nonOwnerTools.map((tool) => tool.name)).not.toContain(name);
+    }
+    // Owner-only tools keep their definitions for prompt-cache stability; calls are gated.
+    await expectOwnerGated(nonOwnerTools, ...ownerOnly);
   });
 
   it("should let agent per-sender policy override global sender wildcard", () => {
@@ -506,9 +499,8 @@ describe("Agent-specific tool filtering", () => {
         },
       },
       agents: {
-        list: [
-          {
-            id: "trusted",
+        entries: {
+          trusted: {
             workspace: "~/openclaw-trusted",
             tools: {
               toolsBySender: {
@@ -516,7 +508,7 @@ describe("Agent-specific tool filtering", () => {
               },
             },
           },
-        ],
+        },
       },
     };
 
@@ -644,15 +636,14 @@ describe("Agent-specific tool filtering", () => {
         deny: ["browser"], // Global deny
       },
       agents: {
-        list: [
-          {
-            id: "work",
+        entries: {
+          work: {
             workspace: "~/openclaw-work",
             tools: {
               deny: ["exec", "process"], // Agent deny (override)
             },
           },
-        ],
+        },
       },
     };
 

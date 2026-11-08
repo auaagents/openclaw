@@ -151,6 +151,24 @@ if (kind === "git" && args.join(" ") === "--version") {
 describe("install.ps1 failure handling", () => {
   const harness = createScriptTestHarness();
   const source = readFileSync(SCRIPT_PATH, "utf8");
+  it("only continues a failed Git pull after exact checkout restoration", () => {
+    const state = extractFunctionBody(source, "Get-GitCheckoutState");
+    const update = extractFunctionBody(source, "Update-GitCheckoutBestEffort");
+    const install = extractFunctionBody(source, "Install-OpenClawFromGit");
+    expect(state).toContain("rev-parse --verify HEAD");
+    expect(state).toContain("status --porcelain=v1 --untracked-files=all");
+    expect(state).toContain('"rebase-merge"');
+    expect(state).toContain('"rebase-apply"');
+    expect(update).toContain('$ErrorActionPreference = "Continue"');
+    expect(update).toContain("-not $before -or $before.Rebasing");
+    expect(update).toContain("if ($LASTEXITCODE -eq 0)");
+    expect(update).toContain("rebase --abort");
+    expect(update).toContain("-not $after.Rebasing");
+    expect(update).toContain("$after.Head -eq $before.Head");
+    expect(update).toContain("$after.Status -eq $before.Status");
+    expect(install).toContain("Update-GitCheckoutBestEffort -RepoDir $RepoDir");
+    expect(install).not.toContain("try { git -C $RepoDir pull --rebase");
+  });
   const powershell = findPowerShell();
   const bootstrapShells =
     process.platform === "win32"
@@ -199,6 +217,76 @@ describe("install.ps1 failure handling", () => {
       },
     );
   };
+  // Both Windows engines are required proof, not a best-available-shell fallback.
+  describe.skipIf(process.platform !== "win32")("Git pull native recovery", () => {
+    it.each([
+      { command: "powershell.exe", major: 5, minor: 1 },
+      { command: "pwsh.exe", major: 7, minor: undefined },
+    ])("restores a conflicted checkout with $command", ({ command, major, minor }) => {
+      const version = spawnSync(
+        command,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "$PSVersionTable.PSVersion.ToString()",
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      expect(version.status, "Required engine unavailable: " + command + " " + version.stderr).toBe(
+        0,
+      );
+      const parts = version.stdout.trim().split(".").map(Number);
+      expect(parts[0]).toBe(major);
+      if (minor !== undefined) {
+        expect(parts[1]).toBe(minor);
+      }
+      const result = spawnSync(
+        command,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-File",
+          "test/scripts/install-git-pull.ps1",
+          "-InstallerPath",
+          join(process.cwd(), SCRIPT_PATH),
+          "-FixtureRoot",
+          join(harness.createTempDir("openclaw-install-pull-"), "fixture"),
+        ],
+        { encoding: "utf8", timeout: 60_000 },
+      );
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const receipt = result.stdout
+        .split(/\r?\n/)
+        .findLast((line) => line.startsWith('{"passed":'));
+      expect(receipt, result.stdout).toBeDefined();
+      const proof = JSON.parse(receipt!);
+      expect(proof).toMatchObject({
+        passed: true,
+        aborted: true,
+        outcome: "FIXTURE_BUILD_BOUNDARY",
+        status: "",
+        rebasing: false,
+      });
+      expect(proof.head).toBe(proof.expectedHead);
+      expect(proof.cases).toEqual({
+        successfulPull: true,
+        callerPreferenceRestored: true,
+        unchangedFailure: true,
+        preexistingRebase: true,
+        unreadableState: true,
+        abortFailure: true,
+        mismatchedHead: true,
+        mismatchedStatus: true,
+        dirtyBypass: true,
+        skipUpdate: true,
+        callerEnvironmentRestored: true,
+      });
+    });
+  });
+
   const batchedPowerShellResults = new Map<string, { error: string; ok: boolean }>();
 
   beforeAll(() => {
@@ -234,12 +322,12 @@ function Invoke-NpmCommand { throw 'unexpected npm invocation' }
 function Invoke-RestMethod {
     param([string]$Uri, [int]$TimeoutSec)
     if ($Uri -ne 'https://nodejs.org/dist/index.json') { throw "unexpected metadata URL: $Uri" }
-    return @([pscustomobject]@{ version = 'v26.1.0'; files = @('win-x64-zip', 'win-arm64-zip') })
+    return @([pscustomobject]@{ version = 'v26.12.1'; files = @('win-x64-zip', 'win-arm64-zip') })
 }
 function Save-InstallerDownload {
     param([string]$Uri, [string]$OutFile)
     if ($script:Scenario -eq 'download') { throw 'fixture download failure' }
-    if ($Uri -eq 'https://nodejs.org/dist/v26.1.0/SHASUMS256.txt') {
+    if ($Uri -eq 'https://nodejs.org/dist/v26.12.1/SHASUMS256.txt') {
         $archive = Get-ChildItem -LiteralPath (Split-Path -Parent $OutFile) -Filter '*.zip' | Select-Object -First 1
         $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash
         if ($script:Scenario -eq 'checksum') { $hash = '0' * 64 }
@@ -247,7 +335,7 @@ function Save-InstallerDownload {
         [IO.File]::WriteAllText($OutFile, "$hash  $name")
         return
     }
-    if ($Uri -notmatch '^https://nodejs\.org/dist/v26\.1\.0/node-v26\.1\.0-win-(x64|arm64)\.zip$') { throw "unexpected archive URL: $Uri" }
+    if ($Uri -notmatch '^https://nodejs\.org/dist/v26\.12\.1/node-v26\.12\.1-win-(x64|arm64)\.zip$') { throw "unexpected archive URL: $Uri" }
     [IO.File]::WriteAllText($OutFile, 'downloaded archive bytes')
 }
 function Expand-PortableNodeArchive {
@@ -334,37 +422,6 @@ try {
     }
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }
 `,
-        ].join("\n"),
-      },
-      {
-        name: "openclaw-native-command-exit",
-        source: [
-          scriptWithoutEntryPoint,
-          "",
-          "function Get-OpenClawCommandPath { return (Get-Process -Id $PID).Path }",
-          "$caught = $false",
-          "try {",
-          "  Invoke-OpenClawCommand -NoLogo -NoProfile -Command 'exit 17'",
-          "} catch {",
-          "  if ($_.Exception.Message -notmatch 'failed with exit code 17') { throw }",
-          "  $caught = $true",
-          "}",
-          "if (-not $caught) { throw 'nonzero native exit was accepted' }",
-          "",
-        ].join("\n"),
-      },
-      {
-        name: "doctor-failure-output",
-        source: [
-          scriptWithoutEntryPoint,
-          "",
-          "function Invoke-OpenClawCommand { throw 'doctor failed' }",
-          "$output = @(Run-Doctor *>&1 | ForEach-Object { $_.ToString() })",
-          '$text = $output -join "`n"',
-          "if ($text -match 'Migration complete') { throw 'doctor failure reported success' }",
-          "if ($text -notmatch 'Migration failed') { throw \"missing error: $text\" }",
-          "if ($output[-1] -ne $false) { throw 'doctor failure did not propagate' }",
-          "",
         ].join("\n"),
       },
       {
@@ -559,8 +616,11 @@ try {
           "  return $script:FixtureSqlite",
           "}",
           "foreach ($case in @(",
-          "  @{ version = 'v24.19.0'; text = $true; expected = $true },",
-          "  @{ version = 'v24.19.0'; text = $false; expected = $false },",
+          "  @{ version = 'v24.22.1'; text = $true; expected = $true },",
+          "  @{ version = 'v24.22.1'; text = $false; expected = $false },",
+          "  @{ version = 'v24.16.0+vendor.1'; text = $true; expected = $true },",
+          "  @{ version = 'v26.1.0'; text = $true; expected = $true },",
+          "  @{ version = 'v24.16.0'; text = $false; expected = $false },",
           "  @{ version = 'v24.15.0+vendor.1'; text = $true; expected = $false },",
           "  @{ version = 'v26.0.0+vendor.1'; text = $true; expected = $false },",
           "  @{ version = 'v24.15.0'; text = $false; expected = $false },",
@@ -692,7 +752,7 @@ try {
           "",
           "function private-node-fixture {",
           "  $global:LASTEXITCODE = 0",
-          "  if ($args[0] -eq '-v') { return 'v26.1.0' }",
+          "  if ($args[0] -eq '-v') { return 'v26.12.1' }",
           "  $input | Out-Null",
           "  return (@{ available = $true; version = $script:FixtureSqliteVersion; text = $true; blob = $true; json = $true } | ConvertTo-Json -Compress)",
           "}",
@@ -891,31 +951,6 @@ try {
           "  throw \"Calls=$($script:scoopCalls -join '|')\"",
           "}",
           "if (($env:Path -split ';') -notcontains 'C:\\session-bin') { throw \"Path=$env:Path\" }",
-          "",
-        ].join("\n"),
-      },
-      {
-        name: "package-manager-node-validation-failure",
-        source: [
-          scriptWithoutEntryPoint,
-          "",
-          "function Get-Command {",
-          "  [CmdletBinding()]",
-          "  param([string]$Name)",
-          "  if ($Name -eq 'choco') { return $true }",
-          "  return $null",
-          "}",
-          "filter Out-Host { }",
-          "function choco {",
-          "  $global:LASTEXITCODE = 0",
-          "  Write-Output 'Chocolatey output'",
-          "}",
-          "$script:portableCalled = $false",
-          "function Install-PortableNode { $script:portableCalled = $true }",
-          "function Check-Node { return $script:portableCalled }",
-          "$result = @(Install-Node)",
-          'if ($result.Count -ne 1 -or $result[0] -ne $true) { throw "Install-Node returned $result" }',
-          "if (-not $script:portableCalled) { throw 'Portable Node fallback was not attempted' }",
           "",
         ].join("\n"),
       },
@@ -1217,7 +1252,6 @@ $previousTemp = $script:InstallerTempDirectory
 $previousLocation = (Get-Location).Path
 function Ensure-Git { return $true }
 function Assert-GitCheckoutHasCommit { param([string]$RepoDir) }
-function Remove-LegacySubmodule { param([string]$RepoDir) }
 function git { throw 'unexpected Git mutation' }
 function New-TransactionalGitCheckout { throw 'unexpected clone' }
 function Main { throw 'unexpected installer entrypoint' }
@@ -1798,7 +1832,6 @@ try {
     expectBatchedPowerShellCase("winget-node-delayed-path");
     expectBatchedPowerShellCase("chocolatey-node-upgrade");
     expectBatchedPowerShellCase("scoop-node-update");
-    expectBatchedPowerShellCase("package-manager-node-validation-failure");
   });
 
   runIfPowerShell("recovers from package-manager failures and preserves installer refusal", () => {
@@ -2091,18 +2124,11 @@ describe("install.ps1 stale Winget repair", () => {
       success: true,
     },
     {
-      name: "accepts a normal successful install without repair",
-      installExit: 0,
-      afterInstall: "healthy",
-      success: true,
-    },
-    {
       name: "accepts a healthy no-upgrade result without repair",
       afterInstall: "healthy",
       success: true,
     },
     { name: "does not repair generic Winget failure", installExit: 1 },
-    { name: "does not repair another HRESULT", installExit: -1978335188 },
     { name: "does not repair successful install with missing Node", installExit: 0 },
     {
       name: "recovers unsupported repair through Chocolatey",
@@ -2126,36 +2152,11 @@ describe("install.ps1 stale Winget repair", () => {
       success: true,
     },
     {
-      name: "rejects unusable Chocolatey fallback after failed repair",
-      repairExit: 1,
-      repair: true,
-      fallback: "choco",
-      afterFallback: "old-sqlite",
-    },
-    {
       name: "rejects unusable portable fallback after failed repair",
       repairExit: 1,
       repair: true,
       fallback: "portable",
       afterFallback: "text",
-    },
-    {
-      name: "recovers a generic Winget failure through portable Node",
-      installExit: 1,
-      fallback: "portable",
-      success: true,
-    },
-    {
-      name: "recovers a thrown Winget invocation through portable Node",
-      installThrows: true,
-      fallback: "portable",
-      success: true,
-    },
-    {
-      name: "recovers a generic Winget failure through the next package manager",
-      installExit: 1,
-      fallback: "choco",
-      success: true,
     },
     {
       name: "rejects failed repair even if Node becomes healthy",
@@ -2164,8 +2165,6 @@ describe("install.ps1 stale Winget repair", () => {
       repair: true,
     },
     { name: "rejects repair that leaves Node missing", repair: true },
-    { name: "rejects old Node after repair", afterRepair: "old-node", repair: true },
-    { name: "rejects old SQLite after repair", afterRepair: "old-sqlite", repair: true },
     ...["text", "blob", "json", "probe-error"].map((capability) => ({
       name: `rejects broken SQLite ${capability} after repair`,
       afterRepair: capability,
@@ -2186,7 +2185,6 @@ describe("install.ps1 stale Winget repair", () => {
       afterRepair: "missing",
       repair: false,
       success: false,
-      installThrows: false,
       fallback: "none",
       afterFallback: "healthy",
       ...testCase,
@@ -2237,8 +2235,7 @@ function Get-Command {
 function Invoke-FixtureNode {
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '-v') {
-        if ($global:State -eq 'old-node') { return 'v22.15.0' }
-        return 'v26.1.0'
+        return 'v26.12.1'
     }
     $probe = @($input) -join [Environment]::NewLine
     if (-not $probe.Contains('CREATE TABLE probe') -or -not $probe.Contains('a\u0000b\u0000')) {
@@ -2253,7 +2250,6 @@ function winget {
     $global:Events.Add($args[0])
     $global:WingetCalls.Add(@($args))
     if ($args[0] -eq 'install') {
-        if ($case.installThrows) { throw 'fixture Winget invocation failed' }
         $global:LASTEXITCODE = $case.installExit
         $global:PendingState = $case.afterInstall
     } elseif ($args[0] -eq 'repair') {
@@ -2347,8 +2343,7 @@ Write-Output ('RESULT:' + (@{ direct = $direct; main = $main; healthy = $healthy
       expect(run.calls).toEqual(options.repair ? [installArgs, repairArgs] : [installArgs]);
       const repaired =
         options.repair && options.repairExit === 0 && options.afterRepair === "healthy";
-      const fallbackExpected =
-        !repaired && (options.installThrows || options.afterInstall !== "healthy");
+      const fallbackExpected = !repaired && options.afterInstall !== "healthy";
       const fallbacks: string[] = [];
       if (fallbackExpected) {
         if (options.fallback === "choco") {

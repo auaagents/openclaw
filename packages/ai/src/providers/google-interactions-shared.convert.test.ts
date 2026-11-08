@@ -1,12 +1,11 @@
+import { DEFAULT_MISSING_TOOL_RESULT_TEXT } from "@openclaw/llm-core/types";
 import { describe, expect, it } from "vitest";
-import type {
-  AssistantMessage,
-  Context,
-  Model,
-  Tool,
-  ToolResultMessage,
-  UserMessage,
-} from "../types.js";
+import {
+  PROVIDER_MODEL_INPUT,
+  type ProviderContext,
+  type ProviderModel,
+} from "../provider-types.js";
+import type { AssistantMessage, Context, Model, ToolResultMessage, UserMessage } from "../types.js";
 import {
   buildGoogleInteractionsParams,
   resolveGoogleApiClientHeaders,
@@ -67,6 +66,12 @@ describe("buildGoogleInteractionsParams", () => {
           { type: "thinking", thinking: "internal thoughts" },
         ]),
         user("What is 2+2?"),
+        {
+          role: "user",
+          content: "OpenClaw runtime context:\ncurrent runtime facts",
+          timestamp: 1,
+          runtimeContext: {},
+        },
       ],
     };
 
@@ -90,46 +95,55 @@ describe("buildGoogleInteractionsParams", () => {
         type: "user_input",
         content: [{ type: "text", text: "What is 2+2?" }],
       },
+      {
+        type: "user_input",
+        content: [{ type: "text", text: "OpenClaw runtime context:\ncurrent runtime facts" }],
+      },
     ]);
   });
 
-  it("converts tool definitions to Interactions functions", () => {
-    const tool: Tool = {
-      name: "getWeather",
-      description: "Get weather",
-      parameters: {
-        type: "object",
-        properties: { city: { type: "string" } },
-        required: ["city"],
-      },
+  it("projects native user video as a private slot placeholder", () => {
+    const context: ProviderContext = {
+      messages: [
+        {
+          role: "user",
+          timestamp: 0,
+          content: [
+            { type: "text", text: "Describe this clip" },
+            { type: "video", mimeType: "video/mp4", data: "dmlkZW8=" },
+          ],
+        },
+      ],
     };
-    const params = buildGoogleInteractionsParams(model, {
-      messages: [user("Weather?")],
-      tools: [tool],
-    });
-    expect(params.tools).toEqual([{ type: "function", ...tool }]);
-  });
-
-  it("preserves tool result failures in function_result steps", () => {
-    const params = buildGoogleInteractionsParams(
-      model,
+    const videoInput: ProviderModel["input"] = ["text", "image", "video"];
+    const withVideo = { [PROVIDER_MODEL_INPUT]: videoInput };
+    expect(buildGoogleInteractionsParams(model, context, withVideo).input).toEqual([
       {
-        messages: [
-          user("Use a tool"),
-          assistant([{ type: "toolCall", id: "call_failed", name: "lookup", arguments: {} }]),
-          toolResult("call_failed", "lookup", [{ type: "text", text: "lookup failed" }], true),
+        type: "user_input",
+        content: [
+          { type: "text", text: "Describe this clip" },
+          { type: "text", text: "(video omitted: native video slot unavailable)" },
         ],
       },
-      {},
-    );
+    ]);
+  });
 
-    expect(params.input.at(-1)).toEqual({
-      type: "function_result",
-      call_id: "call_failed",
-      name: "lookup",
-      result: [{ type: "text", text: "lookup failed" }],
-      is_error: true,
-    });
+  it("omits user video when the provider-normalized model has no video input", () => {
+    const context: ProviderContext = {
+      messages: [
+        {
+          role: "user",
+          timestamp: 0,
+          content: [{ type: "video", mimeType: "video/mp4", data: "dmlkZW8=" }],
+        },
+      ],
+    };
+    expect(buildGoogleInteractionsParams(model, context).input).toEqual([
+      {
+        type: "user_input",
+        content: [{ type: "text", text: "(video omitted: provider does not support video input)" }],
+      },
+    ]);
   });
 
   it("preserves chronological model step order in stateless replay", () => {
@@ -201,7 +215,7 @@ describe("buildGoogleInteractionsParams", () => {
         type: "function_result",
         call_id: "call_123",
         name: "getWeather",
-        result: [{ type: "text", text: "No result provided" }],
+        result: [{ type: "text", text: DEFAULT_MISSING_TOOL_RESULT_TEXT }],
         is_error: true,
       },
     ]);
@@ -212,18 +226,6 @@ describe("buildGoogleInteractionsParams", () => {
       baseUrl: "https://generativelanguage.googleapis.com",
     });
     expect(headers["x-goog-api-client"]).toMatch(/^openclaw\//u);
-  });
-
-  it("rejects unsupported explicit prompt caching locally", () => {
-    const context: Context = {
-      messages: [user("Hello")],
-    };
-
-    expect(() =>
-      buildGoogleInteractionsParams(model, context, {
-        cachedContent: "cachedContents/123",
-      } as Record<string, unknown>),
-    ).toThrow(/Explicit prompt caching/);
   });
 
   it("maps an explicit tool choice into generation_config", () => {
@@ -301,7 +303,7 @@ describe("buildGoogleInteractionsParams", () => {
         type: "function_result",
         call_id: "call_legacy",
         name: "lookup",
-        result: [{ type: "text", text: "No result provided" }],
+        result: [{ type: "text", text: DEFAULT_MISSING_TOOL_RESULT_TEXT }],
         is_error: true,
       },
     ]);

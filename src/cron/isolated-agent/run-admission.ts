@@ -1,28 +1,6 @@
-import {
-  type AdmittedRunContext,
-  createOperationalRunInstanceRef,
-  prepareAgentRunAdmission,
-} from "../../agents/admitted-run-context.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
-import type { ScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
-import { isRuntimeToolAllowed } from "../../agents/tool-policy-match.js";
-import { withPostAdmissionExecutionOwnerBinding } from "../../audit/execution-owner-binding.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { CronAuthenticatedChannelRequester } from "../../gateway/cron-creator-authority-grant.types.js";
-import {
-  mintMessageActionTurnCapability,
-  revokeMessageActionTurnCapability,
-} from "../../gateway/message-action-turn-capability.js";
-import {
-  bindGatewayContextResolver,
-  getPluginRuntimeGatewayRequestScope,
-} from "../../plugins/runtime/gateway-request-scope.js";
-import {
-  captureCronJobMessageActionAuthority,
-  captureCronJobMessageSourceAuthority,
-} from "../active-jobs.js";
+import { resolvePreparedSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import type { CronRuntimeAuthority } from "../runtime-authority.js";
-import type { CronExecutionIdentityAdmission } from "../service/state.js";
 
 export function assertCronRuntimeAuthorityCandidate(params: {
   authority?: CronRuntimeAuthority;
@@ -40,80 +18,31 @@ export function assertCronRuntimeAuthorityCandidate(params: {
   }
 }
 
-/** Owns one prompt admission and its private message grant through settlement. */
-export function prepareCronPromptRunAdmission(params: {
-  admissionSource?: AdmittedRunContext["admissionSource"];
-  cfg: OpenClawConfig;
-  agentId: string;
-  runId: string;
-  sessionId: string;
-  sessionKey: string;
-  jobId: string;
-  channelRequester?: CronAuthenticatedChannelRequester;
-  toolsAllow?: string[];
-  scheduledToolPolicy?: ScheduledToolPolicyContext;
-  executionIdentity?: CronExecutionIdentityAdmission;
-}) {
-  const { runId, scheduledToolPolicy } = params;
-  const operationalRunInstance = createOperationalRunInstanceRef(runId);
-  const resolveGatewayContext = getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
-  const basePreparedRunAdmission = prepareAgentRunAdmission({
-    operationalRunInstance,
-    admissionSource: params.admissionSource,
-    cfg: params.cfg,
-    facts: {
-      runId,
-      agentId: params.agentId,
-      ingress: params.executionIdentity?.ingress ?? {
-        kind: "schedule",
-        boundary: "cron.isolated-agent",
-        state: "present",
-      },
-      ...(params.executionIdentity?.invoker ? { invoker: params.executionIdentity.invoker } : {}),
-    },
-    onAdmitted: (admitted) => bindGatewayContextResolver(admitted, resolveGatewayContext),
-  });
-  const preparedRunAdmission = params.executionIdentity?.onPostAdmission
-    ? withPostAdmissionExecutionOwnerBinding(
-        basePreparedRunAdmission,
-        params.executionIdentity.onPostAdmission,
-      )
-    : basePreparedRunAdmission;
-  const scheduledMessageAuthority =
-    scheduledToolPolicy && isRuntimeToolAllowed("message", params.toolsAllow)
-      ? captureCronJobMessageActionAuthority({ jobId: params.jobId, operationalRunInstance })
-      : undefined;
-  const scheduledMessageSourceAuthority = scheduledMessageAuthority
-    ? captureCronJobMessageSourceAuthority({ jobId: params.jobId, operationalRunInstance })
-    : undefined;
-  // This opaque token remains unusable until this exact operational instance
-  // is admitted by the live occurrence. Both runners redeem the same host grant.
-  const messageActionTurnCapability =
-    scheduledMessageAuthority && scheduledToolPolicy
-      ? mintMessageActionTurnCapability({
-          agentId: params.agentId,
-          runId,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-          requesterAccountId:
-            scheduledToolPolicy.mode === "account" ? scheduledToolPolicy.ownerAccountId : undefined,
-          scheduled: {
-            policy: scheduledToolPolicy,
-            assertCurrent: scheduledMessageAuthority,
-            ...(scheduledMessageSourceAuthority
-              ? { assertSourceCurrent: scheduledMessageSourceAuthority }
-              : {}),
-            ...(params.channelRequester ? { channelRequester: params.channelRequester } : {}),
-          },
-          expiresWithRun: true,
-        })
-      : undefined;
+export type CronSandboxPlacement = {
+  sessionSandboxRequired?: boolean;
+  sessionSandboxed: boolean;
+};
+
+export function resolveCronSandboxPlacement(
+  params: Parameters<typeof resolvePreparedSandboxRuntimeStatus>[0],
+): CronSandboxPlacement {
+  const status = resolvePreparedSandboxRuntimeStatus(params);
   return {
-    preparedRunAdmission,
-    messageActionTurnCapability,
-    close: () => {
-      revokeMessageActionTurnCapability(messageActionTurnCapability);
-      preparedRunAdmission.close();
-    },
+    sessionSandboxRequired: status.sandboxRequired,
+    sessionSandboxed: status.sandboxed,
   };
+}
+
+export function assertCronCandidateSandboxPlacement(params: {
+  sessionSandboxRequired?: boolean;
+  sessionSandboxed: boolean;
+  cliExecution: boolean;
+  executionProvider: string;
+}): void {
+  if (!params.cliExecution || (!params.sessionSandboxed && !params.sessionSandboxRequired)) {
+    return;
+  }
+  throw new AgentHarnessPreflightError(
+    `This automation belongs to a sandboxed session, but resolved execution provider ${params.executionProvider} runs on the host and cannot honor the sandbox. Override agents.entries.<id>.subagents.model, agents.defaults.subagents.model, or the automation payload model with an API-backed provider (and clear any pinned CLI runtime override), or change the agent's sandbox policy explicitly.`,
+  );
 }

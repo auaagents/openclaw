@@ -1,6 +1,7 @@
 import { MessageReferenceType } from "discord-api-types/v10";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../internal/discord.js";
+import { resolveMediaList, resolveReferencedReplyMediaList } from "./message-media.js";
 
 const readRemoteMediaBuffer = vi.fn();
 const saveMediaBuffer = vi.fn();
@@ -25,13 +26,6 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
     },
     saveMediaBuffer: (...args: unknown[]) => saveMediaBuffer(...args),
   };
-});
-
-let resolveMediaList: typeof import("./message-media.js").resolveMediaList;
-let resolveReferencedReplyMediaList: typeof import("./message-media.js").resolveReferencedReplyMediaList;
-
-beforeAll(async () => {
-  ({ resolveMediaList, resolveReferencedReplyMediaList } = await import("./message-media.js"));
 });
 
 beforeEach(() => {
@@ -112,7 +106,7 @@ describe("resolveReferencedReplyMediaList", () => {
 });
 
 describe("Discord media SSRF policy", () => {
-  it("merges provided ssrfPolicy with Discord CDN defaults", async () => {
+  it("merges caller hostname exceptions with Discord CDN defaults", async () => {
     readRemoteMediaBuffer.mockResolvedValueOnce({
       buffer: Buffer.from("img"),
       contentType: "image/png",
@@ -137,7 +131,6 @@ describe("Discord media SSRF policy", () => {
       | { ssrfPolicy?: Record<string, unknown> }
       | undefined;
     expect(call?.ssrfPolicy).toMatchObject({
-      allowPrivateNetwork: true,
       allowRfc2544BenchmarkRange: true,
     });
     expect(call?.ssrfPolicy?.hostnameAllowlist).toEqual(

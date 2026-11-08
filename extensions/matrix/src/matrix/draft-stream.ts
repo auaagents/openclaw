@@ -64,9 +64,6 @@ export function createMatrixDraftStream(params: {
       );
       return false;
     }
-    if (sendFailed) {
-      return false;
-    }
     if (preparedText.trimmedText === lastSentText) {
       return true;
     }
@@ -114,8 +111,10 @@ export function createMatrixDraftStream(params: {
     clear,
     retire,
     cleanupPending,
+    resetMessage,
   } = createFinalizableDraftLifecycle({
     throttleMs: DEFAULT_THROTTLE_MS,
+    coalesceInFlight: true,
     state: streamState,
     sendOrEditStreamMessage: sendOrEdit,
     readMessageId: () => currentEventId,
@@ -166,14 +165,10 @@ export function createMatrixDraftStream(params: {
   };
 
   const resetCurrentMessage = (): void => {
-    currentEventId = undefined;
-    lastSentText = "";
-    lastSentContent = "";
+    resetMessage();
     sendFailed = false;
     finalizeInPlaceBlocked = false;
     liveFinalized = false;
-    loop.resetPending();
-    loop.resetThrottleWindow();
   };
   const reset = (): void => {
     // A new block consumes the first-only reply reference; retraction does not.

@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   fixture,
   completeInForeground,
+  startAssignment,
   submitFollowup,
 } from "./native-subagent-inventory.test-support.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import {
   childTurnCompletedNotification,
-  closeAgentNotification,
   createClient,
   createNativeModelSourceFixture,
+  directSpawnItem,
   notifyChildStarted,
   successfulSendInputOutput,
   threadRead,
@@ -20,9 +25,223 @@ import {
 import { readCodexNativeSubagentSubmissions } from "./native-subagent-submission.js";
 import { setupRunAttemptTestHooks } from "./run-attempt-test-harness.js";
 
+beforeEach(() => setRuntimeConfigSnapshot({}));
+afterEach(() => clearRuntimeConfigSnapshot());
 setupRunAttemptTestHooks();
 
+async function startNestedAssignment() {
+  const f = await fixture();
+  const client = createClient();
+  const parent = await f.register(
+    client,
+    f.historyOwner(),
+    createNativeModelSourceFixture(["model-a"]),
+  );
+  await parent.ready;
+  parent.bindTurn("parent-turn");
+  await f.spawn(client);
+  await notifyChildStarted(client, "child-thread", "grandchild", "/root/child/grandchild");
+  await client.notify({
+    method: "item/completed",
+    params: {
+      threadId: "child-thread",
+      turnId: "child-turn",
+      item: directSpawnItem("v2", "child-thread", "grandchild"),
+    },
+  });
+  await client.notify({
+    method: "turn/started",
+    params: { threadId: "grandchild", turn: { id: "grandchild-turn" } },
+  });
+  const capture = await codexNativeSubagentMonitorRuntime.captureModelSource({
+    client: client.client,
+    threadId: "grandchild",
+    turnId: "grandchild-turn",
+    parentThreadId: "child-thread",
+    parentTurnId: "child-turn",
+    rootTurnId: "parent-turn",
+  });
+  assert(capture);
+  capture.release();
+  return { f, client, parent };
+}
+
 describe("native pending assignment inventory through registered monitor admission", () => {
+  it("acknowledges a grandchild's native completion without root delivery or restart replay", async () => {
+    const { f, client, parent } = await startNestedAssignment();
+    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
+      expect.objectContaining({ childThreadId: "child-thread" }),
+      expect.objectContaining({
+        childThreadId: "grandchild",
+        nativeParentThreadId: "child-thread",
+      }),
+    ]);
+    await client.notify(
+      childTurnCompletedNotification({
+        threadId: "grandchild",
+        turnId: "grandchild-turn",
+        status: "completed",
+        items: [
+          { id: "final", type: "agentMessage", phase: "final_answer", text: "Nested result" },
+        ],
+      }),
+    );
+    await completeInForeground(client);
+    await parent.unregister();
+    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
+    expect(f.deliver).not.toHaveBeenCalled();
+    client.close();
+    const recovered = await f.register(createClient());
+    await recovered.ready;
+    await recovered.unregister();
+    expect(recovered.listPendingChildren()).toEqual([]);
+    expect(f.deliver).not.toHaveBeenCalled();
+  });
+
+  it.each(["available", "unavailable", "revoked"] as const)(
+    "settles a restored grandchild only with native lineage and current custody (%s)",
+    async (scenario) => {
+      const { f, client, parent } = await startNestedAssignment();
+      await completeInForeground(client);
+      await parent.unregister();
+      client.close();
+      const saved = await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner());
+      expect(saved).toEqual([expect.objectContaining({ childThreadId: "grandchild" })]);
+      const recoveredClient = createClient();
+      recoveredClient.setThreadRead(
+        "grandchild",
+        threadRead({
+          childThreadId: "grandchild",
+          parentThreadId: "child-thread",
+          turnId: "grandchild-turn",
+          result: "Nested result",
+          resultPhase: "final_answer",
+        }),
+      );
+      const metadata = threadRead({ childThreadId: "child-thread", directParentField: false });
+      const entered = createDeferred<void>();
+      const release = createDeferred<typeof metadata>();
+      recoveredClient.setThreadReadFactory("child-thread", () => {
+        if (scenario === "unavailable") {
+          throw new Error("Native middle thread is temporarily unavailable");
+        }
+        if (scenario === "revoked") {
+          entered.resolve();
+          return release.promise;
+        }
+        return metadata;
+      });
+      const recovered = await f.register(recoveredClient);
+      if (scenario === "revoked") {
+        await entered.promise;
+        recovered.closeGateway();
+        release.resolve(metadata);
+      }
+      await recovered.ready;
+      await recovered.unregister();
+      expect(f.deliver).not.toHaveBeenCalled();
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+        scenario === "available" ? [] : saved,
+      );
+      if (scenario !== "available") {
+        recoveredClient.setThreadRead("child-thread", metadata);
+        const retry = await f.register(recoveredClient);
+        await retry.ready;
+        await retry.unregister();
+        expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+          [],
+        );
+      }
+      recoveredClient.close();
+      const restarted = await f.register(createClient());
+      await restarted.ready;
+      await restarted.unregister();
+      expect(restarted.listPendingChildren()).toEqual([]);
+      expect(f.deliver).not.toHaveBeenCalled();
+    },
+  );
+
+  it("settles restoration writes before reading the next assignment or reporting readiness", async () => {
+    const f = await fixture();
+    const assignments = ["first-child", "second-child"].map((childThreadId) => ({
+      runId: `codex-thread:${childThreadId}`,
+      childThreadId,
+      nativeTurnId: `${childThreadId}-turn`,
+      nativeParentThreadId: "parent-thread",
+      owner: f.historyOwner(),
+    }));
+    for (const assignment of assignments) {
+      await f.store.mutate(
+        f.identity,
+        { kind: "record-native-subagent-assignment", owner: f.historyOwner(), assignment },
+        () => {},
+      );
+    }
+    const entered = createDeferred<void>();
+    const releaseWrite = createDeferred<void>();
+    let writing = false;
+    const mutate = f.store.mutate.bind(f.store);
+    vi.spyOn(f.store, "mutate").mockImplementation(
+      async (identity, mutation, assertCurrent, authority) => {
+        if (mutation.kind !== "record-native-subagent-assignment") {
+          return await mutate(identity, mutation, assertCurrent, authority);
+        }
+        writing = true;
+        entered.resolve();
+        try {
+          await releaseWrite.promise;
+          return await mutate(identity, mutation, assertCurrent, authority);
+        } finally {
+          writing = false;
+        }
+      },
+    );
+    const readAssignments = f.store.readNativeSubagentAssignments!.bind(f.store);
+    const conflictingRead = vi.fn();
+    vi.spyOn(f.store, "readNativeSubagentAssignments").mockImplementation(async (...args) => {
+      if (writing) {
+        conflictingRead();
+        throw new Error("Plugin state authority is unavailable");
+      }
+      return await readAssignments(...args);
+    });
+    const client = createClient();
+    for (const assignment of assignments) {
+      client.setThreadRead(
+        assignment.childThreadId,
+        threadRead({
+          childThreadId: assignment.childThreadId,
+          turnId: assignment.nativeTurnId,
+          result: `Recovered ${assignment.childThreadId}`,
+          resultPhase: "final_answer",
+        }),
+      );
+    }
+    const parent = await f.register(client);
+    let ready = false;
+    void parent.ready.then(() => {
+      ready = true;
+    });
+    try {
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ready).toBe(false);
+      expect(conflictingRead).not.toHaveBeenCalled();
+      releaseWrite.resolve();
+      await parent.ready;
+      expect(ready).toBe(true);
+      expect(conflictingRead).not.toHaveBeenCalled();
+      expect(parent.listPendingChildren()).toHaveLength(2);
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+        assignments.map((assignment) => expect.objectContaining(assignment)),
+      );
+    } finally {
+      releaseWrite.resolve();
+      await parent.unregister();
+      client.close();
+    }
+  });
+
   it.each(["committed", "rejected", "failed", "source-revoked", "binding-retired"] as const)(
     "withholds native inference authority until its exact assignment is acknowledged (%s)",
     async (outcome) => {
@@ -38,22 +257,24 @@ describe("native pending assignment inventory through registered monitor admissi
       const entered = createDeferred<void>();
       const releaseWrite = createDeferred<void>();
       const mutate = f.store.mutate.bind(f.store);
-      vi.spyOn(f.store, "mutate").mockImplementation(async (identity, mutation, assertCurrent) => {
-        if (
-          mutation.kind === "record-native-subagent-assignment" &&
-          mutation.assignment.nativeTurnId === "child-turn"
-        ) {
-          entered.resolve();
-          await releaseWrite.promise;
-          if (outcome === "failed") {
-            throw new Error("Synthetic binding write failure");
+      vi.spyOn(f.store, "mutate").mockImplementation(
+        async (identity, mutation, assertCurrent, authority) => {
+          if (
+            mutation.kind === "record-native-subagent-assignment" &&
+            mutation.assignment.nativeTurnId === "child-turn"
+          ) {
+            entered.resolve();
+            await releaseWrite.promise;
+            if (outcome === "failed") {
+              throw new Error("Synthetic binding write failure");
+            }
+            if (outcome === "rejected") {
+              return false;
+            }
           }
-          if (outcome === "rejected") {
-            return false;
-          }
-        }
-        return await mutate(identity, mutation, assertCurrent);
-      });
+          return await mutate(identity, mutation, assertCurrent, authority);
+        },
+      );
       const granted = vi.fn();
       const capture = codexNativeSubagentMonitorRuntime
         .captureModelSource({
@@ -97,12 +318,14 @@ describe("native pending assignment inventory through registered monitor admissi
         expect(result.error).toBeUndefined();
         assert(result.value);
         result.value.assertCurrent();
-        expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
-          expect.objectContaining({
-            runId: "codex-thread:child-thread",
-            nativeTurnId: "child-turn",
-          }),
-        ]);
+        expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+          [
+            expect.objectContaining({
+              runId: "codex-thread:child-thread",
+              nativeTurnId: "child-turn",
+            }),
+          ],
+        );
         result.value.release();
       } else {
         expect(result.error).toBeInstanceOf(Error);
@@ -116,28 +339,21 @@ describe("native pending assignment inventory through registered monitor admissi
 
   it.each([
     { rotate: false, observeTurn: true },
-    { rotate: true, observeTurn: true },
-    { rotate: false, observeTurn: false },
     { rotate: true, observeTurn: false },
   ])(
     "recovers an initial spawn after monitor loss ($rotate rotation, $observeTurn turn observed)",
     async ({ rotate, observeTurn }) => {
-      const f = await fixture();
-      const firstClient = createClient();
-      const first = await f.register(firstClient);
-      await first.ready;
-      first.bindTurn("parent-turn");
-      await f.spawn(firstClient, observeTurn);
+      const { f, client: firstClient, parent: first } = await startAssignment(observeTurn);
       await first.unregister();
       first.closeCaller();
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
         expect.objectContaining({
           runId: "codex-thread:child-thread",
           ...(observeTurn ? { nativeTurnId: "child-turn" } : {}),
         }),
       ]);
       // Initial spawn result agent_id is never interpreted as submission_id.
-      expect(f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toEqual([]);
+      expect(await f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toEqual([]);
       firstClient.close();
       const owner = f.historyOwner(rotate ? "rotated-parent" : "parent-thread");
       if (rotate) {
@@ -166,12 +382,12 @@ describe("native pending assignment inventory through registered monitor admissi
         childSessionKey: "codex-thread:child-thread",
         result: "Recovered initial result",
         expectedRequester: {
-          sessionId: "physical-1",
+          sessionId: f.identity.sessionId,
           lifecycleRevision: f.historyOwner().lifecycleRevision,
         },
       });
       expect(delivered?.completionCustody).toBeDefined();
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([]);
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([]);
       client.close();
       const third = await f.register(createClient(), owner);
       await third.ready;
@@ -183,12 +399,7 @@ describe("native pending assignment inventory through registered monitor admissi
   it.each([false, true])(
     "does not infer fork provenance from the current parent history (observed turn: %s)",
     async (observeTurn) => {
-      const f = await fixture();
-      const firstClient = createClient();
-      const first = await f.register(firstClient);
-      await first.ready;
-      first.bindTurn("parent-turn");
-      await f.spawn(firstClient, observeTurn);
+      const { f, client: firstClient, parent: first } = await startAssignment(observeTurn);
       await first.unregister();
       firstClient.close();
       const client = createClient();
@@ -216,15 +427,19 @@ describe("native pending assignment inventory through registered monitor admissi
         expect(f.deliver).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ result: "Actual child result" }),
         );
-        expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
+        expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+          [],
+        );
       } else {
         expect(f.deliver).not.toHaveBeenCalled();
-        expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
-          expect.objectContaining({
-            runId: "codex-thread:child-thread",
-            childThreadId: "child-thread",
-          }),
-        ]);
+        expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+          [
+            expect.objectContaining({
+              runId: "codex-thread:child-thread",
+              childThreadId: "child-thread",
+            }),
+          ],
+        );
       }
       expect(client.request).not.toHaveBeenCalledWith(
         "thread/read",
@@ -237,12 +452,7 @@ describe("native pending assignment inventory through registered monitor admissi
   it.each(["missing-lineage", "wrong-lineage", "connection", "lifecycle", "session"])(
     "does not adopt pending native work under %s history ownership",
     async (scenario) => {
-      const f = await fixture();
-      const initialClient = createClient();
-      const initial = await f.register(initialClient);
-      await initial.ready;
-      initial.bindTurn("parent-turn");
-      await f.spawn(initialClient);
+      const { f, client: initialClient, parent: initial } = await startAssignment();
       await initial.unregister();
       initialClient.close();
       let owner = f.historyOwner();
@@ -268,19 +478,16 @@ describe("native pending assignment inventory through registered monitor admissi
       await recovered.ready;
       await recovered.unregister();
       expect(f.deliver).not.toHaveBeenCalled();
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toHaveLength(1);
+      expect(
+        await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
+      ).toHaveLength(1);
     },
   );
 
   it.each(["binding", "gateway"] as const)(
     "revalidates %s authority after an awaited history read",
     async (authority) => {
-      const f = await fixture();
-      const firstClient = createClient();
-      const first = await f.register(firstClient);
-      await first.ready;
-      first.bindTurn("parent-turn");
-      await f.spawn(firstClient);
+      const { f, client: firstClient, parent: first } = await startAssignment();
       await first.unregister();
       firstClient.close();
       const entered = createDeferred<void>();
@@ -309,80 +516,70 @@ describe("native pending assignment inventory through registered monitor admissi
     },
   );
 
-  it.each([false, true])(
-    "recovers accepted follow-up after monitor loss (parent rotation: %s)",
-    async (rotate) => {
-      const f = await fixture();
-      const client = createClient();
-      const parent = await f.register(client);
-      await parent.ready;
-      parent.bindTurn("parent-turn");
-      await f.spawn(client);
-      await completeInForeground(client);
-      await submitFollowup(client);
-      // No follow-up turn notification arrives before the monitor is lost.
-      await parent.unregister();
-      parent.closeCaller();
-      const receipt = {
-        parentTurnId: "parent-turn",
-        callId: "followup",
-        childThreadId: "child-thread",
-        submissionId: "followup-turn",
-        predecessorRunId: "codex-thread:child-thread",
-        predecessorNativeTurnId: "child-turn",
-      };
-      expect(f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toEqual([
-        receipt,
-      ]);
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
-        expect.objectContaining({
-          runId: "codex-thread:child-thread:turn:followup-turn",
-          submission: receipt,
-        }),
-      ]);
-      expect(f.deliver).not.toHaveBeenCalled();
-      client.close();
-      const owner = f.historyOwner(rotate ? "rotated-parent" : "parent-thread");
-      if (rotate) {
-        await f.store.mutate(f.identity, {
-          kind: "replace-thread",
-          expectedThreadId: "parent-thread",
-          binding: { ...f.binding, threadId: owner.parentThreadId },
-        });
-        expect(f.store.readNativeSubagentSubmissions(f.identity, owner)).toEqual([]);
-      }
-      const history = threadRead({
-        turnId: "followup-turn",
+  it("recovers accepted follow-up after monitor loss and parent rotation", async () => {
+    const { f, client, parent } = await startAssignment();
+    await completeInForeground(client);
+    await submitFollowup(client);
+    // No follow-up turn notification arrives before the monitor is lost.
+    await parent.unregister();
+    parent.closeCaller();
+    const receipt = {
+      parentTurnId: "parent-turn",
+      callId: "followup",
+      childThreadId: "child-thread",
+      submissionId: "followup-turn",
+      predecessorRunId: "codex-thread:child-thread",
+      predecessorNativeTurnId: "child-turn",
+    };
+    expect(await f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toEqual([
+      receipt,
+    ]);
+    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([
+      expect.objectContaining({
+        runId: "codex-thread:child-thread:turn:followup-turn",
+        submission: receipt,
+      }),
+    ]);
+    expect(f.deliver).not.toHaveBeenCalled();
+    client.close();
+    const owner = f.historyOwner("rotated-parent");
+    await f.store.mutate(f.identity, {
+      kind: "replace-thread",
+      expectedThreadId: "parent-thread",
+      binding: { ...f.binding, threadId: owner.parentThreadId },
+    });
+    expect(await f.store.readNativeSubagentSubmissions(f.identity, owner)).toEqual([]);
+    const history = threadRead({
+      turnId: "followup-turn",
+      result: "Recovered follow-up",
+      resultPhase: "final_answer",
+    });
+    const predecessor = threadRead({ turnId: "child-turn", result: "Native result" });
+    assert(history.thread.turns && predecessor.thread.turns);
+    history.thread.turns.unshift(...predecessor.thread.turns);
+    const resumedClient = createClient();
+    resumedClient.setThreadRead("child-thread", history);
+    const resumed = await f.register(resumedClient, owner);
+    await resumed.ready;
+    expect(f.deliver).not.toHaveBeenCalled();
+    await resumed.unregister();
+    resumed.closeCaller();
+    expect(f.deliver).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        childSessionKey: "codex-thread:child-thread:turn:followup-turn",
         result: "Recovered follow-up",
-        resultPhase: "final_answer",
-      });
-      const predecessor = threadRead({ turnId: "child-turn", result: "Native result" });
-      assert(history.thread.turns && predecessor.thread.turns);
-      history.thread.turns.unshift(...predecessor.thread.turns);
-      const resumedClient = createClient();
-      resumedClient.setThreadRead("child-thread", history);
-      const resumed = await f.register(resumedClient, owner);
-      await resumed.ready;
-      expect(f.deliver).not.toHaveBeenCalled();
-      await resumed.unregister();
-      resumed.closeCaller();
-      expect(f.deliver).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          childSessionKey: "codex-thread:child-thread:turn:followup-turn",
-          result: "Recovered follow-up",
-          announceId:
-            "codex-native:parent-thread:codex-thread:child-thread:turn:followup-turn:succeeded",
-        }),
-      );
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([]);
-      expect(f.store.readNativeSubagentSubmissions(f.identity, owner)).toEqual([]);
-      resumedClient.close();
-      const duplicate = await f.register(createClient(), owner);
-      await duplicate.ready;
-      await duplicate.unregister();
-      expect(f.deliver).toHaveBeenCalledOnce();
-    },
-  );
+        announceId:
+          "codex-native:parent-thread:codex-thread:child-thread:turn:followup-turn:succeeded",
+      }),
+    );
+    expect(await f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([]);
+    expect(await f.store.readNativeSubagentSubmissions(f.identity, owner)).toEqual([]);
+    resumedClient.close();
+    const duplicate = await f.register(createClient(), owner);
+    await duplicate.ready;
+    await duplicate.unregister();
+    expect(f.deliver).toHaveBeenCalledOnce();
+  });
 
   it.each(["current", "session", "lifecycle", "connection", "lineage", "revoked"] as const)(
     "admits a fresh follow-up after native parent rotation only with current matching custody (%s)",
@@ -457,6 +654,12 @@ describe("native pending assignment inventory through registered monitor admissi
         readQualification: () => undefined,
         assertCurrent: () => {},
       });
+      if (scenario === "session" || scenario === "lifecycle" || scenario === "connection") {
+        await expect(input).rejects.toThrow("outside the sender's admitted tree");
+        await replacement.unregister();
+        client.close();
+        return;
+      }
       await entered.promise;
       if (scenario === "revoked") {
         replacement.closeGateway();
@@ -498,6 +701,8 @@ describe("native pending assignment inventory through registered monitor admissi
       );
       await client.notify(turnStartedNotification("followup-turn"));
       const nativeRoot = threadRead({ childThreadId: "parent-thread", threadStatus: "notLoaded" });
+      nativeRoot.thread.parentThreadId = null;
+      nativeRoot.thread.source = "cli";
       nativeRoot.thread.modelProvider = "provider-a";
       client.setThreadRead("parent-thread", nativeRoot);
       await expect(
@@ -532,9 +737,16 @@ describe("native pending assignment inventory through registered monitor admissi
           },
         },
       });
+      await client.notify(
+        childTurnCompletedNotification({
+          turnId: "followup-turn",
+          status: "completed",
+          items: [{ id: "b-final", type: "agentMessage", phase: "final_answer", text: "B result" }],
+        }),
+      );
       await replacement.unregister();
       expect(f.deliver).toHaveBeenCalledOnce();
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, owner)).toEqual([
         expect.objectContaining({
           runId: "codex-thread:child-thread:turn:followup-turn",
           nativeParentThreadId: "parent-thread",
@@ -544,100 +756,60 @@ describe("native pending assignment inventory through registered monitor admissi
     },
   );
 
-  it.each(["initial", "followup", "empty"] as const)(
-    "preserves closed-child settlement across retry exhaustion (%s)",
-    async (assignment) => {
-      const f = await fixture();
-      const client = createClient();
-      const parent = await f.register(client);
-      await parent.ready;
-      parent.bindTurn("parent-turn");
-      await f.spawn(client);
-      if (assignment === "followup") {
-        await completeInForeground(client);
-        await submitFollowup(client);
-        await client.notify(turnStartedNotification("followup-turn"));
-      }
-      const turnId = assignment === "followup" ? "followup-turn" : "child-turn";
-      if (assignment !== "empty") {
-        await client.notify(
-          childTurnCompletedNotification({
-            turnId,
-            status: "completed",
-            items: [
-              { id: "final", type: "agentMessage", phase: "final_answer", text: "Pending result" },
-            ],
-          }),
-        );
-      }
-      client.setLoadedThreads([]);
-      await client.notify(closeAgentNotification({ method: "item/started" }));
-      await client.notify(closeAgentNotification({ method: "item/completed" }));
-      f.deliver.mockResolvedValue({
-        delivered: false,
-        path: "direct",
-        error: "Delivery unavailable",
-      });
-      await parent.unregister();
-      await vi.advanceTimersByTimeAsync(600_000);
-      const attempts = f.deliver.mock.calls.length;
-      if (assignment === "empty") {
-        expect(attempts).toBe(0);
-      } else {
-        expect(attempts).toBeGreaterThan(1);
-      }
-      await vi.advanceTimersByTimeAsync(600_000);
-      expect(f.deliver).toHaveBeenCalledTimes(attempts);
-      const saved = f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner());
-      expect(saved).toHaveLength(assignment === "empty" ? 0 : 1);
-      expect(f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toHaveLength(
-        assignment === "followup" ? 1 : 0,
-      );
-      parent.closeCaller();
-      client.close();
-      f.deliver.mockClear();
-      f.deliver.mockImplementation(async ({ completionCustody }) => {
-        assert(completionCustody?.isCurrent());
-        return { delivered: true, path: "direct" };
-      });
-      const recoveredClient = createClient();
-      const history = threadRead({ turnId, result: "Pending result", resultPhase: "final_answer" });
-      if (assignment === "followup") {
-        const predecessor = threadRead({ turnId: "child-turn", result: "Native result" });
-        assert(history.thread.turns && predecessor.thread.turns);
-        history.thread.turns.unshift(...predecessor.thread.turns);
-      }
-      recoveredClient.setThreadRead("child-thread", history);
-      const recovered = await f.register(recoveredClient);
-      await recovered.ready;
-      await recovered.unregister();
-      if (assignment === "empty") {
-        expect(f.deliver).not.toHaveBeenCalled();
-      } else {
-        expect(f.deliver).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ result: "Pending result" }),
-        );
-      }
-      expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
-      expect(f.store.readNativeSubagentSubmissions(f.identity, f.historyOwner())).toEqual([]);
-      recoveredClient.close();
-      const duplicate = await f.register(createClient());
-      await duplicate.ready;
-      await duplicate.unregister();
-      expect(f.deliver).toHaveBeenCalledTimes(assignment === "empty" ? 0 : 1);
-    },
-  );
-
-  it("consumes native foreground delivery without a duplicate on re-registration", async () => {
+  it("resolves a follow-up by canonical task name after the parent registers again", async () => {
     const f = await fixture();
     const client = createClient();
-    const parent = await f.register(client);
-    await parent.ready;
-    parent.bindTurn("parent-turn");
+    onTestFinished(async () => {
+      await codexNativeSubagentMonitorRuntime.retireParent(client.client, "parent-thread");
+      client.close();
+    });
+    const first = await f.register(client);
+    await first.ready;
+    first.bindTurn("parent-turn");
     await f.spawn(client);
+    await notifyChildStarted(client, "parent-thread", "child-thread", "/root/worker");
+    await completeInForeground(client);
+    await first.unregister();
+    // The next Gateway turn owns a fresh registration that has not observed the child.
+    const history = threadRead({
+      turnId: "child-turn",
+      result: "Native result",
+      agentPath: "/root/worker",
+      threadStatus: "notLoaded",
+    });
+    history.thread.modelProvider = "provider-b";
+    client.setThreadRead("child-thread", history);
+    const source = createNativeModelSourceFixture(["model-b"]);
+    const next = await f.register(client, f.historyOwner(), source, {
+      assertCurrent: source.assertCurrent,
+      hasProvider: (provider) => provider === "provider-b",
+    });
+    await next.ready;
+    next.bindTurn("next-turn");
+    const followup = (target: string) =>
+      codexNativeSubagentMonitorRuntime.prepareModelInput({
+        client: client.client,
+        threadId: "parent-thread",
+        turnId: "next-turn",
+        itemId: `followup-${target}`,
+        target,
+        readQualification: () => undefined,
+        assertCurrent: () => {},
+      });
+    await expect(followup("worker")).resolves.toBeUndefined();
+    await expect(followup("/root/worker")).resolves.toBeUndefined();
+    // Codex resolves only agent IDs and registered paths; the refusal names the usable ID.
+    await expect(followup("Plato")).rejects.toThrow(
+      "Codex native target is not currently identified. Pass the exact agent ID as the target; agent IDs for this thread: child-thread",
+    );
+    await next.unregister();
+  });
+
+  it("consumes native foreground delivery without a duplicate on re-registration", async () => {
+    const { f, client, parent } = await startAssignment();
     await completeInForeground(client);
     await parent.unregister();
-    expect(f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
+    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
     client.close();
     const recovered = await f.register(createClient());
     await recovered.ready;

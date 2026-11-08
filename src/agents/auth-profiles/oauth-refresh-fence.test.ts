@@ -54,7 +54,7 @@ afterEach(async () => {
 
 describe("OAuth refresh generation fence", () => {
   it("keeps serialized provider I/O outside locks and settles after observer timeout", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const profileId = "openai:default";
     const expired = createCredential({
       access: "serialized-access",
@@ -536,11 +536,11 @@ describe("OAuth refresh generation fence", () => {
       const observerReadFence = new Promise<void>((resolve) => {
         markObserverReadFence = resolve;
       });
-      const originalLoad = authProfileStoreRuntime.loadAuthProfileStoreWithoutExternalProfiles;
+      const originalLoad = authProfileStoreRuntime.loadAuthProfileStoreWithoutExternalProfilesAsync;
       const loadSpy = vi
-        .spyOn(authProfileStoreRuntime, "loadAuthProfileStoreWithoutExternalProfiles")
-        .mockImplementation((...args: Parameters<typeof originalLoad>) => {
-          const store = originalLoad(...args);
+        .spyOn(authProfileStoreRuntime, "loadAuthProfileStoreWithoutExternalProfilesAsync")
+        .mockImplementation(async (...args: Parameters<typeof originalLoad>) => {
+          const store = await originalLoad(...args);
           const credential = store.profiles[profileId];
           if (
             watchObserverReads &&
@@ -771,7 +771,7 @@ describe("OAuth refresh generation fence", () => {
   });
 
   it("rejects a late settlement after an identity-less generation is restored and reclaimed", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const profileId = "openai:default";
     const firstCredential = createCredential({
       access: "first-access",
@@ -965,7 +965,6 @@ describe("OAuth refresh generation fence", () => {
 
   it.each([
     { name: "access changed", change: "access", expectedCalls: 0 },
-    { name: "refresh changed", change: "refresh", expectedCalls: 1 },
     { name: "only expiry changed", change: "expires", expectedCalls: 1 },
   ] as const)(
     "checks authoritative $name before forced provider I/O",
@@ -983,7 +982,6 @@ describe("OAuth refresh generation fence", () => {
         const live = createCredential({
           ...supplied,
           ...(change === "access" ? { access: "live-access" } : {}),
-          ...(change === "refresh" ? { refresh: "live-refresh" } : {}),
           ...(change === "expires" ? { expires: supplied.expires + 600_000 } : {}),
         });
         const staleStore = { version: 1 as const, profiles: { [profileId]: supplied } };

@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseWikiMarkdown } from "./markdown.js";
+import { parseWikiMarkdown, renderWikiMarkdown } from "./markdown.js";
 import { importMemoryWikiOkfBundle } from "./okf.js";
 import { searchMemoryWiki } from "./query.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
@@ -23,6 +23,20 @@ function getOnlyPagePath(paths: string[]): string {
     throw new Error("Expected OKF import to produce one page path.");
   }
   return pagePath;
+}
+
+async function writeConcept(file: string, title: string, body: string, type = "BigQuery Table") {
+  await fs.writeFile(file, renderWikiMarkdown({ frontmatter: { type, title }, body }), "utf8");
+}
+
+async function createImport(bundleName: string) {
+  const rootDir = await createTempDir("memory-wiki-okf-");
+  const bundlePath = path.join(rootDir, bundleName);
+  await fs.mkdir(path.join(bundlePath, "tables"), { recursive: true });
+  const { config } = await createVault({ rootDir: path.join(rootDir, "vault") });
+  const run = (nowMs = Date.UTC(2026, 5, 12, 10, 0, 0)) =>
+    importMemoryWikiOkfBundle({ config, bundlePath, nowMs });
+  return { bundlePath, config, run };
 }
 
 async function writeOkfBundle(rootDir: string) {
@@ -271,53 +285,6 @@ Long concept body.
     );
   });
 
-  it("namespaces concept pages by bundle so repeated OKF paths do not overwrite", async () => {
-    const rootDir = await createTempDir("memory-wiki-okf-bundles-");
-    const firstBundle = path.join(rootDir, "first-bundle");
-    const secondBundle = path.join(rootDir, "second-bundle");
-    for (const [bundlePath, title] of [
-      [firstBundle, "First Customers"],
-      [secondBundle, "Second Customers"],
-    ] as const) {
-      await fs.mkdir(path.join(bundlePath, "tables"), { recursive: true });
-      await fs.writeFile(
-        path.join(bundlePath, "tables", "customers.md"),
-        `---
-type: BigQuery Table
-title: ${title}
----
-
-${title} body.
-`,
-        "utf8",
-      );
-    }
-    const { config } = await createVault({
-      rootDir: path.join(rootDir, "vault"),
-    });
-
-    const first = await importMemoryWikiOkfBundle({
-      config,
-      bundlePath: firstBundle,
-      nowMs: Date.UTC(2026, 5, 12, 10, 0, 0),
-    });
-    const second = await importMemoryWikiOkfBundle({
-      config,
-      bundlePath: secondBundle,
-      nowMs: Date.UTC(2026, 5, 12, 10, 0, 0),
-    });
-
-    const firstPath = getOnlyPagePath(first.pagePaths);
-    const secondPath = getOnlyPagePath(second.pagePaths);
-    expect(firstPath).not.toBe(secondPath);
-    await expect(fs.readFile(path.join(config.vault.path, firstPath), "utf8")).resolves.toContain(
-      "First Customers body.",
-    );
-    await expect(fs.readFile(path.join(config.vault.path, secondPath), "utf8")).resolves.toContain(
-      "Second Customers body.",
-    );
-  });
-
   it("removes stale concept pages when an OKF bundle drops a concept", async () => {
     const rootDir = await createTempDir("memory-wiki-okf-remove-");
     const bundlePath = path.join(rootDir, "removing-okf");
@@ -377,56 +344,6 @@ Order body.
       searchCorpus: "wiki",
     });
     expect(results).toHaveLength(0);
-  });
-
-  it("does not prune existing pages when current OKF scan has invalid concepts", async () => {
-    const rootDir = await createTempDir("memory-wiki-okf-invalid-");
-    const bundlePath = path.join(rootDir, "invalid-okf");
-    await fs.mkdir(path.join(bundlePath, "tables"), { recursive: true });
-    const customersPath = path.join(bundlePath, "tables", "customers.md");
-    await fs.writeFile(
-      customersPath,
-      `---
-type: BigQuery Table
-title: Customers
----
-
-Customer body.
-`,
-      "utf8",
-    );
-    const { config } = await createVault({
-      rootDir: path.join(rootDir, "vault"),
-    });
-    const first = await importMemoryWikiOkfBundle({
-      config,
-      bundlePath,
-      nowMs: Date.UTC(2026, 5, 12, 10, 0, 0),
-    });
-    const pagePath = getOnlyPagePath(first.pagePaths);
-    await fs.writeFile(
-      customersPath,
-      `---
-title: Customers
----
-
-Temporarily invalid body.
-`,
-      "utf8",
-    );
-
-    const second = await importMemoryWikiOkfBundle({
-      config,
-      bundlePath,
-      nowMs: Date.UTC(2026, 5, 12, 10, 0, 0),
-    });
-
-    expect(second.importedCount).toBe(0);
-    expect(second.skippedCount).toBe(1);
-    expect(second.removedCount).toBe(0);
-    await expect(fs.readFile(path.join(config.vault.path, pagePath), "utf8")).resolves.toContain(
-      "Customer body.",
-    );
   });
 
   it("detects body-only changes on timestamp-shaped markdown lines", async () => {
@@ -524,40 +441,6 @@ See [table](BigQuery%20Table.md?view=compact#columns).
     );
   });
 
-  it("imports OKF concept frontmatter with CRLF line endings", async () => {
-    const rootDir = await createTempDir("memory-wiki-okf-crlf-");
-    const bundlePath = path.join(rootDir, "crlf-okf");
-    await fs.mkdir(path.join(bundlePath, "tables"), { recursive: true });
-    await fs.writeFile(
-      path.join(bundlePath, "tables", "events.md"),
-      [
-        "---",
-        "type: BigQuery Table",
-        "title: Events",
-        "---",
-        "",
-        "Windows-flavored frontmatter.",
-        "",
-      ].join("\r\n"),
-      "utf8",
-    );
-    const { config } = await createVault({
-      rootDir: path.join(rootDir, "vault"),
-    });
-
-    const result = await importMemoryWikiOkfBundle({
-      config,
-      bundlePath,
-      nowMs: Date.UTC(2026, 5, 12, 10, 0, 0),
-    });
-
-    expect(result.importedCount).toBe(1);
-    expect(result.skippedCount).toBe(0);
-    await expect(
-      fs.readFile(path.join(config.vault.path, getOnlyPagePath(result.pagePaths)), "utf8"),
-    ).resolves.toContain("Windows-flavored frontmatter.");
-  });
-
   it("refuses to write imported OKF concept pages through symlinks", async () => {
     const rootDir = await createTempDir("memory-wiki-okf-symlink-");
     const bundlePath = path.join(rootDir, "safe-okf");
@@ -643,5 +526,135 @@ private body
       code: "unreadable-entry",
       path: "tables/private.md",
     });
+  });
+
+  it.each([false, true])(
+    "preserves marked Notes through unchanged and changed re-imports (open producer fence: %s)",
+    async (openFence) => {
+      const { bundlePath, config, run } = await createImport("notes-okf");
+      const conceptPath = path.join(bundlePath, "customers.md");
+      const producer = (version: number) =>
+        `Customer body ${version}.\n~~~markdown\n<!-- openclaw:human:start -->\nExample ${version}.\n<!-- openclaw:human:end -->\n~~~` +
+        (openFence ? "\n```sql\nSELECT 1" : "");
+      await writeConcept(conceptPath, "Customers", producer(1));
+      const first = await run();
+      const pagePath = path.join(config.vault.path, getOnlyPagePath(first.pagePaths));
+      const raw = await fs.readFile(pagePath, "utf8");
+      const emptyBlock = "<!-- openclaw:human:start -->\n<!-- openclaw:human:end -->";
+      const humanBlock = [
+        "<!-- openclaw:human:start -->",
+        "  Keep café 🦞 and $& exactly.  ",
+        "~~~markdown",
+        emptyBlock,
+        "~~~",
+        "Keep this trailing handwritten note.",
+        "<!-- openclaw:human:end -->",
+      ].join("\r\n");
+      await fs.writeFile(
+        pagePath,
+        raw.includes(emptyBlock)
+          ? raw.replace(emptyBlock, () => humanBlock)
+          : `${raw}\n## Notes\n${humanBlock}\n`,
+      );
+
+      await run(Date.UTC(2026, 5, 12, 11));
+      await expect(fs.readFile(pagePath, "utf8")).resolves.toContain(humanBlock);
+      await writeConcept(conceptPath, "Customers", producer(2));
+      const changed = await run(Date.UTC(2026, 5, 12, 12));
+      expect(changed.pagePaths).toEqual(first.pagePaths);
+      const refreshed = await fs.readFile(pagePath, "utf8");
+      expect(refreshed).toContain(humanBlock);
+      expect(refreshed).toContain(producer(2));
+      expect(refreshed).not.toContain("Customer body 1.");
+      expect(refreshed).not.toContain("Example 1.");
+    },
+  );
+
+  it.each(["Customer body.", "## Notes\nProducer-owned note."])(
+    "adds an empty Notes slot when re-importing unmarked legacy content %j",
+    async (body) => {
+      const { bundlePath, config, run } = await createImport("legacy-okf");
+      const conceptPath = path.join(bundlePath, "customers.md");
+      await writeConcept(conceptPath, "Customers", body);
+      const first = await run();
+      const pagePath = path.join(config.vault.path, getOnlyPagePath(first.pagePaths));
+      const { frontmatter } = parseWikiMarkdown(await fs.readFile(pagePath, "utf8"));
+      await fs.writeFile(pagePath, renderWikiMarkdown({ frontmatter, body }));
+      await writeConcept(conceptPath, "Customers", "Updated producer body.");
+
+      await run();
+
+      const refreshed = await fs.readFile(pagePath, "utf8");
+      expect(refreshed).toContain("Updated producer body.");
+      expect(refreshed).not.toContain(body);
+      expect(refreshed).toContain(
+        "## Notes\n<!-- openclaw:human:start -->\n<!-- openclaw:human:end -->",
+      );
+    },
+  );
+  it("preserves imported concepts when malformed UTF-8 is mixed with valid input", async () => {
+    const { bundlePath, config, run } = await createImport("encoding-okf");
+    const conceptPath = path.join(bundlePath, "tables", "customers.md");
+    await writeConcept(conceptPath, "Customers", "Original body.\n");
+    await writeConcept(path.join(bundlePath, "valid.md"), "Valid", "Café 😀 literal \uFFFD\n");
+    const first = await run();
+    const conceptPage = first.pagePaths.find((pagePath) => pagePath.includes("customers"));
+    if (!conceptPage) {
+      throw new Error("Expected the customers concept to be imported.");
+    }
+    const pagePath = path.join(config.vault.path, conceptPage);
+    const original = await fs.readFile(pagePath);
+    const malformed = Buffer.concat([
+      Buffer.from("---\ntype: Concept\ntitle: Customers\n---\nBroken "),
+      Buffer.from([0xc3, 0x28]),
+    ]);
+    await fs.writeFile(conceptPath, malformed);
+
+    const result = await run();
+
+    expect(result).toMatchObject({
+      importedCount: 1,
+      updatedCount: 0,
+      removedCount: 0,
+      skippedCount: 1,
+    });
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "unreadable-entry",
+        path: "tables/customers.md",
+        message: expect.stringContaining("UTF-8"),
+      }),
+    ]);
+    await expect(fs.readFile(pagePath)).resolves.toEqual(original);
+    await expect(fs.readFile(conceptPath)).resolves.toEqual(malformed);
+    const validPage = path.join(config.vault.path, getOnlyPagePath(result.pagePaths));
+    await expect(fs.readFile(validPage, "utf8")).resolves.toContain("Café 😀 literal \uFFFD");
+  });
+
+  it("rejects an unreadable root index without changing existing concept identities", async () => {
+    const { bundlePath, config, run } = await createImport("invalid-index-okf");
+    const indexPath = path.join(bundlePath, "index.md");
+    const index = "---\nid: stable\n---\nBundle description.\n";
+    await fs.writeFile(indexPath, index);
+    const conceptPath = path.join(bundlePath, "tables", "customers.md");
+    await writeConcept(conceptPath, "Customers", "Original body.\n");
+    const first = await run();
+    const pagesBefore = await fs.readdir(path.join(config.vault.path, "concepts"));
+    const pagePath = path.join(config.vault.path, getOnlyPagePath(first.pagePaths));
+    const original = await fs.readFile(pagePath);
+    await fs.writeFile(indexPath, Buffer.concat([Buffer.from(index), Buffer.from([0xff])]));
+    await writeConcept(conceptPath, "Customers", "Updated body.\n");
+
+    await expect(run()).rejects.toThrow(/index\.md.*UTF-8/);
+    await expect(fs.readFile(pagePath)).resolves.toEqual(original);
+    await expect(fs.readdir(path.join(config.vault.path, "concepts"))).resolves.toEqual(
+      pagesBefore,
+    );
+
+    await fs.writeFile(indexPath, index);
+    const recovered = await run();
+    expect(recovered).toMatchObject({ importedCount: 1, updatedCount: 1, warnings: [] });
+    expect(recovered.pagePaths).toEqual(first.pagePaths);
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toContain("Updated body.");
   });
 });

@@ -2,16 +2,27 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { readSqliteReaderDiagnosticsForPath } from "../../infra/sqlite-reader-lifecycle.js";
 import {
   registerOpenClawAgentDatabase,
   unregisterOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db-registry.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+  closeOpenClawAgentDatabasesAsync,
+} from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import {
   listCandidateAuthProfileStores,
   loadCandidateAuthProfileStore,
+  loadCandidateAuthProfileStoreAsync,
   updateCandidateAuthProfileStore,
 } from "./candidate-stores.js";
 import { closeAuthProfileReadPool } from "./sqlite.js";
@@ -29,6 +40,52 @@ describe("candidate auth profile stores", () => {
         env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-auth-candidates-denied-") },
       }),
     ).rejects.toBe(error);
+  });
+
+  it("adopts a configured database created after candidate discovery", async () => {
+    const tempRoot = tempDirs.make("openclaw-auth-candidate-creation-");
+    const stateDir = path.join(tempRoot, "state");
+    const agentDir = path.join(stateDir, "agents", "probe", "agent");
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    fs.mkdirSync(agentDir, { recursive: true });
+
+    const candidate = (
+      await listCandidateAuthProfileStores({
+        cfg: { agents: { entries: { probe: { agentDir } } } },
+        env,
+      })
+    ).find((entry) => entry.agentId === "probe");
+    expect(candidate).toBeDefined();
+    expect(fs.existsSync(candidate!.databasePath)).toBe(false);
+
+    try {
+      openOpenClawAgentDatabase({
+        agentId: candidate!.agentId,
+        path: candidate!.databasePath,
+        env: candidate!.env,
+      });
+      await updateCandidateAuthProfileStore({
+        candidate: candidate!,
+        profileId: "fixture:manual",
+        updater: (store) => {
+          store.profiles["fixture:manual"] = {
+            type: "api_key",
+            provider: "openai",
+            key: "fixture-key",
+          };
+          return true;
+        },
+      });
+      expect(
+        (await loadCandidateAuthProfileStoreAsync(candidate!))?.profiles["fixture:manual"],
+      ).toMatchObject({ type: "api_key", provider: "openai" });
+    } finally {
+      closeAuthProfileReadPool({ kind: "root", rootPath: tempRoot });
+      await closeOpenClawAgentDatabasesAsync();
+      await closeOpenClawStateDatabaseAsync();
+      closeOpenClawAgentDatabasesForTest();
+      closeOpenClawStateDatabaseForTest();
+    }
   });
 
   it("dedupes configured, state-root, and registered custom database paths", async () => {
@@ -55,41 +112,56 @@ describe("candidate auth profile stores", () => {
         env,
       });
 
+      openOpenClawAgentDatabase({ agentId: "custom", path: customDatabasePath, env });
       const candidates = await listCandidateAuthProfileStores({
         cfg: {
           agents: {
-            list: [{ id: "configured", agentDir: configuredAgentDir }],
+            entries: {
+              configured: { agentDir: configuredAgentDir },
+              custom: { agentDir: path.join(tempRoot, "active-custom-agent") },
+            },
           },
         },
         env,
       });
-      expect(candidates).toHaveLength(3);
+      expect(candidates).toHaveLength(4);
       expect(candidates.map((candidate) => candidate.agentId)).toEqual([
+        "custom",
         "configured",
         "custom",
         "state-agent",
       ]);
 
-      const custom = candidates.find((candidate) => candidate.agentId === "custom");
+      const custom = candidates.find((candidate) => candidate.databasePath === customDatabasePath);
       expect(custom).toBeDefined();
-      updateCandidateAuthProfileStore({
-        candidate: custom!,
-        profileId: "openai:default",
-        updater: (store) => {
-          store.profiles["openai:default"] = {
-            type: "oauth",
-            provider: "openai",
-            access: "custom-access",
-            refresh: "custom-refresh",
-            expires: 1,
-          };
-          return true;
-        },
-      });
+      const sql = observeHostDataSql();
+      try {
+        await updateCandidateAuthProfileStore({
+          candidate: custom!,
+          profileId: "openai:default",
+          updater: (store) => {
+            store.profiles["openai:default"] = {
+              type: "oauth",
+              provider: "openai",
+              access: "custom-access",
+              refresh: "custom-refresh",
+              expires: 1,
+            };
+            return true;
+          },
+        });
+        expect(sql.queries.filter((query) => /auth_profile_(?:store|state)/i.test(query))).toEqual(
+          [],
+        );
+      } finally {
+        sql.restore();
+      }
+      closeOpenClawAgentDatabaseByPath(customDatabasePath, "custom");
       expect(loadCandidateAuthProfileStore(custom!)?.profiles["openai:default"]).toMatchObject({
         access: "custom-access",
         refresh: "custom-refresh",
       });
+      expect(readSqliteReaderDiagnosticsForPath(customDatabasePath).connections).toEqual([]);
     } finally {
       closeAuthProfileReadPool({ kind: "root", rootPath: tempRoot });
       unregisterOpenClawAgentDatabase({
@@ -98,6 +170,8 @@ describe("candidate auth profile stores", () => {
         env,
       });
       unregisterOpenClawAgentDatabase({ agentId: "custom", path: customDatabasePath, env });
+      await closeOpenClawAgentDatabasesAsync();
+      await closeOpenClawStateDatabaseAsync();
       closeOpenClawAgentDatabasesForTest();
       closeOpenClawStateDatabaseForTest();
     }

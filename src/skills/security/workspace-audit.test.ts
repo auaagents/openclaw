@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { OpenClawConfigWithLegacyRoster } from "../../config/legacy.roster.js";
 import { AsyncTempCaseFactory } from "../../security/test-temp-cases.js";
 import { collectWorkspaceSkillSymlinkEscapeFindings } from "./workspace-audit.js";
 
@@ -28,6 +29,46 @@ describe("security audit workspace skill path escape findings", () => {
 
   afterAll(async () => {
     await tempCases.cleanup();
+  });
+
+  it("audits nested escapes through a symlinked skills root without revisiting cycles", async () => {
+    const tmp = await fs.realpath(await tempCases.makeTmpDir("linked-skills-root"));
+    const workspaceDir = path.join(tmp, "workspace");
+    const skillsRoot = path.join(tmp, "shared-skills");
+    const outsideDir = path.join(tmp, "outside");
+    await fs.mkdir(workspaceDir);
+    await fs.mkdir(skillsRoot);
+    await fs.mkdir(outsideDir);
+    const outsideSkillPath = path.join(outsideDir, "SKILL.md");
+    await fs.writeFile(outsideSkillPath, "# outside\n");
+    const linkType = isWindows ? "junction" : "dir";
+    await fs.symlink(skillsRoot, path.join(workspaceDir, "skills"), linkType);
+    await fs.symlink(outsideDir, path.join(skillsRoot, "leak"), linkType);
+    await fs.symlink(skillsRoot, path.join(skillsRoot, "cycle"), linkType);
+
+    const findings = await collectWorkspaceSkillSymlinkEscapeFindings({
+      cfg: { agents: { defaults: { workspace: workspaceDir } } },
+    });
+    const finding = requireFinding(findings, "skills.workspace.symlink_escape");
+    expect(finding.severity).toBe("warn");
+    expect(finding.detail).toContain(outsideSkillPath);
+    expect(findings.map((entry) => entry.checkId)).not.toContain("skills.workspace.scan_truncated");
+  });
+
+  it("ignores a dangling skills root", async () => {
+    const tmp = await fs.realpath(await tempCases.makeTmpDir("dangling-skills-root"));
+    const workspaceDir = path.join(tmp, "workspace");
+    await fs.mkdir(workspaceDir);
+    await fs.symlink(
+      path.join(tmp, "missing"),
+      path.join(workspaceDir, "skills"),
+      isWindows ? "junction" : "dir",
+    );
+    expect(
+      await collectWorkspaceSkillSymlinkEscapeFindings({
+        cfg: { agents: { defaults: { workspace: workspaceDir } } },
+      }),
+    ).toEqual([]);
   });
 
   it("evaluates workspace skill path escape findings", async () => {
@@ -92,7 +133,7 @@ describe("security audit workspace skill path escape findings", () => {
         await fs.mkdir(skillDir, { recursive: true });
         await fs.symlink(outsidePath, path.join(skillDir, "SKILL.md"));
       }
-      const cfg: OpenClawConfig = {
+      const cfg: OpenClawConfigWithLegacyRoster = {
         agents: {
           entries: {
             alpha: { default: true, workspace: workspaceA },
@@ -202,12 +243,12 @@ describe("security audit workspace skill path escape findings", () => {
       const unreadableDir = path.join(workspaceDir, "skills", relative);
       await fs.mkdir(unreadableDir, { recursive: true });
       await fs.writeFile(path.join(unreadableDir, "SKILL.md"), "# skill\n");
-      const readDirectory = fs.readdir.bind(fs);
-      const readdirSpy = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      const openDirectory = fs.opendir.bind(fs);
+      const opendirSpy = vi.spyOn(fs, "opendir").mockImplementation(async (...args) => {
         if (path.resolve(String(args[0])) === unreadableDir) {
           throw Object.assign(new Error("directory unavailable"), { code: "EACCES" });
         }
-        return readDirectory(...args);
+        return openDirectory(...args);
       });
 
       try {
@@ -216,7 +257,7 @@ describe("security audit workspace skill path escape findings", () => {
         });
         expect(requireFinding(findings, "skills.workspace.scan_truncated").severity).toBe("warn");
       } finally {
-        readdirSpy.mockRestore();
+        opendirSpy.mockRestore();
       }
     },
   );

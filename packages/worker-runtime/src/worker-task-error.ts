@@ -1,0 +1,49 @@
+import type { Slot } from "./worker-task-pool.types.js";
+
+export class WorkerTaskError extends Error {
+  constructor(
+    message: string,
+    readonly code: "unavailable" | "timeout" | "failed" | "overloaded",
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "WorkerTaskError";
+  }
+}
+
+export function workerTaskTimeoutError(
+  exchange: { name: string; sent: boolean } | undefined,
+  workerUrl: URL,
+): WorkerTaskError {
+  let callback = exchange?.sent === false ? exchange.name : undefined;
+  if (callback === "unknown") {
+    callback =
+      workerUrl.protocol === "file:"
+        ? workerUrl.pathname.split("/").at(-1)?.slice(0, 96) || "worker"
+        : `${workerUrl.protocol} worker`;
+  }
+  const error = new WorkerTaskError(
+    callback
+      ? `worker task timed out waiting for host callback ${callback}`
+      : "worker task timed out",
+    "timeout",
+  );
+  if (callback) {
+    process.emitWarning(error.message, { code: "WORKER_HOST_CALLBACK_TIMEOUT" });
+  }
+  return error;
+}
+
+export function workerTaskUnavailableError<Input, Output>(
+  slot: Slot<Input, Output>,
+  message: string,
+  cause?: unknown,
+): WorkerTaskError {
+  const task = slot.task;
+  const stage = slot.ready === false ? "startup" : task?.exchange ? "exchange" : "running";
+  // Reuse owned estimates/progress without sizing or retaining input.
+  const detail = task?.diagnosticLabel
+    ? ` [task=${task.diagnosticLabel} admittedInputBytes=${task.inputBytes} exchanges=${task.exchangeSequence} stage=${stage}]`
+    : "";
+  return new WorkerTaskError(message + detail, "unavailable", { cause });
+}

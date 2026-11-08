@@ -8,11 +8,12 @@ import type {
   BrowserSpeechRecognitionResultEvent,
 } from "./browser-dictation.ts";
 import {
+  createComposerContainer,
   createComposerProps,
   findComposerButton,
   resetComposerFixture,
 } from "./chat-composer.test-support.ts";
-import { renderChatComposer } from "./components/chat-composer.ts";
+import { renderChatComposer } from "./components/chat-composer-render.test-support.ts";
 
 class FakeSpeechRecognition implements BrowserSpeechRecognition {
   static instances: FakeSpeechRecognition[] = [];
@@ -86,7 +87,7 @@ describe("hands-free browser dictation", () => {
     vi.stubGlobal("SpeechRecognition", FakeSpeechRecognition);
     const onDraftChange = vi.fn();
     const onToggleRealtimeTalk = vi.fn();
-    const container = document.createElement("div");
+    const container = createComposerContainer();
     document.body.append(container);
     const props = createComposerProps({ onDraftChange, onToggleRealtimeTalk });
     const draw = () => render(renderChatComposer(props), container);
@@ -122,7 +123,7 @@ describe("hands-free browser dictation", () => {
     const onDraftChange = vi.fn();
     const onSend = vi.fn();
     const request = vi.fn(async () => ({ audioBase64: "AQID", mimeType: "audio/mpeg" }));
-    const container = document.createElement("div");
+    const container = createComposerContainer();
     document.body.append(container);
     const props = createComposerProps({ onDraftChange, onSend });
     const draw = () => render(renderChatComposer(props), container);

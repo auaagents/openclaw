@@ -6,6 +6,7 @@ import { tryResolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveStoredSessionOwnerAgentId } from "../../gateway/session-store-key.js";
 import { readFileDescriptorBoundedSync } from "../../infra/boundary-file-read.js";
 import { hasErrnoCode } from "../../infra/errno.js";
+import { decodeUtf8Input } from "../../infra/utf8-input.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
@@ -13,6 +14,7 @@ import { isPrimarySessionTranscriptFileName } from "./artifacts.js";
 import { parseSqliteSessionFileMarker } from "./legacy-sqlite-marker.js";
 import { resolveSessionFilePathCore } from "./paths.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
+import { assertSupportedSessionStoreEntry } from "./supported-session-store.js";
 import type { SessionEntry } from "./types.js";
 
 export type LegacySessionStoreTarget = { agentId: string; storePath: string; sqlitePath?: string };
@@ -83,7 +85,7 @@ export function readLegacySessionStoreEntries(
       }
       // Fail closed if the pinned file grows past the size validated above.
       raw = readFileDescriptorBoundedSync(fd, storeStat.size);
-      parsed = JSON.parse(raw.toString("utf-8"));
+      parsed = JSON.parse(decodeUtf8Input(raw, `Legacy session index ${target.storePath}`));
     } catch (err) {
       issues.push({
         code: "store_unreadable",
@@ -100,6 +102,7 @@ export function readLegacySessionStoreEntries(
     }
     const entries: Array<{ sessionKey: string; entry: SessionEntry }> = [];
     for (const [sessionKey, value] of Object.entries(parsed)) {
+      assertSupportedSessionStoreEntry(value);
       if (!isSessionEntry(value)) {
         issues.push({
           code: "entry_invalid",

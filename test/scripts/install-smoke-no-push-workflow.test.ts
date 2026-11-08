@@ -70,6 +70,22 @@ function step(workflowJob: WorkflowJob, name: string): WorkflowStep {
 }
 
 describe("install smoke no-push root image transport", () => {
+  it.each([
+    "install-smoke-fast",
+    "root_dockerfile_image",
+    "installer_smoke_candidate_payload",
+    "installer_smoke_update_image",
+    "installer_smoke_nonroot_image",
+    "docker-e2e-fast",
+  ])("uses the portable Docker builder for %s", (jobName) => {
+    const workflow = readWorkflow(INSTALL_SMOKE_REUSABLE);
+    expect(step(job(workflow, jobName), "Set up Docker Buildx")).toEqual({
+      name: "Set up Docker Buildx",
+      uses: "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+      with: { version: "v0.23.0" },
+    });
+  });
+
   it("keeps schedule/manual orchestration read-only and delegates to the reusable core", () => {
     const workflow = readWorkflow(INSTALL_SMOKE);
     expect(workflow.on?.schedule).toBeDefined();
@@ -177,7 +193,7 @@ describe("install smoke no-push root image transport", () => {
     expect(fastJob.needs).toContain("preflight");
     expect(warningRelay.with).toMatchObject({
       repository: "openclaw/openclaw",
-      ref: "main",
+      ref: "${{ github.sha }}",
       path: ".artifacts/build-warning-harness",
       "fetch-depth": 1,
       "persist-credentials": false,
@@ -189,7 +205,7 @@ describe("install smoke no-push root image transport", () => {
       "node .artifacts/build-warning-harness/scripts/relay-build-limit-warnings.mts",
     );
     expect(
-      fastJob.steps!.indexOf(step(fastJob, "Restore exact trusted workflow revision")),
+      fastJob.steps!.indexOf(step(fastJob, "Resolve exact trusted workflow identity")),
     ).toBeLessThan(fastJob.steps!.indexOf(warningBuild));
     const trustedJobs: string[] = [];
     for (const [jobName, workflowJob] of Object.entries(workflow.jobs)) {
@@ -200,28 +216,34 @@ describe("install smoke no-push root image transport", () => {
         continue;
       }
       trustedJobs.push(jobName);
-      const resolver = step(workflowJob, "Restore exact trusted workflow revision");
+      const resolver = step(workflowJob, "Resolve exact trusted workflow identity");
       expect(resolver.env, jobName).toMatchObject({
         EXPECTED_WORKFLOW_REPOSITORY: "${{ github.repository }}",
         JOB_CONTEXT: "${{ toJSON(job) }}",
       });
       const harnessPath =
         jobName === "install-smoke-fast" ? ".artifacts/build-warning-harness" : ".release-harness";
-      expect(resolver.env?.HARNESS_PATH, jobName).toBe(harnessPath);
       expect(resolver.run, jobName).toContain(
         "job.workflow_sha must be a full lowercase commit SHA",
       );
-      expect(resolver.run, jobName).toContain('"fetch"');
+      expect(resolver.run, jobName).not.toContain("execFileSync");
       expect(resolver.run, jobName).toContain(
         "`repository=${repository}\\nsha=${job.workflow_sha}\\n`",
       );
       const checkoutIndex = workflowJob.steps!.indexOf(trustedCheckouts[0]!);
       const resolverIndex = workflowJob.steps!.indexOf(resolver);
-      expect(checkoutIndex, jobName).toBeLessThan(resolverIndex);
+      expect(resolverIndex, jobName).toBeLessThan(checkoutIndex);
+      const restore = step(workflowJob, "Restore exact trusted workflow revision");
+      expect(workflowJob.steps!.indexOf(restore), jobName).toBe(checkoutIndex + 1);
+      expect(restore.env, jobName).toMatchObject({
+        HARNESS_PATH: harnessPath,
+        WORKFLOW_REPOSITORY: "${{ steps.workflow.outputs.repository }}",
+        WORKFLOW_SHA: "${{ steps.workflow.outputs.sha }}",
+      });
       for (const checkout of trustedCheckouts) {
         expect(checkout.with, jobName).toMatchObject({
           repository: "openclaw/openclaw",
-          ref: "main",
+          ref: "${{ github.sha }}",
           path: harnessPath,
           "fetch-depth": 1,
           "persist-credentials": false,
@@ -245,7 +267,7 @@ describe("install smoke no-push root image transport", () => {
 
     const candidateResolver = step(
       job(workflow, "installer_smoke_candidate_payload"),
-      "Restore exact trusted workflow revision",
+      "Resolve exact trusted workflow identity",
     );
     const runResolver = (workflowRepository: string, workflowSha: string) =>
       spawnSync("bash", ["--noprofile", "--norc", "-c", candidateResolver.run!], {
@@ -254,7 +276,7 @@ describe("install smoke no-push root image transport", () => {
           ...process.env,
           EXPECTED_WORKFLOW_REPOSITORY: "openclaw/openclaw",
           GITHUB_WORKFLOW_SHA: "a".repeat(40),
-          HARNESS_PATH: ".",
+          GITHUB_OUTPUT: identityOutput,
           JOB_CONTEXT: JSON.stringify({
             workflow_repository: workflowRepository,
             workflow_sha: workflowSha,
@@ -269,6 +291,10 @@ describe("install smoke no-push root image transport", () => {
     expect(wrongRepository.stderr).toContain(
       "job.workflow_repository must exactly match github.repository",
     );
+    // The per-job resolver must work before any harness checkout exists.
+    const validIdentity = runResolver("openclaw/openclaw", "c".repeat(40));
+    expect(validIdentity.status, validIdentity.stderr).toBe(0);
+    expect(readFileSync(identityOutput, "utf8")).toContain(`sha=${"c".repeat(40)}\n`);
     const manifest = step(preflight, "Build install-smoke CI manifest");
     expect(manifest.env).toEqual({
       OPENCLAW_CI_WORKFLOW_BUN_GLOBAL_INSTALL_SMOKE:
@@ -460,9 +486,13 @@ describe("install smoke no-push root image transport", () => {
     expect(text).not.toContain("gh api");
   });
 
-  it.each(["selected", "tooling", "missing"])(
-    "checks selected network source provenance before Docker: %s",
-    (source) => {
+  it.each([
+    { source: "selected", allowOmissions: "0" },
+    { source: "tooling", allowOmissions: "1" },
+    { source: "missing", allowOmissions: "1" },
+  ])(
+    "checks selected network source provenance before Docker: $source, omissions=$allowOmissions",
+    ({ source, allowOmissions }) => {
       const workspace = tempDirs.make("install-smoke-source-binding-");
       const selected = path.join(workspace, ".release-source");
       const tooling = process.cwd();
@@ -548,7 +578,7 @@ describe("install smoke no-push root image transport", () => {
           ...process.env,
           PATH: `${bin}${path.delimiter}${process.env.PATH}`,
           DOCKER_CALLS: dockerCalls,
-          OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS: "1",
+          OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS: allowOmissions,
           OPENCLAW_SELECTED_SHA: selectedSha,
           OPENCLAW_TOOLING_SHA: toolingSha,
           OPENCLAW_GATEWAY_NETWORK_E2E_SKIP_BUILD: "1",
@@ -621,7 +651,10 @@ describe("install smoke no-push root image transport", () => {
 
     for (const pair of pairs) {
       const producer = job(workflow, pair.producerName);
-      expect(producer.needs, pair.producerName).toEqual(["preflight"]);
+      expect(producer.needs, pair.producerName).toEqual([
+        "preflight",
+        "installer_smoke_candidate_payload",
+      ]);
       expect(producer["timeout-minutes"], pair.producerName).toBe(45);
       expect(producer.outputs, pair.producerName).toEqual({
         archive_sha256: "${{ steps.image_artifact.outputs.archive_sha256 }}",
@@ -744,7 +777,7 @@ describe("install smoke no-push root image transport", () => {
     });
     expect(step(bunConsumer, "Setup trusted release harness for Bun smoke")).toMatchObject({
       uses: "./.release-harness/.github/actions/setup-release-harness",
-      with: { "node-version": "24.x" },
+      with: { "node-version": "24.22.1" },
     });
     const bunVerify = step(bunConsumer, "Verify candidate payload contents");
     expect(bunVerify.env).toMatchObject({
@@ -759,7 +792,7 @@ describe("install smoke no-push root image transport", () => {
     expect(bunVerify.run).toContain("install-smoke-candidate-payload.mts verify");
     expect(bunVerify.run).toContain('--run-id "$PRODUCER_RUN_ID"');
     expect(bunVerify.run).toContain('--run-attempt "$PRODUCER_RUN_ATTEMPT"');
-    expect(step(bunConsumer, "Install Bun for global smoke").run).toBe("npm install -g bun@1.4.2");
+    expect(step(bunConsumer, "Install Bun for global smoke").run).toBe("npm install -g bun@1.4.4");
     expect(step(bunConsumer, "Run Bun global install candidate-payload smoke")).toMatchObject({
       "working-directory": ".release-harness",
       env: {
@@ -829,8 +862,9 @@ describe("install smoke no-push root image transport", () => {
       },
     });
     expect(bunOnlyConsumer.steps).toEqual([
-      step(bunOnlyConsumer, "Checkout trusted release harness"),
       bunOnlyNode,
+      step(bunOnlyConsumer, "Resolve exact trusted workflow identity"),
+      step(bunOnlyConsumer, "Checkout trusted release harness"),
       step(bunOnlyConsumer, "Restore exact trusted workflow revision"),
       bunBinding,
       bunOnlyDownload,
@@ -868,7 +902,7 @@ describe("install smoke no-push root image transport", () => {
     });
     expect(step(producer, "Checkout trusted release harness").with).toMatchObject({
       repository: "openclaw/openclaw",
-      ref: "main",
+      ref: "${{ github.sha }}",
       "fetch-depth": 1,
       "persist-credentials": false,
     });
@@ -880,6 +914,11 @@ describe("install smoke no-push root image transport", () => {
       '"https://codeload.github.com/${TARGET_REPOSITORY}/tar.gz/${TARGET_SHA}"',
     );
     const packageStep = step(producer, "Package candidate only inside pinned harness");
+    expect(packageStep.env).toMatchObject({
+      OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS: "3300000",
+    });
+    expect(packageStep.run).toContain("timeout --kill-after=30s 60m docker run --rm");
+    expect(packageStep.run).toContain("-e OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS");
     expect(packageStep.run).toContain("--user node");
     expect(packageStep.run).toContain("--cap-drop ALL");
     expect(packageStep.run).toContain("pnpm install --frozen-lockfile");
@@ -906,9 +945,16 @@ describe("install smoke no-push root image transport", () => {
       expect(verify.env).toMatchObject({
         MANIFEST_SHA256: "${{ needs.installer_smoke_candidate_payload.outputs.manifest_sha256 }}",
         PACKAGE_VERSION: "${{ needs.installer_smoke_candidate_payload.outputs.package_version }}",
+        PRODUCER_RUN_ATTEMPT:
+          "${{ needs.installer_smoke_candidate_payload.outputs.artifact_run_attempt }}",
+        PRODUCER_RUN_ID: "${{ needs.installer_smoke_candidate_payload.outputs.artifact_run_id }}",
         SOURCE_ARCHIVE_SHA256:
           "${{ needs.installer_smoke_candidate_payload.outputs.source_archive_sha256 }}",
       });
+      expect(verify.run).toContain('--run-id "$PRODUCER_RUN_ID"');
+      expect(verify.run).toContain('--run-attempt "$PRODUCER_RUN_ATTEMPT"');
+      expect(verify.run).not.toContain('--run-id "$GITHUB_RUN_ID"');
+      expect(verify.run).not.toContain('--run-attempt "$GITHUB_RUN_ATTEMPT"');
       expect(verify.run).toContain("--manifest-sha256");
       expect(verify.run).toContain("--source-archive-sha256");
     }

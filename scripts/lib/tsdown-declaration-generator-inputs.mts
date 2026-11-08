@@ -3,8 +3,9 @@ import { builtinModules, createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
+import { API } from "typescript/unstable/sync";
 import { collectModuleReferencesFromSource } from "./guard-inventory-utils.mjs";
-import { createNativeTypeScriptParser } from "./native-typescript.mts";
+import { isRecord } from "./record-shared.mjs";
 import { createRuntimeImportGraph } from "./runtime-import-closure.mts";
 import { STATE_SCHEMA_GENERATOR_INPUTS } from "./state-schema-inline-plugin.mts";
 import { resolveTsxImport } from "./tsx-cli-shim.mjs";
@@ -45,6 +46,26 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
   const nativeManifest = createRequire(path.join(root, "package.json")).resolve(
     "typescript/package.json",
   );
+  const nativeManifestJson: unknown = JSON.parse(fs.readFileSync(nativeManifest, "utf8"));
+  const nativeExports =
+    isRecord(nativeManifestJson) && isRecord(nativeManifestJson.exports)
+      ? nativeManifestJson.exports
+      : {};
+  const nativeExport = (...names: string[]) => {
+    for (const name of names) {
+      const target = nativeExports[name];
+      if (typeof target === "string") {
+        return path.join(path.dirname(nativeManifest), target);
+      }
+    }
+    throw new Error(`Missing native TypeScript export: ${names.join(" or ")}`);
+  };
+  const installedPackageImports = new Map([
+    ["typescript/unstable/async", nativeExport("./async", "./unstable/async")],
+    ["typescript/unstable/fs", nativeExport("./fs", "./unstable/fs")],
+  ]);
+  // Producers traverse only their own reachable owners. Every reached computed
+  // import must still match its exact expression and declared targets.
   const dynamicOwners = new Map<string, { expressions: string[]; targets: string[] }>([
     ["scripts/lib/dist-artifact-lock.mts", { expressions: ["script"], targets: [generatorEntry] }],
     [
@@ -52,6 +73,19 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
       {
         expressions: ['inputs.assert(path.join(nativeRoot, "lib/getExePath.js"))'],
         targets: [nativeManifest, path.join(path.dirname(nativeManifest), "lib/getExePath.js")],
+      },
+    ],
+    [
+      "scripts/lib/native-declaration-emitter.mts",
+      {
+        // Compiler roots load their own API client through createRequire; the producer's
+        // closure still owns the installed package bytes used by its fallback.
+        expressions: [],
+        targets: [
+          nativeManifest,
+          nativeExport("./async", "./unstable/async"),
+          nativeExport("./fs", "./unstable/fs"),
+        ],
       },
     ],
     [
@@ -93,7 +127,11 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
     ],
   ]);
   const observedDynamicOwners = new Set<string>();
-  using parser = createNativeTypeScriptParser({ cwd: root });
+  using parser: { api?: API; [Symbol.dispose](): void } = {
+    [Symbol.dispose]() {
+      this.api?.close();
+    },
+  };
   const entryFiles = [generatorEntry, "scripts/tsx.mjs", "tsdown.config.ts"];
   const explicitSources = [...dynamicOwners.values()]
     .flatMap((owner) => owner.targets)
@@ -123,7 +161,7 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
     }
     visited.add(id);
     const source = fs.readFileSync(absolute, "utf8");
-    const sourceFile = parser.parseSourceFile(absolute, source);
+    const sourceFile = (parser.api ??= new API({ cwd: root })).createSourceFile(absolute, source);
     const expressions = dynamicEdgeExpressions(sourceFile);
     const owner = dynamicOwners.get(id);
     if (
@@ -152,6 +190,7 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
             [
               "../../src/shared/freebsd-process-identity.ts",
               "../../src/infra/update-managed-service-handoff-native-loader.ts",
+              "../../src/infra/package-update-activation-native-loader.ts",
             ].includes(reference.specifier);
           visit(target, targetIsCompilerSource);
         }
@@ -166,8 +205,9 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
       const resolved =
         exact && fs.existsSync(exact) && fs.statSync(exact).isFile()
           ? exact
-          : graph.dependencies(absolute).find((edge) => edge.specifier === reference.specifier)
-              ?.resolvedFileName;
+          : (installedPackageImports.get(reference.specifier) ??
+            graph.dependencies(absolute).find((edge) => edge.specifier === reference.specifier)
+              ?.resolvedFileName);
       if (!resolved) {
         throw new Error(
           `Unresolved ${reference.kind} in ${id}:${reference.line}: ${reference.specifier}`,

@@ -27,10 +27,14 @@ export type FakeStep = {
   stderr?: string;
   exit?: number;
   times?: number;
+  delayMs?: number;
   verifyLock?: boolean;
   request?: {
+    kind?: string;
+    refs?: { workflow: string };
     phase: string;
     run?: { id: number; attempt: number };
+    admission?: { workflowSha: string; workflowRef: string };
     request?: {
       targetSha: string;
       targetContextRef: string;
@@ -251,7 +255,7 @@ export function publishPreparation(createTag = false): FakeStep[] {
     ),
     ...(createTag
       ? [
-          step("git", ["tag", "-a", `v${RELEASE}`, CUT_SHA, "-m", `OpenClaw ${RELEASE}`]),
+          step("git", ["tag", "-s", `v${RELEASE}`, CUT_SHA, "-m", `OpenClaw ${RELEASE}`]),
           step("git", ["push", "origin", `refs/tags/v${RELEASE}`]),
         ]
       : []),
@@ -317,6 +321,9 @@ if (!expected || expected.bin !== bin || !expected.match.every((word, index) => 
 if ((expected.times ?? 1) > 1) expected.times -= 1;
 else script.shift();
 writeFileSync(root + '/script.json', JSON.stringify(script));
+if (expected.delayMs) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, expected.delayMs);
+}
 if (expected.verifyLock) {
   const locks = readdirSync(root + '/release').filter((name) => name.endsWith('.lock'));
   const lock = JSON.parse(readFileSync(root + '/release/state.lock', 'utf8'));
@@ -332,6 +339,7 @@ if (expected.request) {
   mkdirSync(dirname(target), { recursive: true });
   if (expected.request.request) {
     expected.request.request.trustedWorkflowRef = args[args.indexOf('--trusted-workflow-ref') + 1];
+    if (expected.request.admission) expected.request.admission.workflowRef = args[args.indexOf('--admission-workflow-ref') + 1];
   }
   writeFileSync(target, JSON.stringify(expected.request));
 }
@@ -363,7 +371,7 @@ process.exit(expected.exit ?? 0);
     readState(): ReleaseState {
       return JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
     },
-    run(script: FakeStep[], args: string[] = []) {
+    run(script: FakeStep[], args: string[] = [], env: Record<string, string> = {}) {
       writeFileSync(join(root, "script.json"), JSON.stringify(script));
       const result = spawnSync(
         node,
@@ -389,6 +397,7 @@ process.exit(expected.exit ?? 0);
             TSX_DISABLE_CACHE: "1",
             OPENCLAW_RELEASE_STABLE_POLL_MS: "1",
             OPENCLAW_RELEASE_STABLE_BACKOFF_MS: "1",
+            ...env,
           },
         },
       );
@@ -413,3 +422,13 @@ process.exit(expected.exit ?? 0);
     },
   };
 }
+
+// Shape written by probeCapabilities before strict publication removed waiver support.
+export const legacyCapabilities = (closeoutResolvesWaivers: boolean) => ({
+  parentSyncsBetaDistTag: false,
+  parentSweepsStaleChildren: false,
+  parentApprovalReceipt: false,
+  closeoutResolvesWaivers,
+  probedAt: "2026-09-24T00:00:00.000Z",
+  toolingSha: TOOLING_SHA,
+});

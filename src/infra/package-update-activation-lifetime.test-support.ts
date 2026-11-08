@@ -21,13 +21,26 @@ import {
 } from "./package-update-activation-journal.js";
 import { preparePackageActivationJournal } from "./package-update-activation-prepare.js";
 import { packageActivationRuntimeEntrypoint } from "./package-update-activation-runtime-assets.js";
+import { packageActivationRuntimeForTest } from "./package-update-activation-runtime.test-support.js";
+import type { PackageActivationRuntime } from "./package-update-activation-runtime.types.js";
 import { createPackageIntegrityReader } from "./package-update-integrity.js";
 import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
 import * as runtimeWorker from "./runtime-worker-url.js";
 
+/** Journals seal inert helper bytes rather than running a package helper in source tests. */
+export function mockInertSealedHelper(root: string) {
+  const resolveRuntimeWorkerUrl = runtimeWorker.resolveRuntimeWorkerUrl;
+  const helper = path.join(root, "sealed.mjs");
+  fs.writeFileSync(helper, "// inert sealed helper bytes\n");
+  vi.spyOn(runtimeWorker, "resolveRuntimeWorkerUrl").mockImplementation((entry) =>
+    entry.sourceWorkerName === "package-update-activation-sealed"
+      ? pathToFileURL(helper)
+      : resolveRuntimeWorkerUrl(entry),
+  );
+}
+
 export function createPackageActivationLifetimeFixture() {
   const lifetime = createFixtureLifetime();
-  const resolveRuntimeWorkerUrl = runtimeWorker.resolveRuntimeWorkerUrl;
   let root: string;
   let childGuardEnv: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
 
@@ -37,25 +50,23 @@ export function createPackageActivationLifetimeFixture() {
     fs.mkdirSync(tmp, { mode: 0o700 });
     const { databasePath, assertDatabasePath } = installPrivateUpdateHandoffStore(tmp);
     childGuardEnv = writePrivateUpdateHandoffChildGuard(databasePath, tmp);
-    const helper = path.join(root, "sealed.mjs");
-    fs.writeFileSync(helper, "// inert sealed helper bytes\n");
-    vi.spyOn(runtimeWorker, "resolveRuntimeWorkerUrl").mockImplementation((entry) =>
-      entry.sourceWorkerName === "package-update-activation-sealed"
-        ? pathToFileURL(helper)
-        : resolveRuntimeWorkerUrl(entry),
-    );
+    mockInertSealedHelper(root);
     return { root, assertDatabasePath, childGuardEnv };
   }
 
-  async function prepare(cut?: (anchor: string) => void, onCustody?: (retained: boolean) => void) {
+  async function prepare(
+    cut?: (anchor: string) => void | Promise<void>,
+    onCustody?: (retained: boolean) => void,
+    runtime: PackageActivationRuntime = packageActivationRuntimeForTest(),
+  ) {
     const f = await createPackageSwapFixture(root);
     const anchor = resolvePackageActivationAnchor(f.packageRoot);
     const previous = await createPackageIntegrityReader().tree(f.packageRoot);
     await withUpdateCommandExecutor(randomUUID(), async (executor) => {
       const fence = await executor.enter(f.packageRoot);
-      cut?.(anchor);
+      await cut?.(anchor);
       await preparePackageActivationJournal({
-        options: { fence, nodeRunner: process.execPath, onPrepared: () => {} },
+        options: { fence, runtime, onPrepared: () => {} },
         liveRoot: f.packageRoot,
         stageRoot: f.params.stage.packageRoot,
         launcherRoot: f.params.stage.layout.binDir,
@@ -84,7 +95,7 @@ export function createPackageActivationLifetimeFixture() {
       process.execPath,
       [
         ...runtimeWorker.resolveRuntimeWorkerArgv(
-          resolveRuntimeWorkerUrl({
+          runtimeWorker.resolveRuntimeWorkerUrl({
             ...packageActivationRuntimeEntrypoint,
             sourceWorkerName: "package-update-activation.process.test-support",
             distWorkerPath: "infra/package-update-activation.process.test-support.js",

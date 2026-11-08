@@ -15,6 +15,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import { recordAgentDatabaseAdmissions } from "../state/agent-database-admission.js";
 import * as agentScope from "./agent-scope.js";
+import { createContextEngineLogicalTurnLease } from "./harness/context-engine-logical-turn.js";
 import {
   resolveAgentRuntimePluginLoadPlan,
   resolveAgentRuntimePluginSelections,
@@ -78,6 +79,124 @@ describe("prepared reply fallback ownership", () => {
       loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" }),
     ).resolves.toMatchObject({ agentId: "main" });
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares a reply on the current generation when its captured dispatch generation was replaced", async () => {
+    const previous = { messages: { responsePrefix: "before" } };
+    const current = { messages: { responsePrefix: "after" } };
+    mocks.configuredAgentIds = ["default"];
+    const options = { gatewayLifecycle: true, catalogMode: "static" as const };
+    await refreshPreparedModelRuntimeSnapshots(previous, options);
+    const captured = (await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }))!;
+    await refreshPreparedModelRuntimeSnapshots(current, options);
+    const published = (await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }))!;
+    reply.context.mockResolvedValue({
+      kind: "ready",
+      workspaceDir: captured.workspaceDir,
+      thinkingRuntime: "openclaw",
+    });
+    reply.execute.mockImplementation(async () => {
+      const pluginGeneration = getPreparedModelRuntimePluginGeneration()!;
+      expect(pluginGeneration).not.toBe(captured.pluginGeneration);
+      await using nested = await acquireAgentRunPreparedModelRuntime(
+        {
+          config: current,
+          agentId: published.agentId,
+          agentDir: published.agentDir,
+          workspaceDir: published.workspaceDir,
+        },
+        { pluginGeneration },
+      );
+      expect(nested.snapshot.config).toEqual(current);
+      return { text: "reply completed after reload" };
+    });
+    const execute = bindPreparedReplyDispatchRuntime(captured, () =>
+      runPreparedReply({
+        provider: "custom",
+        model: "model",
+        ctx: {},
+        sessionCtx: {},
+        cfg: previous,
+        agentId: captured.agentId,
+      } as RunPreparedReplyParams),
+    );
+    await expect(execute()).resolves.toEqual({ text: "reply completed after reload" });
+    expect(reply.execute).toHaveBeenCalledOnce();
+  });
+
+  it("admits a nested reply after its configured context engine falls back to legacy", async () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { model: "initial/model" } },
+      plugins: {
+        allow: ["initial", "selected", "unavailable-context"],
+        slots: { memory: "none", contextEngine: "unavailable-context" },
+        entries: { "unavailable-context": { enabled: true } },
+      },
+    };
+    const metadata = createPluginMetadataSnapshot({
+      config,
+      manifestRegistry: { plugins: [], diagnostics: [] },
+    });
+    mocks.configuredAgentIds = ["default", "secondary"];
+    mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() =>
+      createEmptyPluginRegistry(),
+    );
+    await refreshPreparedModelRuntimeSnapshots(config, {
+      gatewayLifecycle: true,
+      catalogMode: "static",
+      allowGatewaySubagentBinding: true,
+      pluginMetadataSnapshot: metadata,
+    });
+    const dispatch = (await loadPublishedGatewayReplyDispatchRuntime({ agentId: "secondary" }))!;
+    reply.context.mockResolvedValue({
+      kind: "run",
+      workspaceDir: dispatch.workspaceDir,
+      thinkingRuntime: "openclaw",
+    });
+    const warning = vi.fn();
+    reply.execute.mockImplementation(async () => {
+      const pluginGeneration = getPreparedModelRuntimePluginGeneration()!;
+      expect(pluginGeneration).not.toBe(dispatch.pluginGeneration);
+      const contextEngine = await createContextEngineLogicalTurnLease({
+        config,
+        identity: { runId: "reply-context-fallback", sessionId: "reply-context-fallback" },
+        agentDir: dispatch.agentDir,
+        workspaceDir: dispatch.workspaceDir,
+        warn: warning,
+      });
+      try {
+        expect(contextEngine.effectiveEngineId).toBe("legacy");
+        expect(contextEngine.degradedReason).toBe(
+          'context engine "unavailable-context" is not registered',
+        );
+        await using nested = await acquireAgentRunPreparedModelRuntime(
+          {
+            config,
+            agentId: dispatch.agentId,
+            agentDir: dispatch.agentDir,
+            workspaceDir: dispatch.workspaceDir,
+            allowGatewaySubagentBinding: true,
+            runtimePluginSelections: [
+              { provider: "selected", modelId: "model", runtime: "openclaw" },
+            ],
+          },
+          { pluginGeneration },
+        );
+        expect(nested.pluginGeneration).toBe(pluginGeneration);
+        return { text: "reply admitted with legacy context" };
+      } finally {
+        await contextEngine.dispose();
+      }
+    });
+    const execute = bindPreparedReplyDispatchRuntime(dispatch, () =>
+      runPreparedReply({ provider: "selected", model: "model" } as RunPreparedReplyParams),
+    );
+
+    await expect(execute()).resolves.toEqual({ text: "reply admitted with legacy context" });
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('Context engine "unavailable-context" degraded to "legacy"'),
+    );
+    expect(config.plugins?.slots?.contextEngine).toBe("unavailable-context");
   });
 
   it.each([

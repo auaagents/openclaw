@@ -3,7 +3,11 @@
 // the provider list.
 import type { SessionModelUsage } from "../../../../src/infra/session-cost-usage.types.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { ModelAuthStatusResult, ModelCatalogProviderOutcome } from "../../api/types.ts";
+import type {
+  ModelAuthStatusResult,
+  ModelCatalogProviderOutcome,
+  ModelCatalogResult,
+} from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { formatUiError } from "../../lib/format-error.ts";
@@ -13,10 +17,7 @@ import {
 } from "../../lib/gateway-errors.ts";
 import { loadModelAuthStatus } from "../../lib/model-auth.ts";
 import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
-import {
-  requestProviderUsage,
-  type ProviderUsageRequestResult,
-} from "../../lib/provider-usage-request.ts";
+import type { ProviderUsageRequestResult } from "../../lib/provider-usage-request.ts";
 import { requestSessionUsage } from "../../lib/sessions/usage.ts";
 
 registerSettingsEnglish();
@@ -102,7 +103,7 @@ export async function loadModelProvidersData(
       refreshResult && !refreshResult.ok
         ? errorMessage(refreshResult.error)
         : catalog.ok
-          ? modelCatalogRefreshError(catalog.result, t("modelProviders.defaults.discoverFailed"))
+          ? catalogDiscoveryError(catalog.result)
           : errorMessage(catalog.error),
     providerUsage: null,
     costByProvider: null,
@@ -115,11 +116,19 @@ export async function loadModelProvidersData(
   };
 }
 
-export function loadModelProviderUsage(
-  client: GatewayBrowserClient,
-  signal: AbortSignal,
-): Promise<ProviderUsageRequestResult> {
-  return requestProviderUsage(client, { signal });
+/** Names the providers whose listing failed, so the warning points at its cause. */
+export function catalogDiscoveryError(result: ModelCatalogResult): string | null {
+  const failed = new Set(
+    (result.providerOutcomes ?? [])
+      .filter((outcome) => outcome.status === "unavailable")
+      .map((outcome) => outcome.provider),
+  );
+  return modelCatalogRefreshError(
+    result,
+    failed.size
+      ? t("modelProviders.defaults.discoverFailedFor", { providers: [...failed].join(", ") })
+      : t("modelProviders.defaults.discoverFailed"),
+  );
 }
 
 export function loadModelProviderCost(
@@ -134,7 +143,7 @@ export function loadModelProviderCost(
       scope: "family",
       timeZone: "local",
     },
-    { signal },
+    { signal, projection: "overview" },
   )
     .then((result) => result?.aggregates?.byProvider ?? null)
     .catch((error: unknown) => {

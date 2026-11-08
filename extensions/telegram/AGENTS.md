@@ -26,6 +26,7 @@ Proof: `src/channels/message/ingress-drain.test.ts`,
 
 ### Telegram-owned (transport + channel policy)
 
+- Album and forward buffers hold flushes while the same-lane backlog contains a matching member; quiet windows stay sized for Telegram delivery, not local load.
 - Durable-before-ack on both transports. Polling: ingress worker advances its
   offset only after the parent's committed spool enqueue
   (`writeTelegramSpooledUpdate`). Webhook: respond 200 only after the spool
@@ -40,9 +41,9 @@ Proof: `src/channels/message/ingress-drain.test.ts`,
   `resolveTelegramAdoptionStallTimeoutMs`.
 - Non-retryable classifier: `telegram-ingress-non-retryable.ts`
   (missing harness, dispatch-dedupe rollback).
-- Supersede predicate: `telegram-ingress-supersede.ts` — only abort text /
-  authorized-looking explicit commands (and ambient room_event pending) may
-  supersede pre-adoption work. Normal messages never supersede.
+- Supersede predicate: `telegram-ingress-supersede.ts` — authorized abort text
+  and `/new` or `/reset` may supersede pre-adoption user work. Settings and
+  other commands queue behind pending input; command entities alone do not cancel it.
 - room_event ambient work shares the sequential lane so a later user turn can
   supersede it pre-adoption; adopted user turns are never touched (core drain
   supersede is pre-adoption only).
@@ -94,7 +95,17 @@ Proof: `src/channels/message/ingress-drain.test.ts`,
   behavior directly. Avoid custom Bot API wrappers for behavior grammY already
   owns.
 - Throttling is bot-token scoped. All Telegram API clients for the same token
-  share one grammY `apiThrottler()` instance.
+  share one limiter owned by `account-throttler.ts`. The limiter mirrors
+  grammY `apiThrottler()` defaults (upstream does not expose its Bottleneck
+  instances for disposal). Retirement runs in the Gateway process: the
+  account lifecycle hooks (config change, removal, `stopAccount`) release the
+  throttler once its token is no longer configured, settling queued group
+  sends and chat actions that have not started transport I/O — including
+  pacing and authorization-backoff waits — before disconnecting limiters
+  while in-flight requests finish; the final dispatch boundary re-checks
+  retirement for DM and group actions alike. A token still configured
+  (unchanged reloads, manual stops) keeps its limiter. The CLI lifecycle
+  hooks release in the mutating process as well.
 - Do not silently retry failed topic sends without topic metadata. A
   wrong-surface success is worse than a loud Telegram error.
 - DM topics and forum topics are distinct. `direct_messages_topic_id` and

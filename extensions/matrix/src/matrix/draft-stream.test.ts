@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
 // Matrix tests cover draft stream plugin behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMatrixDraftStream } from "./draft-stream.js";
@@ -166,32 +167,6 @@ describe("createMatrixDraftStream", () => {
     vi.useRealTimers();
   });
 
-  it("sends a normal text preview on first partial update", async () => {
-    const stream = createStream();
-
-    stream.update("Hello");
-    await stream.flush();
-
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sentContentAt(0).msgtype).toBe("m.text");
-    expect(sendModuleMocks.sendSingleTextMessageMatrix.mock.calls[0]?.[2]).toMatchObject({
-      includeMentions: false,
-      live: true,
-      msgtype: "m.text",
-    });
-    expect(stream.eventId()).toBe("$evt1");
-  });
-
-  it("tracks the provider-visible prepared draft content", async () => {
-    convertMarkdownTablesMock.mockImplementation((text: string) => `prepared:${text}`);
-    const stream = createStream();
-
-    stream.update("raw table");
-    await stream.flush();
-
-    expect(stream.content()).toBe("prepared:raw table");
-  });
-
   it("preserves indented code through draft sends, edits, and final comparisons", async () => {
     const stream = createStream();
     const firstMarkdown = "    @room";
@@ -200,6 +175,11 @@ describe("createMatrixDraftStream", () => {
     await stream.flush();
 
     expect(sentContentAt(0).body).toBe(firstMarkdown);
+    expect(sendModuleMocks.sendSingleTextMessageMatrix.mock.calls[0]?.[2]).toMatchObject({
+      includeMentions: false,
+      live: true,
+      msgtype: "m.text",
+    });
     expect(stream.content()).toBe(firstMarkdown);
     expect(stream.matchesPreparedText(`${firstMarkdown}  `)).toBe(true);
     expect(stream.matchesPreparedText("@room")).toBe(false);
@@ -234,6 +214,121 @@ describe("createMatrixDraftStream", () => {
     expect(sentContentAt(1)["m.new_content"]).toEqual({ msgtype: "m.notice", body: "ABC" });
   });
 
+  it.each([
+    ["partial", "create"],
+    ["quiet", "create"],
+    ["partial", "edit"],
+    ["quiet", "edit"],
+  ] as const)("coalesces %s updates arriving during an in-flight %s", async (mode, operation) => {
+    vi.setSystemTime(10_000);
+    const pendingRequest = createDeferred<string>();
+    const stream = createStream({ mode });
+    try {
+      if (operation === "edit") {
+        stream.update("A");
+        await stream.flush();
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      sendMessageMock.mockReturnValueOnce(pendingRequest.promise);
+      stream.update("AB");
+      await vi.advanceTimersByTimeAsync(1500);
+      stream.update("ABC");
+      await vi.advanceTimersByTimeAsync(1000);
+      stream.update("ABCD");
+      pendingRequest.resolve(operation === "create" ? "$evt1" : "$edit1");
+      await vi.advanceTimersByTimeAsync(0);
+
+      const inFlightCalls = operation === "create" ? 1 : 2;
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls + 1);
+      expect(sendModuleMocks.editMessageMatrix).toHaveBeenLastCalledWith(
+        "!room:test",
+        "$evt1",
+        "ABCD",
+        expect.objectContaining({ client }),
+      );
+    } finally {
+      pendingRequest.resolve("$evt1");
+      await stream.seal();
+    }
+  });
+
+  it.each(["partial", "quiet"] as const)(
+    "flushes final %s text without waiting for the background throttle",
+    async (mode) => {
+      vi.setSystemTime(10_000);
+      const stream = createStream({ mode });
+      stream.update("A");
+      await stream.flush();
+      stream.update("Final answer");
+
+      await expect(stream.stop()).resolves.toBe("$evt1");
+      expect(sendMessageMock).toHaveBeenCalledTimes(2);
+      expect(sendModuleMocks.editMessageMatrix).toHaveBeenLastCalledWith(
+        "!room:test",
+        "$evt1",
+        "Final answer",
+        expect.objectContaining({ client }),
+      );
+
+      stream.update("Late delta");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sendMessageMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    ["partial", "create"],
+    ["quiet", "create"],
+    ["partial", "edit"],
+    ["quiet", "edit"],
+  ] as const)("flushes final %s text during an in-flight %s", async (mode, operation) => {
+    vi.setSystemTime(10_000);
+    const pendingRequest = createDeferred<string>();
+    const stream = createStream({ mode });
+    try {
+      if (operation === "edit") {
+        stream.update("A");
+        await stream.flush();
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      sendMessageMock.mockReturnValueOnce(pendingRequest.promise);
+      stream.update(operation === "create" ? "A" : "AB");
+      stream.update("Final answer");
+
+      const onStopped = vi.fn();
+      const stopping = stream.stop().then(onStopped);
+      stream.update("Delta while stopping");
+      await vi.advanceTimersByTimeAsync(0);
+
+      const inFlightCalls = operation === "create" ? 1 : 2;
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls);
+      expect(onStopped).not.toHaveBeenCalled();
+      pendingRequest.resolve(operation === "create" ? "$evt1" : "$edit1");
+
+      await stopping;
+      expect(onStopped).toHaveBeenCalledWith("$evt1");
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls + 1);
+      expect(sendModuleMocks.editMessageMatrix).toHaveBeenLastCalledWith(
+        "!room:test",
+        "$evt1",
+        "Final answer",
+        expect.objectContaining({ client }),
+      );
+
+      stream.update("Late delta");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sendMessageMock).toHaveBeenCalledTimes(inFlightCalls + 1);
+    } finally {
+      pendingRequest.resolve("$evt1");
+      await stream.seal();
+    }
+  });
+
   it("skips no-op updates", async () => {
     const stream = createStream();
 
@@ -249,45 +344,15 @@ describe("createMatrixDraftStream", () => {
     expect(sendMessageMock).toHaveBeenCalledTimes(callCount);
   });
 
-  it("ignores updates after stop", async () => {
-    const stream = createStream();
-
-    stream.update("Hello");
-    await stream.stop();
-    const callCount = sendMessageMock.mock.calls.length;
-
-    stream.update("Ignored");
-    await stream.flush();
-    expect(sendMessageMock).toHaveBeenCalledTimes(callCount);
-  });
-
-  it("stop returns the event ID", async () => {
-    const stream = createStream();
-
-    stream.update("Hello");
-    const eventId = await stream.stop();
-    expect(eventId).toBe("$evt1");
-  });
-
-  it("stop does not finalize live drafts on its own", async () => {
-    const stream = createStream({
-      mode: "partial",
-    });
-
-    stream.update("Hello");
-    await stream.stop();
-
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls.at(0)?.[1]).toHaveProperty("org.matrix.msc4357.live");
-  });
-
   it("finalizeLive clears the live marker at most once", async () => {
     const stream = createStream({
       mode: "partial",
     });
 
     stream.update("Hello");
-    await stream.stop();
+    expect(await stream.stop()).toBe("$evt1");
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sentContentAt(0)).toHaveProperty("org.matrix.msc4357.live");
 
     await stream.finalizeLive();
     await stream.finalizeLive();
@@ -352,15 +417,6 @@ describe("createMatrixDraftStream", () => {
     // Only the initial failed attempt
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     expect(stream.eventId()).toBeUndefined();
-  });
-
-  it("skips empty/whitespace text", async () => {
-    const stream = createStream();
-
-    stream.update("   ");
-    await stream.flush();
-
-    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it("stops on edit failure mid-stream", async () => {

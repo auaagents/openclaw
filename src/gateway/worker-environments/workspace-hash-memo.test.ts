@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { tsImport } from "tsx/esm/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { importToolingTypeScript } from "../../../scripts/lib/import-tooling-typescript.mts";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import {
@@ -14,15 +14,24 @@ import {
   serializeRemoteWorkspaceHashMemo,
   withWorkspaceHashMemo,
   withWorkerWorkspaceHashMemo,
+  workspaceCtimeIsReusable,
   type WorkspaceHashMemo,
 } from "./workspace-hash-memo.js";
+import { useAgedWorkspaceHashClock } from "./workspace-hash-memo.test-support.js";
 import { captureWorkspaceManifest, preflightWorkspaceApply } from "./workspace-manifest-worker.js";
 import type { WorkerWorkspaceManifest } from "./workspace-manifest.js";
 
 // Generate the wire script through the source runtime loader, which preserves
 // function names. Vitest's own transform does not exercise that closure boundary.
-const { REMOTE_WORKSPACE_MANIFEST_JS }: typeof import("./workspace-sync-scripts.js") =
-  await tsImport("./workspace-sync-scripts.ts", import.meta.url);
+const { REMOTE_WORKSPACE_MANIFEST_JS } = await importToolingTypeScript(
+  new URL("./workspace-sync-scripts.ts", import.meta.url).href,
+  import.meta.url,
+);
+if (typeof REMOTE_WORKSPACE_MANIFEST_JS !== "string") {
+  throw new Error("Source workspace sync module did not export its manifest script");
+}
+
+useAgedWorkspaceHashClock();
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
@@ -36,6 +45,20 @@ function hashMetrics() {
 }
 
 describe("workspace hash memo", () => {
+  it.each([
+    [-1n, 10_000, false],
+    [0n, 10_000, true],
+    [7_999_999_999n, 10_000, true],
+    [8_000_000_000n, 10_000, false],
+    [9_000_000_000n, 10_000, false],
+    [11_000_000_000n, 10_000, false],
+  ] as const)(
+    "keeps ctime %s eligibility bounded at capture %s",
+    (ctimeNs, startedAtMs, reusable) => {
+      expect(workspaceCtimeIsReusable(ctimeNs, startedAtMs)).toBe(reusable);
+    },
+  );
+
   it("reuses content hashes only within one reconcile stat identity", async () => {
     const root = await fs.realpath(tempDirs.make("openclaw-workspace-hash-memo-"));
     const target = path.join(root, "same-size.txt");

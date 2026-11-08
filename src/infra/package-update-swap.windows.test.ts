@@ -4,12 +4,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as packageFilesystem from "./package-update-filesystem.js";
 import { swapStagedPackageInstall } from "./package-update-swap.js";
-import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
+import {
+  createPackageSwapFixture,
+  createRetainedPackageSwap,
+} from "./package-update-swap.test-support.js";
 import * as retry from "./retry.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const runRetry = retry.retryAsync;
 const backupPackageRoot = packageFilesystem.backupNpmPackageRoot;
+const restorePackageRoot = packageFilesystem.restoreNpmPackageRoot;
 let backupPlatform: NodeJS.Platform;
 let wait: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
 beforeEach(() => {
@@ -27,78 +31,51 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-it.each(["EPERM", "EACCES", "EBUSY"])(
-  "activates the Windows package after a transient %s backup rename failure",
-  async (code) => {
-    const { params, packageRoot, launcher } = await createPackageSwapFixture(
-      dirs.make("openclaw-swap-windows-"),
-    );
-    const rename = fs.rename.bind(fs);
-    let attempts = 0;
-    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      if (String(from) === packageRoot && ++attempts <= 2) {
-        throw Object.assign(new Error(`${code}: package is in use`), { code });
-      }
-      return rename(from, to);
-    });
-    const result = await swapStagedPackageInstall(params);
-    expect(result).toMatchObject({ status: "committed", step: { exitCode: 0 } });
-    expect(attempts).toBe(3);
-    expect(result.step.warnings).toEqual([
-      expect.stringContaining(`${code}: package is in use`),
-      expect.stringContaining(`${code}: package is in use`),
-    ]);
-    await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
-      '"version":"2.0.0"',
-    );
-    await expect(fs.readFile(launcher, "utf8")).resolves.toBe("candidate launcher\n");
-  },
-);
-
 it.each([
-  { platform: "win32", code: "EPERM", retries: true },
-  { platform: "win32", code: "EBUSY", retries: true },
-  { platform: "win32", code: "EACCES", retries: true },
-  { platform: "win32", code: "EXDEV", retries: false },
-  { platform: "linux", code: "EPERM", retries: false },
+  { platform: "win32", code: "EPERM", transient: true },
+  { platform: "win32", code: "EPERM", transient: false },
 ] as const)(
-  "preserves the package after persistent $code on $platform (retries=$retries)",
-  async ({ platform, code, retries }) => {
+  "handles $code on $platform without losing the installation (transient=$transient)",
+  async ({ platform, code, transient }) => {
     backupPlatform = platform;
     const { params, packageRoot, launcher } = await createPackageSwapFixture(
-      dirs.make("openclaw-swap-locked-"),
+      dirs.make("openclaw-swap-rename-"),
     );
     const rename = fs.rename.bind(fs);
     let attempts = 0;
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      if (String(from) === packageRoot) {
-        attempts++;
+      if (String(from) === packageRoot && (++attempts <= 2 || !transient)) {
         throw Object.assign(new Error(`${code}: package is in use`), { code });
       }
       return rename(from, to);
     });
     const result = await swapStagedPackageInstall(params);
-    expect(result).toMatchObject({
-      status: "failed",
-      activePackageRoot: packageRoot,
-      packageRollbackVerified: true,
-      step: { exitCode: 1, failureFacts: [expect.objectContaining({ code })] },
-    });
-    if (retries) {
+    if (transient) {
+      expect(result).toMatchObject({ status: "committed", step: { exitCode: 0 } });
+      expect(attempts).toBe(3);
+      expect(result.step.warnings).toEqual([
+        expect.stringContaining(`${code}: package is in use`),
+        expect.stringContaining(`${code}: package is in use`),
+      ]);
+    } else {
+      expect(result).toMatchObject({
+        status: "failed",
+        activePackageRoot: packageRoot,
+        packageRollbackVerified: true,
+        step: { exitCode: 1, failureFacts: [expect.objectContaining({ code })] },
+      });
       expect(attempts).toBe(16);
       expect(result.step.warnings).toHaveLength(attempts - 1);
       expect(result.step.stderrTail).toContain(packageRoot);
       expect(result.step.stderrTail).toContain("after 16 attempts");
       expect(wait.mock.calls.reduce((total, [ms]) => total + ms, 0)).toBe(57_750);
-    } else {
-      expect(attempts).toBe(1);
-      expect(wait).not.toHaveBeenCalled();
-      expect(result.step.warnings).toBeUndefined();
     }
     await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
-      '"version":"1.0.0"',
+      `"version":"${transient ? "2.0.0" : "1.0.0"}"`,
     );
-    await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+    await expect(fs.readFile(launcher, "utf8")).resolves.toBe(
+      transient ? "candidate launcher\n" : "old launcher\n",
+    );
   },
 );
 
@@ -145,3 +122,71 @@ it.each(["authority", "source", "destination"])(
     );
   },
 );
+
+it("retries a transiently denied Windows rollback publication rename", async () => {
+  const { transaction, packageRoot, launcher } = await createRetainedPackageSwap(
+    dirs.make("swap-rollback-retry-"),
+  );
+  vi.spyOn(packageFilesystem, "restoreNpmPackageRoot").mockImplementation((params) =>
+    restorePackageRoot({ ...params, platform: "win32" }),
+  );
+  const rename = fs.rename.bind(fs);
+  let publicationAttempts = 0;
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(from) === transaction.backupRoot) {
+      publicationAttempts++;
+      if (publicationAttempts <= 2) {
+        throw Object.assign(new Error("EPERM: package is in use"), { code: "EPERM" });
+      }
+    }
+    return rename(from, to);
+  });
+
+  expect(await transaction.rollback(() => {})).toMatchObject({
+    exitCode: 0,
+    activePackageRoot: packageRoot,
+  });
+
+  expect(publicationAttempts).toBe(3);
+  await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
+    `"version":"1.0.0"`,
+  );
+  await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+  expect(await transaction.complete({ activationVerified: false }, () => {})).toBeUndefined();
+});
+
+it("names the exact recovery action when Windows rollback denials strand the live root", async () => {
+  const { transaction, packageRoot } = await createRetainedPackageSwap(
+    dirs.make("swap-rollback-strand-"),
+  );
+  vi.spyOn(packageFilesystem, "restoreNpmPackageRoot").mockImplementation((params) =>
+    restorePackageRoot({ ...params, platform: "win32" }),
+  );
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(to) === packageRoot) {
+      throw Object.assign(new Error("EPERM: package is in use"), { code: "EPERM" });
+    }
+    return rename(from, to);
+  });
+
+  const result = await transaction.rollback(() => {});
+
+  expect(result).toMatchObject({ exitCode: 1, activePackageRoot: null });
+  expect(result.stderrTail).toContain("rollback failed:");
+  expect(result.stderrTail).toContain(`${packageRoot} is missing`);
+  expect(result.stderrTail).toContain(`moving ${transaction.backupRoot}`);
+  expect(result.stderrTail).toContain(`or ${transaction.backupRoot}.candidate`);
+  expect(result.stderrTail).toContain(`to ${packageRoot}`);
+  expect(result.stderrTail).toContain(`update retained at ${transaction.backupRoot}.candidate`);
+  await expect(fs.lstat(packageRoot)).rejects.toHaveProperty("code", "ENOENT");
+  await expect(
+    fs.readFile(path.join(transaction.backupRoot, "package.json"), "utf8"),
+  ).resolves.toContain(`"version":"1.0.0"`);
+  await expect(
+    fs.readFile(path.join(`${transaction.backupRoot}.candidate`, "package.json"), "utf8"),
+  ).resolves.toContain(`"version":"2.0.0"`);
+  expect(await transaction.complete({ activationVerified: true }, () => {})).toMatchObject({
+    exitCode: 1,
+  });
+});

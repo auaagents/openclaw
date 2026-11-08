@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { SessionCatalogProvider } from "openclaw/plugin-sdk/session-catalog";
 import { isControlUiCatalogShareId } from "openclaw/plugin-sdk/session-catalog-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { BeamSessionSummary, BeamStore } from "./store.js";
+import type { BeamStore } from "./store.js";
 import { BEAM_HOST_ID, BEAM_SESSION_SHARE_ROUTE, type BeamStoredSession } from "./types.js";
 
 const DEFAULT_LIMIT = 50;
@@ -18,10 +18,6 @@ function cursorOffset(value: string | undefined): number {
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
-}
-
-function searchableText(session: BeamSessionSummary): string {
-  return `${session.title}\n${session.source}`.toLowerCase();
 }
 
 type TranscriptCursor = { revision: string; end: number };
@@ -61,7 +57,8 @@ export function createBeamSessionCatalog(store: BeamStore): SessionCatalogProvid
     shareRoute: BEAM_SESSION_SHARE_ROUTE,
     supportsProcessHomeIsolation: true,
     async list(params) {
-      const search = params.search?.trim().toLowerCase();
+      // Normalize comparison text only; uploaded titles and stored identities stay original.
+      const search = params.search?.trim().toLowerCase().normalize("NFC");
       const shareId =
         search && isControlUiCatalogShareId(BEAM_SESSION_SHARE_ROUTE, search) ? search : undefined;
       const sessions = (await store.list())
@@ -70,7 +67,10 @@ export function createBeamSessionCatalog(store: BeamStore): SessionCatalogProvid
             !search ||
             (shareId
               ? session.beamId.startsWith(shareId)
-              : searchableText(session).includes(search)),
+              : `${session.title}\n${session.source}`
+                  .toLowerCase()
+                  .normalize("NFC")
+                  .includes(search)),
         )
         .toSorted(
           (left, right) =>

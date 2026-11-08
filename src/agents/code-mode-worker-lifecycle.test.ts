@@ -15,6 +15,7 @@ import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import { createToolSearchCatalogRef, registerHeadlessToolSearchCatalog } from "./tool-search.js";
 
 async function parkExpiringRun(method: "callValue" | "agentWait") {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "performance"] });
   const rawConfig = {
     tools: { codeMode: { enabled: true, snapshotTtlSeconds: 1 } },
   } as never;
@@ -29,7 +30,6 @@ async function parkExpiringRun(method: "callValue" | "agentWait") {
     id: `bridge:${method}:1`,
     method,
     args: method === "agentWait" ? ["collector-1"] : ["openclaw:core:slow", {}],
-    promise: new Promise(() => {}),
     reply: owner.inbox.createReply(`bridge:${method}:1`),
     cancel,
   };

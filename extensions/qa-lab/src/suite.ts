@@ -6,7 +6,6 @@ import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { parseBooleanValue } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { QaGatewayChild, QaGatewayStopResult } from "./gateway-child.js";
 import type { QaLabServerHandle } from "./lab-server.types.js";
-import { resolveQaLiveTurnTimeoutMs } from "./live-timeout.js";
 import { sanitizeQaProgressValue as sanitizeQaSuiteProgressValue } from "./progress-format.js";
 import {
   createQaTransportAdapter,
@@ -18,7 +17,7 @@ import type { QaSeedScenarioWithSource } from "./scenario-catalog.js";
 import type { QaScorecardChannelDriver } from "./scorecard-taxonomy.js";
 import type { QaSuiteGatewayHeapSnapshot, QaSuiteGatewayRssSample } from "./suite-artifacts.js";
 import { waitForQaHttpReady } from "./suite-http-readiness.js";
-import { shouldUseIsolatedQaSuiteScenarioWorkers, splitModelRef } from "./suite-planning.js";
+import { shouldUseIsolatedQaSuiteScenarioWorkers } from "./suite-planning.js";
 import { runQaSuiteScenarioDefinition, runQaSuiteScenarioSteps } from "./suite-runtime-flow.js";
 import type { QaSuiteSummaryJson } from "./suite-summary.js";
 import {
@@ -191,6 +190,7 @@ export async function runQaFlowSuiteCleanupPlan(params: {
   cleanupTransportAfterGatewayStop: () => Promise<void>;
   stopGateway: () => Promise<QaGatewayStopResult>;
   disposeAgentHarnesses: () => Promise<void>;
+  captureProviderArtifacts?: () => Promise<void>;
   stopProvider?: () => Promise<void>;
   finishLab: () => Promise<void>;
 }) {
@@ -220,6 +220,9 @@ export async function runQaFlowSuiteCleanupPlan(params: {
     // that the isolated runtime reached its terminal boundary.
     { phase: "transport after gateway stop", run: cleanupTransportAfterGatewayStop },
     { phase: "agent harnesses", run: params.disposeAgentHarnesses },
+    ...(params.captureProviderArtifacts
+      ? [{ phase: "provider artifacts", run: params.captureProviderArtifacts }]
+      : []),
     ...(params.stopProvider ? [{ phase: "provider stop", run: params.stopProvider }] : []),
     { phase: "lab finish", run: params.finishLab },
   ]);
@@ -293,20 +296,12 @@ export function shouldRunQaSuiteWithIsolatedScenarioWorkers(params: {
   lab?: QaLabServerHandle;
   startLab?: QaSuiteStartLabFn;
 }) {
-  if (
-    !shouldUseIsolatedQaSuiteScenarioWorkers({
+  return (
+    shouldUseIsolatedQaSuiteScenarioWorkers({
       scenarios: params.scenarios,
       concurrency: params.concurrency,
-    })
-  ) {
-    return false;
-  }
-
-  if (params.concurrency === 1 && params.lab && !params.startLab) {
-    return false;
-  }
-
-  return true;
+    }) && !(params.concurrency === 1 && params.lab && !params.startLab)
+  );
 }
 
 const QA_IMAGE_UNDERSTANDING_PNG_BASE64 =
@@ -328,10 +323,6 @@ export async function runQaSuiteScenarioDefinitionForRuntime(
     env,
     scenario,
     runScenario: runQaSuiteScenarioSteps,
-    splitModelRef,
-    formatErrorMessage,
-    liveTurnTimeoutMs: resolveQaLiveTurnTimeoutMs,
-    resolveQaLiveTurnTimeoutMs,
     constants: {
       imageUnderstandingPngBase64: QA_IMAGE_UNDERSTANDING_PNG_BASE64,
       imageUnderstandingLargePngBase64: QA_IMAGE_UNDERSTANDING_LARGE_PNG_BASE64,
@@ -459,7 +450,6 @@ export async function captureGatewayHeapSnapshotCheckpoint(params: {
 }
 
 export { buildQaSuiteSummaryJson } from "./suite-artifacts.js";
-export type { QaSuiteSummaryJsonParams } from "./suite-artifacts.js";
 export type { QaSuiteSummaryJson } from "./suite-summary.js";
 
 export async function runQaFlowSuite(params?: QaSuiteRunParams): Promise<QaSuiteResult> {

@@ -6,7 +6,7 @@ import {
   SESSION_COLOR_IDS,
   SESSION_ICON_GLYPH_IDS,
 } from "../../../packages/gateway-protocol/src/session-agent-status.js";
-import { stringEnum } from "../schema/typebox.js";
+import { requesterProfileSchema, stringEnum } from "../schema/typebox.js";
 
 const ACTIONS = [
   "cloud_profiles",
@@ -24,6 +24,7 @@ const SESSION_ICON_GLYPH_DESCRIPTION = SESSION_ICON_GLYPH_IDS.join(", ");
 
 const SessionsToolSchema = Type.Object(
   {
+    user: requesterProfileSchema(),
     action: stringEnum(ACTIONS, { description: "Action" }),
     profileId: Type.Optional({
       ...SessionMoveProfileTargetSchema.properties.profileId,
@@ -56,7 +57,7 @@ const SessionsToolSchema = Type.Object(
     expectedSessionId: Type.Optional(
       Type.String({
         description:
-          "Durable identity returned by sessions_list; rejects a replaced session. Required for archive, restore, or delete of another session.",
+          "Durable identity returned by sessions_list; rejects a replaced session. Required to archive, restore, or delete another session, and for non-owner rename of another session.",
       }),
     ),
     runId: Type.Optional(
@@ -143,12 +144,14 @@ const SessionsToolSchema = Type.Object(
 
 export const SessionControlToolSchema = Type.Object(
   {
+    user: SessionsToolSchema.properties.user,
     action: stringEnum(["patch", "stop"]),
     sessionKey: SessionsToolSchema.properties.sessionKey,
     expectedSessionId: SessionsToolSchema.properties.expectedSessionId,
     archived: Type.Optional(
       Type.Boolean({
-        description: "patch: required; true archives without deleting, false restores.",
+        description:
+          "patch archive/restore: true archives without deleting, false restores. Omit when renaming.",
       }),
     ),
     runId: SessionsToolSchema.properties.runId,
@@ -157,18 +160,31 @@ export const SessionControlToolSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionRenameToolSchema = Type.Object(
+  {
+    ...Type.Pick(SessionsToolSchema, ["user", "sessionKey", "expectedSessionId", "label"])
+      .properties,
+    action: stringEnum(["patch"], {
+      description: "Rename a session created by the requesting operator.",
+    }),
+    expectedSessionId: Type.Optional(
+      Type.String({
+        description:
+          "Durable identity from sessions_list; required when renaming another session. Current-session rename uses this run's captured identity.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 /** Restrict only the newly exposed Stop action; preserve pre-existing collector controls. */
-export function resolveSessionsToolSchema(controlOnly: boolean, stopAllowed: boolean) {
-  const schema = controlOnly ? SessionControlToolSchema : SessionsToolSchema;
+export function resolveSessionsToolSchema(stopAllowed: boolean) {
   if (stopAllowed) {
-    return schema;
+    return SessionsToolSchema;
   }
-  const { runId: _runId, clearQueued: _clearQueued, ...properties } = schema.properties;
+  const { runId: _runId, clearQueued: _clearQueued, ...properties } = SessionsToolSchema.properties;
   return Type.Object(
-    {
-      ...properties,
-      action: stringEnum(controlOnly ? ["patch"] : ACTIONS.filter((action) => action !== "stop")),
-    },
+    { ...properties, action: stringEnum(ACTIONS.filter((action) => action !== "stop")) },
     { additionalProperties: false },
   );
 }

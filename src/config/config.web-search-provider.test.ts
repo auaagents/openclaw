@@ -1,7 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
-import { createWebSearchTestProvider } from "../test-utils/web-provider-runtime.test-helpers.js";
-import { resolveWebSearchProviderId } from "../web-search/runtime.js";
 import { buildWebSearchProviderConfig } from "./test-helpers.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 
@@ -93,21 +91,6 @@ function searchConfig(provider: string, providerConfig?: Record<string, unknown>
 }
 
 describe("web search provider config", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it.each([
-    { apiKey: undefined, expected: "" },
-    { apiKey: "test-brave-key", expected: "brave" }, // pragma: allowlist secret
-  ])("selects '$expected' with environment credential $apiKey", ({ apiKey, expected }) => {
-    vi.stubEnv("BRAVE_API_KEY", apiKey);
-    const provider = createWebSearchTestProvider({
-      id: "brave",
-      pluginId: "brave",
-      credentialPath: "plugins.entries.brave.config.webSearch.apiKey",
-    });
-    expect(resolveWebSearchProviderId({ search: {}, providers: [provider] })).toBe(expected);
-  });
-
   it("allows bundled web search config outside the explicit plugin allowlist", () => {
     const res = validateWebSearchConfig({
       ...searchConfig("brave"),
@@ -145,6 +128,17 @@ describe("web search provider config", () => {
     expect(validateWebSearchConfig(searchConfig("acme-search")).ok).toBe(true);
   });
 
+  it("normalizes external manifest provider IDs just like runtime lookup", () => {
+    const registry = loadPluginManifestRegistryCore();
+    const external = registry.plugins.find((plugin) => plugin.id === "acme-search")!;
+    external.contracts!.webSearchProviders = [" AcMe-SeArCh "];
+    expect(
+      validateWebSearchConfig(searchConfig("ACME-search"), {
+        pluginMetadataSnapshot: { manifestRegistry: registry },
+      }).ok,
+    ).toBe(true);
+  });
+
   it("rejects installable provider ids when the plugin is not active", () => {
     const res = validateWebSearchConfig(searchConfig("brave"), missingPlugins);
     expect(res.ok).toBe(false);
@@ -154,6 +148,20 @@ describe("web search provider config", () => {
           path: "tools.web.search.provider",
           message:
             'web_search provider is not available: brave (install or enable plugin "brave", then run openclaw doctor --fix)',
+          allowedValues: expect.arrayContaining(["brave"]),
+        }),
+      );
+    }
+  });
+  it("rejects installable provider ids with mixed case when the plugin is not active", () => {
+    const res = validateWebSearchConfig(searchConfig("Brave"), missingPlugins);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues).toContainEqual(
+        expect.objectContaining({
+          path: "tools.web.search.provider",
+          message:
+            'web_search provider is not available: Brave (install or enable plugin "brave", then run openclaw doctor --fix)',
           allowedValues: expect.arrayContaining(["brave"]),
         }),
       );
@@ -192,4 +200,14 @@ describe("web search provider config", () => {
       }),
     );
   });
+});
+
+it("accepts provider ids that differ from the manifest only in case or padding", () => {
+  for (const provider of ["Brave", "BRAVE", " brave "]) {
+    const res = validateWebSearchConfig(searchConfig(provider));
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.warnings).toEqual([]);
+    }
+  }
 });

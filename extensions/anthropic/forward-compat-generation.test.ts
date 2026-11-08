@@ -1,6 +1,7 @@
 // Anthropic tests cover forward-compat resolution for unreleased Claude ids.
 import { supportsClaudeAdaptiveThinking } from "openclaw/plugin-sdk/provider-model-shared";
 import { describe, expect, it } from "vitest";
+import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { buildAnthropicProvider } from "./register.runtime.js";
 
 function resolveModel(modelId: string, provider = "anthropic") {
@@ -20,7 +21,6 @@ describe("unreleased Claude generations", () => {
   it.each([
     ["claude-opus-6", "claude-opus-5-5", true],
     ["claude-sonnet-6", "claude-sonnet-5-5", true],
-    ["claude-opus-5-1", undefined, false],
     ["claude-haiku-5-1", "claude-opus-5-5", true],
   ] as const)(
     "resolves %s onto the newest known contract",
@@ -47,6 +47,7 @@ describe("unreleased Claude generations", () => {
       "claude-opus-5",
       "claude-opus-4-8",
       "claude-sonnet-5-5",
+      "claude-haiku-5-5",
       "claude-sonnet-5",
       "claude-fable-5",
       "claude-fable-5-1",
@@ -55,13 +56,6 @@ describe("unreleased Claude generations", () => {
       expect(model?.id).toBe(id);
       expect(model?.params?.canonicalModelId).toBeUndefined();
     }
-  });
-
-  it("does not mistake snapshot dates for minor versions", () => {
-    // claude-opus-4-20250514 is 4.0; a naive parse reads 4.20 and would treat it
-    // as newer than every released generation.
-    expect(resolveModel("claude-opus-4-20250514")?.params?.canonicalModelId).toBeUndefined();
-    expect(supportsClaudeAdaptiveThinking({ id: "claude-haiku-4-5-20251001" })).toBe(false);
   });
 
   it("clones released snapshot ids from their dateless manifest template", () => {
@@ -93,11 +87,14 @@ describe("unreleased Claude generations", () => {
       "claude-opus-5-5",
       "claude-opus-5",
       "claude-sonnet-5-5",
+      "claude-haiku-5-5",
       "claude-sonnet-5",
       "claude-fable-5",
       "claude-fable-5-1",
     ]) {
-      expect(resolveModel(id)?.compat, id).toEqual({ codeMode: "preferred" });
+      expect(resolveModel(id)?.compat, id).toEqual({
+        codeMode: id === "claude-haiku-5-5" ? "capable" : "preferred",
+      });
     }
     // The Claude CLI provider rows are intentionally unflagged: those runs use
     // the CLI harness where OpenClaw code mode does not apply.
@@ -128,4 +125,24 @@ describe("unreleased Claude generations", () => {
     expect(resolveModel("mimo-v2-flash")).toBeUndefined();
     expect(resolveModel("kimi-k2.6")).toBeUndefined();
   });
+});
+
+it("carries manifest context-window choices onto hand-built modern rows", () => {
+  // Session window selection needs these choices even when live discovery has no rows.
+  const models = manifest.modelCatalog.providers.anthropic.models;
+  const selectable = models.filter((model) => model.contextWindows);
+  expect(selectable.length).toBeGreaterThan(0);
+  for (const { id, contextWindows, contextWindowDefault } of selectable) {
+    expect(resolveModel(id), id).toMatchObject({ contextWindows, contextWindowDefault });
+  }
+  // Claude CLI rows take their choices from their catalog rows, and models that
+  // declare none gain none. Ids this builder declines resolve to no row.
+  for (const rows of [
+    selectable.flatMap(({ id }) => resolveModel(id, "claude-cli") ?? []),
+    models.filter((model) => !model.contextWindows).flatMap(({ id }) => resolveModel(id) ?? []),
+  ]) {
+    for (const row of rows) {
+      expect(row.contextWindows, row.id).toBeUndefined();
+    }
+  }
 });

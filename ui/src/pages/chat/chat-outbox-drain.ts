@@ -23,8 +23,8 @@ import {
   dispatchChatSlashCommand,
   readChatResetTargetAccess,
   type ChatCommandTarget,
-  type ChatCommandResetOptions,
 } from "./chat-commands.ts";
+import { setChatError } from "./chat-history-state.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import {
   consumeChatOutboxRetry,
@@ -58,8 +58,6 @@ export type QueuedChatSendOptions = PendingComposerSnapshot & {
   /** Exact submit-time leaf; restored drains omit it so intervening advances park the draft. */
   expectedLeafEntryId?: string | null;
   pendingSettings?: Promise<boolean>;
-  restoreAttachments?: boolean;
-  restoreDraft?: boolean;
   /** Recognized remote commands remain editable when the Gateway rejects them. */
   restoreOnTerminalFailure?: boolean;
   routingSessionKey?: string;
@@ -74,15 +72,6 @@ export type ChatOutboxDrainDependencies = {
     opts?: QueuedChatSendOptions,
     queuedSessionKey?: string,
   ) => Promise<QueuedChatSendResult>;
-  sendResetSlashCommand: (
-    host: ChatHost,
-    message: string,
-    opts: ChatCommandResetOptions,
-  ) => Promise<void>;
-  setChatError: (
-    host: { lastError?: string | null; chatError?: string | null },
-    error: string | null,
-  ) => void;
 };
 
 type StoredChatOutboxDrainLane = {
@@ -92,6 +81,7 @@ type StoredChatOutboxDrainLane = {
   outcomes: Map<string, QueuedChatSendResult>;
   pendingOptions: Map<string, QueuedChatSendOptions>;
   promise: Promise<void>;
+  reconcileActiveRun: boolean;
   rerun: boolean;
   waitingForVisibleOwner?: boolean;
 };
@@ -111,7 +101,6 @@ export function scheduleStoredChatOutboxRetry(
   scope: StoredChatOutboxScope,
   delayMs: number,
   dependencies: ChatOutboxDrainDependencies,
-  suppressGenericWake = true,
 ) {
   const key = storedChatOutboxScopeKey(scope);
   scheduleChatOutboxRetry(
@@ -119,7 +108,6 @@ export function scheduleStoredChatOutboxRetry(
     key,
     delayMs,
     (owner) => void scheduleStoredChatOutboxDrain(owner, scope, dependencies),
-    suppressGenericWake,
   );
 }
 
@@ -129,20 +117,21 @@ async function reconcileStoredChatOutboxHead(
   item: ChatQueueItem,
   dependencies: ChatOutboxDrainDependencies,
   retryUnconfirmed = false,
+  reconcileActiveRun = false,
 ): Promise<"blocked" | "continue" | "send"> {
   const client = host.client;
   const connectionEpoch = host.connectionEpoch;
   if (!client || !host.connected) {
     return "blocked";
   }
-  // Never-attempted input needs only the session row. Attempted input still needs
-  // history to retire delivered messages, even while a run streams.
+  // Passive wakes can trust active rows; a new foreground follow-up must check
+  // history in case that cached row missed the terminal event.
   const neverAttempted =
     (item.sendAttempts ?? 0) === 0 && item.sendRequestStartedAtMs === undefined;
   if (neverAttempted && item.queueMode && item.sendState !== "unconfirmed") {
     return "send";
   }
-  if (neverAttempted) {
+  if (neverAttempted && !reconcileActiveRun) {
     const row =
       !isUiGlobalSessionKey(outbox.sessionKey) || host.sessions.state.agentId === outbox.agentId
         ? host.sessions.state.result?.sessions.find((session) =>
@@ -251,7 +240,12 @@ async function drainStoredChatOutbox(
       holdProviderReviewQueuedInputs(host, scope.sessionKey, scope.agentId);
       return "blocked";
     }
-    if (!host.connected || !host.client || chatSendHoldReason(host, scope.sessionKey)) {
+    if (
+      !host.connected ||
+      !host.client ||
+      chatOutboxOwner(host).admissions.has(scope) ||
+      chatSendHoldReason(host, scope.sessionKey, false, scope.agentId)
+    ) {
       return "blocked";
     }
     const outbox = readStoredChatOutbox(host, scope);
@@ -326,7 +320,7 @@ async function drainStoredChatOutbox(
         const initialAccess = readChatResetTargetAccess(host, resetTarget);
         if (!initialAccess.allowed) {
           setCommandState("failed", initialAccess.reason);
-          dependencies.setChatError(host, initialAccess.reason);
+          setChatError(host, initialAccess.reason);
           return "blocked";
         }
         const confirmation = await confirmConversationResetForCurrentSession(host, {
@@ -346,7 +340,7 @@ async function drainStoredChatOutbox(
         const currentAccess = readChatResetTargetAccess(host, resetTarget);
         if (!currentAccess.allowed) {
           setCommandState("failed", currentAccess.reason);
-          dependencies.setChatError(host, currentAccess.reason);
+          setChatError(host, currentAccess.reason);
           return "blocked";
         }
         lane.pendingOptions.set(item.id, {
@@ -378,7 +372,7 @@ async function drainStoredChatOutbox(
           continue;
         }
       }
-      if (chatSendHoldReason(host, outbox.sessionKey)) {
+      if (chatSendHoldReason(host, outbox.sessionKey, false, outbox.agentId)) {
         return "blocked";
       }
       // Claim before execution to preserve FIFO and crash-review state.
@@ -410,10 +404,6 @@ async function drainStoredChatOutbox(
           host,
           claimed.localCommandName ?? item.localCommandName,
           claimed.localCommandArgs ?? "",
-          {
-            sendResetMessage: (message, resetOpts) =>
-              dependencies.sendResetSlashCommand(host, message, resetOpts),
-          },
         );
         if (dispatchResult === "deferred") {
           setCommandState("waiting-idle");
@@ -445,7 +435,7 @@ async function drainStoredChatOutbox(
               sendState: "unconfirmed",
             }))
           ) {
-            dependencies.setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+            setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
             // Keep the claimed clear row as the reload-safe barrier.
             return "blocked";
           }
@@ -464,7 +454,7 @@ async function drainStoredChatOutbox(
           return "blocked";
         }
         if (commandScopeIsCurrent()) {
-          dependencies.setChatError(host, null);
+          setChatError(host, null);
         }
       } catch (err) {
         return failCommand(formatUiError(err), true);
@@ -481,6 +471,10 @@ async function drainStoredChatOutbox(
     const pendingOptions = lane.pendingOptions.get(item.id);
     const retryUnconfirmed = freshAdmission && item.sendState === "unconfirmed";
     if (!freshAdmission || retryUnconfirmed || !visible) {
+      // Consume before await so passive reruns stay cheap and a new foreground
+      // request arriving during reconciliation retains its own wake.
+      const reconcileActiveRun = lane.reconcileActiveRun;
+      lane.reconcileActiveRun = false;
       // History reconciles canonical stored versions, not the live row's transport alias.
       const reconciled = await reconcileStoredChatOutboxHead(
         host,
@@ -488,6 +482,7 @@ async function drainStoredChatOutbox(
         storedItem,
         dependencies,
         retryUnconfirmed,
+        reconcileActiveRun,
       );
       if (reconciled === "blocked") {
         return "blocked";
@@ -528,9 +523,6 @@ async function drainStoredChatOutbox(
       }
       return "blocked";
     }
-    if (result === "failed") {
-      continue;
-    }
   }
 }
 
@@ -541,6 +533,7 @@ export async function scheduleStoredChatOutboxDrain(
   itemId?: string,
   options?: QueuedChatSendOptions,
   changed?: boolean,
+  reconcileActiveRun = false,
 ): Promise<QueuedChatSendResult | undefined> {
   const client = host.client;
   if (!host.connected || !client) {
@@ -556,6 +549,7 @@ export async function scheduleStoredChatOutboxDrain(
   // Drain ownership follows the live client, never a disconnected pending RPC.
   const existing = lanes.get(key);
   if (existing) {
+    existing.reconcileActiveRun ||= reconcileActiveRun;
     const ownerRequestedRecovery = existing.host === host;
     const ownerConnectionChanged =
       !existing.owner.host.connected ||
@@ -591,6 +585,7 @@ export async function scheduleStoredChatOutboxDrain(
     outcomes: new Map(),
     pendingOptions: new Map(itemId && options ? [[itemId, options]] : []),
     promise: Promise.resolve(),
+    reconcileActiveRun,
     rerun: false,
   };
   lanes.set(key, lane);

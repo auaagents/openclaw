@@ -1,13 +1,16 @@
 import { EventEmitter, once } from "node:events";
 import fs from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { updateExecutorEntrypoints } from "../cli/cli-entrypoint.test-support.js";
 import { isPidAlive } from "../shared/pid-alive.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
+import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import {
+  createManagedHandoffTempDirTracker,
+  readManagedHandoffArtifacts,
+} from "./update-managed-service-handoff-artifacts.test-support.js";
 import { createManagedServiceBoundaryCleanup } from "./update-managed-service-handoff-process.test-support.js";
 import { signalMockManagedUpdateHandoffReady } from "./update-managed-service-handoff.test-support.js";
 
@@ -22,18 +25,17 @@ vi.mock("node:child_process", async () => {
   });
 });
 
-const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
-  afterEach(async () => {
-    await Promise.all([...processCleanups].map((closeProcess) => closeProcess()));
-    processCleanups.clear();
-    for (const releaseLease of leaseCleanups) {
-      releaseLease();
-    }
-    leaseCleanups.clear();
-    cleanup();
-    vi.restoreAllMocks();
-    vi.resetModules();
-  });
+const tempDirs = createManagedHandoffTempDirTracker();
+afterEach(async () => {
+  await Promise.all([...processCleanups].map((closeProcess) => closeProcess()));
+  processCleanups.clear();
+  for (const releaseLease of leaseCleanups) {
+    releaseLease();
+  }
+  leaseCleanups.clear();
+  await tempDirs.cleanup();
+  vi.restoreAllMocks();
+  vi.resetModules();
 });
 
 beforeEach(() => {
@@ -49,7 +51,7 @@ beforeEach(() => {
     process.nextTick(() =>
       signalMockManagedUpdateHandoffReady({
         child,
-        paramsPath: args.at(-1)!,
+        paramsPath: readManagedHandoffArtifacts(args).paramsPath,
         cleanups: leaseCleanups,
       }),
     );
@@ -92,6 +94,7 @@ describe("foreground update through the prepared managed helper", () => {
     ).mockReturnValue(coordinator);
     const fixturePath = path.join(root, "openclaw.mjs");
     const configPath = path.join(root, "openclaw.json");
+    const nativeProbePath = path.join(root, "native-recovery-probe");
     await fs.writeFile(
       path.join(root, "package.json"),
       JSON.stringify({ name: "openclaw", type: "module", version: "1.0.0" }),
@@ -121,7 +124,8 @@ describe("foreground update through the prepared managed helper", () => {
       string[],
       { env: NodeJS.ProcessEnv },
     ];
-    const [scriptPath, paramsPath] = args;
+    tempDirs.add(path.dirname(prepared.logPath));
+    const { scriptPath, paramsPath } = readManagedHandoffArtifacts(args);
     spawnMock.mock.results.at(-1)!.value.emit("exit", 0, null);
     for (const cleanup of leaseCleanups) {
       cleanup();
@@ -134,18 +138,20 @@ describe("foreground update through the prepared managed helper", () => {
       import { spawn } from "node:child_process";
       import { once } from "node:events";
       import assert from "node:assert/strict";
-      const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
-      register({ tsconfig: ${JSON.stringify(path.resolve("tsconfig.json"))} });
-      const { registerSealedRuntime } = await import(${JSON.stringify(new URL("./sealed-runtime-registry.ts", import.meta.url).href)});
+      const { registerSealedRuntime } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.sealedRegistry).href)});
       registerSealedRuntime({ json5: undefined, resolveSecureTempRoot: () => ${JSON.stringify(coordinator)} });
     `;
     await fs.mkdir(path.join(root, "dist", "cli"), { recursive: true });
     await fs.writeFile(
       path.join(root, "dist", "cli", "daemon-cli.js"),
       `${bootstrap}
-      const ledger = await import(${JSON.stringify(new URL("./update-run-ledger.ts", import.meta.url).href)});
+      const ledger = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.ledger).href)});
       export const { adoptUpdateRun, finishUpdateRun, getUpdateRun, recordUpdateRunStep, recordUpdateRunVerification } = ledger;
-      const handoff = await import(${JSON.stringify(new URL("./update-managed-service-handoff.ts", import.meta.url).href)});
+      export async function waitForGatewayUpdateRecovery() {
+        fs.writeFileSync(${JSON.stringify(nativeProbePath)}, "unexpected native service probe");
+        throw new Error("Foreground recovery does not own a native service");
+      }
+      const handoff = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.handoff).href)});
       export async function assertForegroundUpdateOrigin(...args) {
         await handoff.assertForegroundUpdateOrigin(...args);
         if (${JSON.stringify(mode)} === "lost-claim") {
@@ -167,12 +173,12 @@ describe("foreground update through the prepared managed helper", () => {
       try {
       const root = ${JSON.stringify(root)}, mode = ${JSON.stringify(mode)};
       const unchanged = mode === "no-op" || mode === "lost-terminal-claim";
-      const handoff = await import(${JSON.stringify(new URL("./update-managed-service-handoff.ts", import.meta.url).href)});
-      const { readGatewayOwnerLease } = await import(${JSON.stringify(new URL("./gateway-owner-lease.ts", import.meta.url).href)});
-      const { resolvePathViaExistingAncestorSync } = await import(${JSON.stringify(new URL("./boundary-path.ts", import.meta.url).href)});
-      const { resolveOpenClawStateSqlitePath } = await import(${JSON.stringify(new URL("../state/openclaw-state-db.paths.ts", import.meta.url).href)});
-      const { readControlPlaneUpdateSentinelMeta } = await import(${JSON.stringify(new URL("./update-control-plane-sentinel.ts", import.meta.url).href)});
-      const { createUpdateRun, getUpdateRun } = await import(${JSON.stringify(new URL("./update-run-ledger.ts", import.meta.url).href)});
+      const handoff = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.handoff).href)});
+      const { readGatewayOwnerLease } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.gatewayOwnerLease).href)});
+      const { resolvePathViaExistingAncestorSync } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.boundaryPath).href)});
+      const { resolveOpenClawStateSqlitePath } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.statePaths).href)});
+      const { readControlPlaneUpdateSentinelMeta } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.sentinel).href)});
+      const { createUpdateRun, getUpdateRun } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.ledger).href)});
       const stagePath = path.join(root, "staging"), activationPath = path.join(root, "activated");
       if (process.argv[2] === "triage") {
         process.stdout.write(JSON.stringify({ diagnostic: "fixture failure recorded" }));
@@ -221,7 +227,9 @@ describe("foreground update through the prepared managed helper", () => {
             { name: "gateway verification", command: "gateway verification", cwd: root, durationMs: 1, exitCode: 0 },
           ] } : {}),
           ...(mode === "pending-sibling-unsafe" ? { recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" } } : {}),
-          ...(failed ? { reason: "fixture-recovery", recovery: { serviceRestartSafe: mode === "safe-recovery", version: "1.0.0" } } : {}),
+          ...(failed ? { reason: "fixture-recovery", recovery: mode === "safe-recovery"
+            ? { serviceRestartSafe: true, version: "1.0.0" }
+            : { serviceRestartSafe: false, reason: "runtime-verification-failed" } } : {}),
           after: { version: "1.0.0" } }), resolve));
         if (failed) process.exitCode = mode === "safe-recovery" ? 1 : 79;
         if (mode === "pending-sibling-failed-exit") process.exitCode = 1;
@@ -229,8 +237,8 @@ describe("foreground update through the prepared managed helper", () => {
         process.disconnect();
         }
       } else {
-        const { acquireGatewayLock } = await import(${JSON.stringify(new URL("./gateway-lock.ts", import.meta.url).href)});
-        const { createManagedHandoffLeaseStore } = await import(${JSON.stringify(new URL("./update-managed-service-handoff-lease.ts", import.meta.url).href)});
+        const { acquireGatewayLock } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.gatewayLock).href)});
+        const { createManagedHandoffLeaseStore } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints.lease).href)});
         const server = net.createServer(socket => socket.end("serving"));
         server.listen(0, "127.0.0.1"); await once(server, "listening");
         const port = server.address().port;
@@ -256,6 +264,7 @@ describe("foreground update through the prepared managed helper", () => {
         }
         Object.assign(params, { foregroundOrigin: origin, serviceRecovery: undefined, runId: run.runId,
           beforePark: true, commandArgv: [process.execPath, ${JSON.stringify(fixturePath)}, "update", "--json"], nodeExecArgv: [] });
+        if (mode === "safe-recovery") params.recovery = { serviceRestartSafe: true, version: "1.0.0" };
         const meta = JSON.parse(fs.readFileSync(params.metaPath, "utf8"));
         Object.assign(meta.meta, { root, runId: run.runId, foregroundOrigin: origin, completionOwner: "gateway-restart" });
         fs.writeFileSync(params.metaPath, JSON.stringify(meta));
@@ -383,6 +392,7 @@ describe("foreground update through the prepared managed helper", () => {
         replacementOwner?: string;
       };
       const log = await fs.readFile(prepared.logPath, "utf8");
+      await expect(fs.access(nativeProbePath)).rejects.toMatchObject({ code: "ENOENT" });
       expect(result.helperSignal, log).toBeNull();
       expect(result.helperCode, log).toBe(
         [

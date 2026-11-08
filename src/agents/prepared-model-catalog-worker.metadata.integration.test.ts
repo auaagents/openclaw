@@ -125,8 +125,6 @@ describe("prepared catalog parent metadata ownership", () => {
           {
             pluginMetadataSnapshot: metadata,
             pluginRegistry: registry,
-            inlineProviderModels: [],
-            configuredCatalogEntries: [],
           },
           "live",
           { modelsJsonContents: null, pluginCatalogs: [] },
@@ -155,7 +153,7 @@ describe("prepared catalog parent metadata ownership", () => {
   });
 
   it("startSerializedSnapshotBuildBatch retains canonical metadata through catalog and native auth requests", async () => {
-    const fixture = createCatalogFixture(makeTempDir, 0);
+    const fixture = await createCatalogFixture(makeTempDir, 0);
     const { agentDir, config, env, workspaceDir } = fixture;
     const cache = createPluginCache();
     const metadata = withPluginCache(cache, () =>

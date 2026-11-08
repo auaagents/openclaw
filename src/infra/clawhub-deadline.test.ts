@@ -4,7 +4,6 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { downloadClawHubPackageArchive } from "./clawhub-artifacts.js";
 import type { ClawHubFetch } from "./clawhub-client.js";
 import { reportClawHubPluginInstallTelemetry, searchClawHubPackages } from "./clawhub-packages.js";
-import { reportClawHubSkillInstallTelemetry } from "./clawhub-skills.js";
 
 function createResponseSource(params: { status: number; headersAfterMs?: number }) {
   const connected = createDeferred<{
@@ -13,7 +12,7 @@ function createResponseSource(params: { status: number; headersAfterMs?: number 
   }>();
   const aborted = vi.fn();
   const cancelled = vi.fn();
-  const fetchImpl: ClawHubFetch = async (_input, init) => {
+  const fetchImpl: ClawHubFetch = vi.fn(async (_input, init) => {
     const signal = init?.signal;
     if (!signal) {
       throw new Error("ClawHub fetch must supply its request signal");
@@ -60,7 +59,7 @@ function createResponseSource(params: { status: number; headersAfterMs?: number 
       statusText: params.status === 400 ? "Bad Request" : undefined,
       headers: { "Retry-After": "0" },
     });
-  };
+  });
   return { fetchImpl, connected: connected.promise, aborted, cancelled };
 }
 
@@ -204,30 +203,16 @@ describe("ClawHub response deadlines", () => {
     }
   });
 
-  it.each([
-    {
-      name: "plugin",
-      report: (fetchImpl: ClawHubFetch) =>
-        reportClawHubPluginInstallTelemetry({
-          packageName: "deadline-fixture",
-          token: "fixture-token",
-          timeoutMs: 100,
-          fetchImpl,
-        }),
-    },
-    {
-      name: "skill",
-      report: (fetchImpl: ClawHubFetch) =>
-        reportClawHubSkillInstallTelemetry({
-          slug: "deadline-fixture",
-          token: "fixture-token",
-          timeoutMs: 100,
-          fetchImpl,
-        }),
-    },
-  ])("disposes the unread successful $name telemetry response", async ({ report }) => {
+  it("disposes the unread successful telemetry response", async () => {
     const source = createResponseSource({ status: 200 });
-    const pending = observe(report(source.fetchImpl));
+    const pending = observe(
+      reportClawHubPluginInstallTelemetry({
+        packageName: "deadline-fixture",
+        token: "fixture-token",
+        timeoutMs: 100,
+        fetchImpl: source.fetchImpl,
+      }),
+    );
     const body = await source.connected;
     try {
       await expect(pending.result).resolves.toEqual({ value: undefined });

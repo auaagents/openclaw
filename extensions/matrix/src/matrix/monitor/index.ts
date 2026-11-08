@@ -199,6 +199,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     accountId: auth.accountId,
     baseUrl: auth.homeserver,
     statusSink: opts.setStatus,
+    deferReadyUntilStartupComplete: true,
   });
   let cleanedUp = false;
   let cleanupPromise: Promise<void> | null = null;
@@ -276,11 +277,11 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   );
   const blockStreamingEnabled = resolveChannelStreamingBlockEnabled(accountConfig) === true;
   const startupMs = Date.now();
-  const startupGraceMs = 0;
   const warnedEncryptedRooms = new Set<string>();
   const warnedCryptoMissingRooms = new Set<string>();
   let healthySyncSinceMs: number | undefined;
-  const noteSyncHealthState = (state: MatrixSyncState, at = Date.now()) => {
+  const onSyncState = (state: MatrixSyncState) => {
+    const at = Date.now();
     if (isMatrixReadySyncState(state)) {
       healthySyncSinceMs ??= at;
       return;
@@ -288,9 +289,6 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     if (isMatrixDisconnectedSyncState(state)) {
       healthySyncSinceMs = undefined;
     }
-  };
-  const onSyncState = (state: MatrixSyncState) => {
-    noteSyncHealthState(state);
   };
   const monitorRetirement = {
     closeTaskAdmission: () => {
@@ -417,7 +415,6 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       mediaMaxBytes,
       historyLimit,
       startupMs,
-      startupGraceMs,
       dropPreStartupMessages,
       inboundDeduper,
       directTracker,
@@ -470,7 +467,6 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       warnedEncryptedRooms,
       warnedCryptoMissingRooms,
       logger,
-      startupGraceMs,
       getHealthySyncSinceMs: () => healthySyncSinceMs,
       formatNativeDependencyHint: core.system.formatNativeDependencyHint,
       onRoomMessage: handleRoomMessage,
@@ -534,6 +530,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       await cleanup("stop");
       return;
     }
+    statusController.markStartupComplete();
 
     await Promise.race([
       waitUntilAbort(monitorLifecycleSignal, async () => {
@@ -550,11 +547,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     ]);
     await cleanup();
   } catch (err) {
-    if (monitorSetupClosed) {
-      await cleanup("stop");
-      return;
-    }
-    if (monitorLifecycleSignal?.aborted === true && isMatrixStartupAbortError(err)) {
+    if (monitorSetupClosed || (monitorLifecycleSignal?.aborted && isMatrixStartupAbortError(err))) {
       await cleanup("stop");
       return;
     }

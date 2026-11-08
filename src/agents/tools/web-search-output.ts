@@ -129,15 +129,12 @@ function toHttpUrl(value: string): string | undefined {
   if (value.length > 2_048) {
     return undefined;
   }
-  try {
-    const parsed = new URL(value);
-    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      parsed.href.length <= 2_048
-      ? parsed.href
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  const parsed = URL.parse(value);
+  return parsed &&
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    parsed.href.length <= 2_048
+    ? parsed.href
+    : undefined;
 }
 // Purely structural date charset; free-form dates could smuggle instructions.
 const PUBLISHED_RE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]{0,20})?$/u;
@@ -169,11 +166,11 @@ function externalContentStamp(provider: string): WebSearchExternalContent {
 function normalizeCitations(
   value: unknown,
   budget: WebSearchOutputBudget,
-): Array<{ url: string; title?: string }> | undefined {
+): Array<Static<typeof WebSearchCitationSchema>> | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const citations: Array<{ url: string; title?: string }> = [];
+  const citations: Array<Static<typeof WebSearchCitationSchema>> = [];
   let scanned = 0;
   // A citation url must actually parse as http(s); free text in a url slot
   // would bypass the untrusted-content envelope.
@@ -283,7 +280,7 @@ export function normalizeWebSearchOutput(params: {
       const url = toHttpUrl(row.url as string) as string;
       return consumeUrlBudget(url, budget) ? [{ row, url }] : [];
     });
-    const results = boundedRows.map(({ row, url }) => {
+    const prepared = boundedRows.map(({ row, url }) => {
       const snippet =
         typeof row.snippet === "string"
           ? row.snippet
@@ -300,21 +297,49 @@ export function normalizeWebSearchOutput(params: {
           published = row.published;
         }
       }
-      const normalizedRow: Static<typeof WebSearchResultSchema> = {
-        title: wrapProse(row.title as string, budget),
-        url,
-      };
-      if (snippet !== undefined) {
-        normalizedRow.snippet = wrapProse(snippet, budget);
-      }
-      if (published !== undefined) {
-        normalizedRow.published = published;
-      }
-      if (typeof row.siteName === "string") {
-        normalizedRow.siteName = wrapProse(row.siteName, budget);
-      }
-      return normalizedRow;
+      const title = row.title as string;
+      const siteName = typeof row.siteName === "string" ? row.siteName : undefined;
+      const proseChars = [title, snippet, siteName].reduce(
+        (total, value) =>
+          total +
+          (value === undefined
+            ? 0
+            : truncateSanitizedExternalContent(
+                unwrapWebSearchOutputText(value),
+                Number.MAX_SAFE_INTEGER,
+              ).text.length),
+        0,
+      );
+      return { url, title, snippet, published, siteName, proseChars };
     });
+    // Charge rows from the least prose to the most, each within an equal share of
+    // what is left: rows that fit keep everything and only the longest are trimmed,
+    // so one long page cannot blank the results after it.
+    const order = prepared
+      .map((entry, index) => ({ entry, index }))
+      .toSorted((a, b) => a.entry.proseChars - b.entry.proseChars);
+    const results: Array<Static<typeof WebSearchResultSchema>> = [];
+    for (const [position, { entry, index }] of order.entries()) {
+      const share = Math.floor(budget.remaining / (order.length - position));
+      const rowBudget: WebSearchOutputBudget = { remaining: share, truncated: false };
+      // The title and site name are charged before the snippet, which takes the rest.
+      const title = wrapProse(entry.title, rowBudget);
+      const siteName =
+        entry.siteName === undefined ? undefined : wrapProse(entry.siteName, rowBudget);
+      const normalizedRow: Static<typeof WebSearchResultSchema> = { title, url: entry.url };
+      if (entry.snippet !== undefined) {
+        normalizedRow.snippet = wrapProse(entry.snippet, rowBudget);
+      }
+      if (entry.published !== undefined) {
+        normalizedRow.published = entry.published;
+      }
+      if (siteName !== undefined) {
+        normalizedRow.siteName = siteName;
+      }
+      budget.remaining -= share - rowBudget.remaining;
+      budget.truncated ||= rowBudget.truncated;
+      results[index] = normalizedRow;
+    }
     const rowsWereReduced = rows.length !== results.length;
     return {
       kind: "results",

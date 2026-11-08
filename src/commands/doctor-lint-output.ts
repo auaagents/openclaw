@@ -48,6 +48,7 @@ export function formatDoctorLintFailure(error: unknown) {
   const failure = formatCliJsonFailure(error);
   return {
     ...failure,
+    status: "blocked",
     ...formatJsonResult({
       ok: false,
       checksRun: 0,
@@ -93,10 +94,7 @@ export type DoctorLintExecution = {
 };
 
 export function detectDoctorLintOutputMode(opts: DoctorLintCliOptions): "human" | "json" {
-  if (opts.json === true) {
-    return "json";
-  }
-  return process.stdout.isTTY ? "human" : "json";
+  return opts.json === true || !process.stdout.isTTY ? "json" : "human";
 }
 
 export function createStateSnapshotFailureFinding(error: Error): HealthFinding {

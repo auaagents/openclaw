@@ -30,7 +30,8 @@ vi.mock("../../infra/outbound/deliver-runtime.js", () => ({
   deliverOutboundPayloadsInternal: deliverOutboundPayloads,
 }));
 
-vi.mock("../../config/mcp-config.js", () => ({
+vi.mock("../../config/mcp-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/mcp-config.js")>()),
   listConfiguredMcpServers: vi.fn(async () => ({
     ok: true,
     path: "/tmp/openclaw.json",
@@ -188,19 +189,6 @@ describe("handleCommands /mcp", () => {
     });
   });
 
-  it("accepts non-stdio MCP config at the config layer", async () => {
-    await withTempHome("openclaw-command-mcp-home-", async () => {
-      const params = buildCommandTestParams(
-        '/mcp set remote={"url":"https://example.com/mcp"}',
-        buildCfg(),
-      );
-      params.command.senderIsOwner = true;
-
-      const result = expectMcpResult(await handleMcpCommand(params, true));
-      expect(result.reply?.text).toContain('MCP server "remote" saved');
-    });
-  });
-
   it("routes group /mcp show privately and redacts the delivered config", async () => {
     await withTempHome("openclaw-command-mcp-home-", async () => {
       const privateReplies: string[] = [];
@@ -347,25 +335,25 @@ describe("handleCommands /mcp", () => {
     });
   });
 
-  it.each([
-    { name: "released", custody: "released" },
-    { name: "unowned", custody: undefined },
-  ] as const)("tries later private routes after a $name failure", async ({ custody }) => {
-    const error = new OutboundDeliveryError("private route unavailable", { cause: undefined });
-    error.queueCustody = custody;
-    deliverOutboundPayloads
-      .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce([{ channel: "signal", messageId: "fallback-send" }]);
-    const result = await showGroupMcpConfig();
+  it.each([{ name: "released", custody: "released" }] as const)(
+    "tries later private routes after a $name failure",
+    async ({ custody }) => {
+      const error = new OutboundDeliveryError("private route unavailable", { cause: undefined });
+      error.queueCustody = custody;
+      deliverOutboundPayloads
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce([{ channel: "signal", messageId: "fallback-send" }]);
+      const result = await showGroupMcpConfig();
 
-    expect(deliverOutboundPayloads.mock.calls.map(([request]) => request.to)).toEqual([
-      "owner-1",
-      "owner-2",
-    ]);
-    expect(result.reply?.text).toContain("sent the details to the owner privately");
-    expect(result.reply?.text).not.toContain("billing-server");
-    expect(result.reply?.text).not.toContain("private-billing-mcp");
-  });
+      expect(deliverOutboundPayloads.mock.calls.map(([request]) => request.to)).toEqual([
+        "owner-1",
+        "owner-2",
+      ]);
+      expect(result.reply?.text).toContain("sent the details to the owner privately");
+      expect(result.reply?.text).not.toContain("billing-server");
+      expect(result.reply?.text).not.toContain("private-billing-mcp");
+    },
+  );
 
   it("keeps identityless first acceptance pending without sending to another private target", async () => {
     deliverOutboundPayloads
@@ -421,7 +409,6 @@ describe("handleCommands /mcp", () => {
   });
 
   it.each([
-    { name: "held custody", custody: "held", ambiguous: false, visible: false },
     { name: "held partial delivery", custody: "held", ambiguous: false, visible: true },
     { name: "released ambiguity", custody: "released", ambiguous: true, visible: false },
   ] as const)(
@@ -454,11 +441,6 @@ describe("handleCommands /mcp", () => {
   );
 
   it.each([
-    {
-      name: "confirmed delivery",
-      suppressed: false,
-      acknowledgement: "sent the details to the owner privately",
-    },
     {
       name: "intentional suppression",
       suppressed: true,

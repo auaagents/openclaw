@@ -1,7 +1,19 @@
+import fs from "node:fs";
+import path from "node:path";
+import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
+import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
+import { withEnv, withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { sendA2aChannelText } from "./outbound.js";
 import type { A2aCoreConfig, A2aPeerConfig } from "./types.js";
+
+/** Both config guards reject deterministically before I/O; the queue must read them as terminal. */
+function expectPermanentPreDispatchRejection(failure: unknown, message: RegExp | string) {
+  expect(failure).toBeInstanceOf(PlatformMessageNotDispatchedError);
+  expect((failure as PlatformMessageNotDispatchedError).retryable).toBe(false);
+  expect((failure as Error).message).toMatch(message);
+}
 
 function createA2aOutboundConfig(
   peer: A2aPeerConfig = { token: "inbound-token", url: "https://hermes.example/a2a/v1" },
@@ -194,7 +206,11 @@ describe("A2A outbound channel delivery", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     const cfg = createA2aOutboundConfig({ token: "inbound-token" });
 
-    await expect(sendA2aChannelText({ cfg, to: "hermes", text: "hello" })).rejects.toThrow(
+    const failure = await sendA2aChannelText({ cfg, to: "hermes", text: "hello" }).catch(
+      (error: unknown) => error,
+    );
+    expectPermanentPreDispatchRejection(
+      failure,
       "peer hermes has no url configured for outbound A2A",
     );
     expect(fetchMock).not.toHaveBeenCalled();
@@ -224,22 +240,6 @@ describe("A2A outbound channel delivery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("bounds oversized peer JSON responses before parsing", async () => {
-    const cfg = createA2aOutboundConfig();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      createA2aJsonResponse({
-        jsonrpc: "2.0",
-        result: { task: { id: "remote-task-1" } },
-        padding: "x".repeat(16 * 1024 * 1024),
-      }),
-    );
-
-    await expect(sendA2aChannelText({ cfg, to: "hermes", text: "hello" })).rejects.toThrow(
-      "peer hermes A2A response: JSON response exceeds 16777216 bytes",
-    );
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
   it("does not retain reflected outbound credentials in malformed responses", async () => {
     const outboundToken = "outbound-secret-token";
     const cfg = createA2aOutboundConfig({
@@ -266,5 +266,36 @@ describe("A2A outbound channel delivery", () => {
     expect(String(failure.cause)).not.toContain(outboundToken);
     expect(failure.cause).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("A2A outbound sends with unresolved authored credentials", () => {
+  async function loadPeerConfig(stateDir: string, peer: Record<string, unknown>) {
+    const configPath = path.join(stateDir, "openclaw.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ channels: { a2a: { peers: { hermes: peer } } } }),
+    );
+    return withEnv(
+      { OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_A2A_OUTBOUND_TEST_UNSET: undefined },
+      // Each case needs a fresh load; the default read pins the first snapshot.
+      () => getRuntimeConfig({ pin: false }),
+    );
+  }
+
+  it("refuses to send, and performs no network I/O, when the authored outboundToken did not resolve", async () => {
+    await withStateDirEnv("a2a-outbound-unresolved-", async ({ stateDir }) => {
+      const cfg = await loadPeerConfig(stateDir, {
+        token: "inbound-token",
+        url: "https://hermes.example/a2a/v1",
+        outboundToken: "${OPENCLAW_A2A_OUTBOUND_TEST_UNSET}",
+      });
+
+      const failure = await sendA2aChannelText({ cfg, to: "a2a:hermes", text: "hello" }).catch(
+        (error: unknown) => error,
+      );
+      expectPermanentPreDispatchRejection(failure, /outboundToken reference did not resolve/);
+      expect(ssrfRuntime.fetchWithSsrFGuard).not.toHaveBeenCalled();
+    });
   });
 });

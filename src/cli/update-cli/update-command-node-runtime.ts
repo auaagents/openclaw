@@ -1,8 +1,8 @@
 // Target-aware runtime recovery; startup discovery retains its inherited-environment guards.
 import { randomUUID } from "node:crypto";
-import path from "node:path";
+import { withNodeRuntimePath } from "../../../node-runtime-env.mjs";
+import { formatNodeSecurityWarning } from "../../../node-version.mjs";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
-import { applyPathPrepend } from "../../infra/path-prepend.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
@@ -15,11 +15,8 @@ import {
 } from "./update-command-executor.js";
 import { prepareUpdateCommandNativeGate } from "./update-command-native-gate.js";
 import type { PackageRuntimeRecovery } from "./update-command-node-runtime-resolution.js";
-import type {
-  PackageRuntimePreflight,
-  PreManagedServiceStop,
-} from "./update-command-service-context-types.js";
-import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
+import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
+import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
 /** Only a live updater may provision; discovery never reads dotenv-selected paths. */
 export function createPackageRuntimeRecovery(params: {
@@ -98,25 +95,6 @@ export function createPackageRuntimeRecovery(params: {
   };
 }
 
-function reportPackageRuntimeSelection(
-  selection: PackageRuntimePreflight,
-  opts: { json?: boolean; tag: string },
-): void {
-  if (!selection.replacedNodeRunner || opts.json) {
-    return;
-  }
-  defaultRuntime.log(
-    theme.warn(
-      `Managed gateway service Node (${selection.replacedNodeRunner}) cannot run openclaw@${selection.targetVersion ?? opts.tag}.`,
-    ),
-  );
-  defaultRuntime.log(
-    theme.muted(
-      `Using compatible Node (${selection.nodeRunner}) for the update and managed service refresh.`,
-    ),
-  );
-}
-
 /** The same target-runtime owner serves admitted updates and target-owned initialization. */
 export async function preparePackageUpdateRuntime(params: {
   root: string;
@@ -125,12 +103,14 @@ export async function preparePackageUpdateRuntime(params: {
   managedService?: PreManagedServiceStop;
   packageUpdateNodeRunner?: string;
   packageInstallEnv?: NodeJS.ProcessEnv;
-  packageRuntimeTarget?: { version: string; nodeEngine: string | null };
+  packageRuntimeTarget?: Parameters<typeof resolvePackageRuntimePreflight>[0]["target"];
   shouldRestart: boolean;
   opts: UpdateCommandOptions;
   executor: UpdateCommandExecutor;
   timeoutMs: number;
   tag: string;
+  assertPackageRuntimeCurrent?: () => Promise<void>;
+  admittedPackageRuntime?: import("../../infra/package-update-activation-runtime.types.js").PackageActivationRuntime;
   invocationCwd?: string;
   channel?: import("../../infra/update-channels.js").UpdateChannel;
   requestedChannel?: import("../../infra/update-channels.js").UpdateChannel | null;
@@ -151,6 +131,7 @@ export async function preparePackageUpdateRuntime(params: {
   if (params.opts.run) {
     params.opts.run.executorFence = fence;
   }
+  await params.assertPackageRuntimeCurrent?.();
   const result = await resolvePackageRuntimePreflight({
     root: params.root,
     service: params.managedService,
@@ -159,15 +140,17 @@ export async function preparePackageUpdateRuntime(params: {
     channel: params.channel,
     requestedChannel: params.requestedChannel,
     target: params.packageRuntimeTarget,
+    installedRoot: params.root,
     timeoutMs: params.timeoutMs,
     nodeRunner:
-      params.managedServiceRoot && canRefreshManagedServiceNode
+      params.admittedPackageRuntime?.path ??
+      (params.managedServiceRoot && canRefreshManagedServiceNode
         ? params.packageUpdateNodeRunner
-        : (managedServiceNodeRunner ?? params.packageUpdateNodeRunner),
+        : (managedServiceNodeRunner ?? params.packageUpdateNodeRunner)),
     fallbackNodeRunner:
       canRefreshManagedServiceNode && !process.versions.bun ? resolveNodeRunner() : undefined,
     runtimeRecovery:
-      !managedServiceNodeRunner || canRefreshManagedServiceNode
+      !params.admittedPackageRuntime && (!managedServiceNodeRunner || canRefreshManagedServiceNode)
         ? createPackageRuntimeRecovery({
             root: params.root,
             opts: params.opts,
@@ -177,14 +160,40 @@ export async function preparePackageUpdateRuntime(params: {
         : undefined,
   });
   fence.assertCurrent();
+  await params.assertPackageRuntimeCurrent?.();
   if (result.ok) {
-    if (params.packageInstallEnv && result.value.nodeRunner) {
-      // SAFETY: createGlobalInstallEnv filters undefined entries into a string-valued copy.
-      applyPathPrepend(params.packageInstallEnv as Record<string, string>, [
-        path.dirname(result.value.nodeRunner),
-      ]);
+    if (params.admittedPackageRuntime) {
+      result.value.activationRuntime = params.admittedPackageRuntime;
+      if (managedServiceNodeRunner && managedServiceNodeRunner !== result.value.nodeRunner) {
+        result.value.replacedNodeRunner = managedServiceNodeRunner;
+      }
     }
-    reportPackageRuntimeSelection(result.value, { json: params.opts.json, tag: params.tag });
+    if (
+      result.value.nodeSecurityWarning &&
+      result.value.nodeSecurityWarning !==
+        (process.versions.bun ? null : formatNodeSecurityWarning(process.versions.node))
+    ) {
+      defaultRuntime.error(`SECURITY WARNING: ${result.value.nodeSecurityWarning}`);
+    }
+    if (params.packageInstallEnv && result.value.nodeRunner) {
+      Object.assign(
+        params.packageInstallEnv,
+        withNodeRuntimePath(params.packageInstallEnv, result.value.nodeRunner),
+      );
+    }
+    const selection = result.value;
+    if (selection.replacedNodeRunner && !params.opts.json) {
+      defaultRuntime.log(
+        theme.warn(
+          `Managed gateway service Node (${selection.replacedNodeRunner}) cannot run openclaw@${selection.targetVersion ?? params.tag}.`,
+        ),
+      );
+      defaultRuntime.log(
+        theme.muted(
+          `Using compatible Node (${selection.nodeRunner}) for the update and managed service refresh.`,
+        ),
+      );
+    }
   }
   return result;
 }

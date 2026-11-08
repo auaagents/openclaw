@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { Command } from "commander";
 import { expect, it, vi } from "vitest";
 import * as runtimePaths from "../../daemon/runtime-paths.js";
+import * as activationPaths from "../../infra/package-update-activation-paths.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
 import * as packageMetadata from "../../infra/update-check-package-target.js";
 import * as updateCheck from "../../infra/update-check.js";
@@ -14,8 +15,11 @@ import * as shared from "./shared.js";
 import { installFreshUpdateFixture, targetMetadata } from "./update-command-fresh.test-support.js";
 import * as packageUpdate from "./update-command-package.js";
 import * as commandRun from "./update-command-run.js";
-import { unsupportedServiceRuntimeFixture } from "./update-command-runtime-recovery.test-support.js";
-import * as servicePlan from "./update-command-service-plan.js";
+import * as runtimePlan from "./update-command-runtime-preflight.js";
+import {
+  stubNodeRuntime,
+  unsupportedServiceRuntimeFixture,
+} from "./update-command-runtime-recovery.test-support.js";
 import { updateCommand } from "./update-command.js";
 
 vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment: () => false }));
@@ -30,12 +34,20 @@ it.each([
 ] as const)(
   "replays runtime recovery for saved %s (%s, %s, requested=%s) through the target resolver",
   async (channel, version, selector, requestedChannel) => {
+    stubNodeRuntime();
     vi.stubEnv("OPENCLAW_PROFILE", undefined);
     const configPath = expectDefined(process.env.OPENCLAW_CONFIG_PATH, "isolated config path");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     const config = JSON.stringify({ update: { channel } });
     fs.writeFileSync(configPath, config);
     fixture.managedServiceNodeRunner = "/home/operator/.nvm/versions/node/v22.18.0/bin/node";
+    const captureRuntime = activationPaths.capturePackageActivationRuntime;
+    vi.spyOn(activationPaths, "capturePackageActivationRuntime").mockImplementation(
+      (kind, executable) =>
+        executable === fixture.managedServiceNodeRunner
+          ? { kind, path: executable, identity: "synthetic-service-node" }
+          : captureRuntime(kind, executable),
+    );
     const prepare = expectDefined(
       vi.mocked(commandRun.prepareUpdateCommand).getMockImplementation(),
       "fixture preparation",
@@ -44,19 +56,16 @@ it.each([
       ...(await prepare(opts)),
       requestedChannel: normalizeUpdateChannel(opts.channel),
     }));
-    vi.mocked(packageMetadata.fetchNpmPackageTargetStatus).mockImplementation(
-      async ({ target }) => ({
-        ...targetMetadata,
-        target,
-        version,
-        nodeEngine: ">=24.16.0",
-      }),
-    );
+    vi.mocked(packageMetadata.fetchNpmPackageTargetStatus).mockImplementation(async () => ({
+      ...targetMetadata,
+      version,
+      nodeEngine: ">=24.22.1",
+    }));
     vi.mocked(updateCheck.resolveNpmChannelTag).mockResolvedValue({ tag: channel, version });
     vi.mocked(shared.resolveTargetVersion).mockResolvedValue({ version });
     const runtime = vi.spyOn(runtimePaths, "resolveNodeRuntimeInfo");
     runtime.mockResolvedValue(unsupportedServiceRuntimeFixture);
-    const preflight = vi.spyOn(servicePlan, "resolvePackageRuntimePreflight");
+    const preflight = vi.spyOn(runtimePlan, "resolvePackageRuntimePreflight");
 
     const options = {
       admission: "installed" as const,
@@ -78,7 +87,7 @@ it.each([
       expect.objectContaining({
         storedChannel: channel,
         targetVersion: version,
-        failures: [expect.objectContaining({ reason: "node-runtime-preflight" })],
+        failures: [expect.objectContaining({ reason: "preflight-node-runtime-incompatible" })],
       }),
     );
     await expect(updateCommand(options)).rejects.toBeInstanceOf(Error);
@@ -101,7 +110,7 @@ it.each([
     expect(command.slice(0, launcher.length)).toBe(launcher);
     runtime.mockResolvedValue({
       status: "supported",
-      version: "26.1.0",
+      version: "26.12.1",
       sqliteVersion: "3.53.0",
       nodeSharedSqlite: false,
       sqliteProbe: { available: true, version: "3.53.0", text: true, blob: true, json: true },

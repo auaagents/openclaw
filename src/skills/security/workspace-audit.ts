@@ -7,7 +7,7 @@ import {
   listAgentWorkspaceDirs,
   listExplicitAgentWorkspaceDirs,
 } from "../../agents/workspace-dirs.js";
-import type { OpenClawConfig } from "../../config/config.js";
+import type { OpenClawConfigWithLegacyRoster } from "../../config/legacy.roster.js";
 import type { SecurityAuditFinding } from "../../security/audit.types.js";
 import { isPathInside } from "../../security/scan-paths.js";
 
@@ -29,9 +29,9 @@ async function listWorkspaceSkillMarkdownFiles(
   limits: WorkspaceSkillScanLimits = {},
 ): Promise<{ skillFilePaths: string[]; truncated: boolean }> {
   const skillsRoot = path.join(workspaceDir, "skills");
-  let rootStat: Awaited<ReturnType<typeof fs.lstat>>;
+  let rootStat: Awaited<ReturnType<typeof fs.stat>>;
   try {
-    rootStat = await fs.lstat(skillsRoot);
+    rootStat = await fs.stat(skillsRoot);
   } catch (error) {
     return { skillFilePaths: [], truncated: !isNotFoundPathError(error) };
   }
@@ -81,7 +81,7 @@ async function listWorkspaceSkillMarkdownFiles(
 }
 
 export async function collectWorkspaceSkillSymlinkEscapeFindings(params: {
-  cfg: OpenClawConfig;
+  cfg: OpenClawConfigWithLegacyRoster;
   workspaceDir?: string;
   skillScanLimits?: WorkspaceSkillScanLimits;
 }): Promise<SecurityAuditFinding[]> {

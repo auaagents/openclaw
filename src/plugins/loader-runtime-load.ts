@@ -1,17 +1,19 @@
 /** Native composition entry for ordinary, restricted, and cold provider-hook loading. */
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { createExternalAuthRuntime } from "../agents/auth-profiles/external-auth.js";
 import { createAuthProfileStoreRuntime } from "../agents/auth-profiles/store.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection-config.js";
 import { resolveAllowedModelRefCore } from "../agents/model-selection-resolve.js";
+import { resolveCompatibleRuntimePluginRegistry } from "./active-runtime-registry.js";
 import { createPluginCapabilityCatalogContext } from "./capability-catalog-context.js";
 import { isPluginRegistryLoadInFlight } from "./loader-cache.js";
 import {
   loadOpenClawPluginsCore,
+  loadOpenClawPluginsSteps,
   type InternalPluginLoadOverrides,
   type NativePluginLoadBindings,
 } from "./loader-runtime-core.js";
-import { createPluginRuntimeRegistryResolver } from "./loader-runtime-registry.js";
 import type { PluginLoadOptions } from "./loader-types.js";
 import {
   createPluginCache,
@@ -20,7 +22,7 @@ import {
   retirePluginCache,
   withPluginCache,
 } from "./plugin-cache.js";
-import { getPluginInstance } from "./plugin-instance-scope.js";
+import { getPluginInstance, getPluginInstanceOwner } from "./plugin-instance-scope.js";
 import { inheritPluginNativeAdmissions } from "./plugin-native-admission-state.js";
 import { createProviderAuthAvailability } from "./provider-auth-availability-core.js";
 import { createProviderExternalAuthResolver } from "./provider-external-auth-core.js";
@@ -34,8 +36,18 @@ import type { PluginRuntime } from "./runtime/types.js";
 
 // Construction only binds callbacks. No profile reads, plugin loads, or network work occur here.
 // Hoisted entry functions let cold auth discovery re-enter this same binding without a module cycle.
-export const resolveRuntimePluginRegistry =
-  createPluginRuntimeRegistryResolver(loadOpenClawPlugins);
+export function resolveRuntimePluginRegistry(
+  options?: PluginLoadOptions,
+): PluginRegistry | undefined {
+  const activeRegistry = resolveCompatibleRuntimePluginRegistry(options);
+  if (activeRegistry) {
+    return activeRegistry;
+  }
+  // Runtime helpers must not recurse while this exact snapshot is registering.
+  return isPluginRegistryLoadInFlight(options)
+    ? undefined
+    : loadOpenClawPlugins({ ...options, activate: false });
+}
 const providerRegistry = Object.freeze(
   createProviderRegistryResolver({
     loadOpenClawPlugins,
@@ -60,7 +72,9 @@ const loaderBindings: NativePluginLoadBindings = Object.freeze({
     return (modelAuth ??= Object.freeze(
       createRuntimeModelAuth({
         ensureAuthProfileStore: authStore.ensureAuthProfileStore,
+        ensureAuthProfileStoreAsync: authStore.ensureAuthProfileStoreAsync,
         isProviderApiKeyConfigured: authAvailability.isProviderApiKeyConfigured,
+        isProviderApiKeyConfiguredAsync: authAvailability.isProviderApiKeyConfiguredAsync,
       }),
     ));
   },
@@ -92,6 +106,37 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   return loadOpenClawPluginsCore(options, loaderBindings);
 }
 
+/** Keep network callbacks responsive without publishing a partially registered generation. */
+export async function loadOpenClawPluginsAsync(
+  options: PluginLoadOptions = {},
+): Promise<PluginRegistry> {
+  const steps = loadOpenClawPluginsSteps(options, loaderBindings);
+  let step = steps.next();
+  while (!step.done) {
+    await nextTurn();
+    step = steps.next();
+  }
+  return step.value;
+}
+
+/** Publishes synchronously, then joins every accepted health write before returning to its host. */
+export async function loadAndActivateRootPluginRegistry(
+  options: PluginLoadOptions = {},
+): Promise<PluginRegistry> {
+  const cleanup: Promise<void>[] = [];
+  try {
+    return loadOpenClawPluginsCore(
+      { ...options, activate: true },
+      loaderBindings,
+      undefined,
+      undefined,
+      (completion) => cleanup.push(completion),
+    );
+  } finally {
+    await Promise.allSettled(cleanup);
+  }
+}
+
 /** Acquires a fresh discovery registry; release waits for its registration resources. */
 export async function acquirePluginRegistryForInspection(
   options: Omit<PluginLoadOptions, "activate" | "cache"> = {},
@@ -114,32 +159,40 @@ async function acquireRegistryResources(
     const instances = new Set(cache.instances);
     for (const record of registry?.plugins ?? []) {
       const instance = getPluginInstance(record);
-      if (instance) {
+      // Borrowed records stay in the lending registry's custody.
+      if (instance && instance.owner?.registry === registry) {
         instances.add(instance);
       }
     }
     // Inspections own disposal, not host cleanup notifications or persistent session state.
-    // Rollback completions were already consumed by the collector before this finalizer.
+    // Construction owns rollback diagnostics; final release still joins physical cleanup.
     const results = await Promise.allSettled(
       [...instances]
-        .filter((instance) => !rollbackInstances.has(instance))
-        .map((instance) => instance.dispose()),
+        .filter((instance) => {
+          const owner = getPluginInstanceOwner(instance);
+          return !owner || owner.registry === registry;
+        })
+        .map(async (instance) => {
+          const result = await instance.dispose(undefined, { waitForSettlement: true });
+          return rollbackInstances.has(instance) ? { errors: [] } : result;
+        }),
+    );
+    const failures: unknown[] = results.flatMap((result) =>
+      result.status === "rejected"
+        ? [new PluginRuntimeCloseRetainedError(result.reason)]
+        : result.value.errors,
     );
     for (const instance of instances) {
       releasePluginCacheInstance(instance, cache);
     }
     try {
-      await retirePluginCache(cache);
+      const retired = await retirePluginCache(cache, undefined, { waitForSettlement: true });
+      failures.push(...retired.failures.map((failure) => failure.error));
     } catch (reason) {
-      results.push({ status: "rejected", reason });
+      failures.push(new PluginRuntimeCloseRetainedError(reason));
     }
-    const failures = results.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
     if (failures.length) {
-      throw new PluginRuntimeCloseRetainedError(
-        new AggregateError(failures, "Plugin inspection instances failed to retire"),
-      );
+      throw new AggregateError(failures, "Plugin inspection instances failed to retire");
     }
   });
   try {

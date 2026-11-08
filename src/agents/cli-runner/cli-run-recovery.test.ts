@@ -33,19 +33,14 @@ function recovery(timeoutMs = 60_000) {
 }
 
 describe("cli-run-recovery retry budget", () => {
-  it("keeps recovery budget after a forward wall-clock step", async () => {
+  it("keeps an integer monotonic retry budget after a wall-clock step", async () => {
     const { context, executeAttempt, run } = recovery();
     vi.spyOn(Date, "now").mockReturnValue(context.started + 120_000);
-    expect(await run()).toEqual({ done: true, meta: { durationMs: 1 } });
-    expect(executeAttempt).toHaveBeenCalledTimes(2);
-  });
-
-  it("passes an integer retry timeout to the next attempt when elapsed monotonic time is fractional", async () => {
-    const { context, executeAttempt, run } = recovery();
     vi.spyOn(performance, "now").mockReturnValue(12_345.4);
     context.startedMonotonicMs = 0;
 
     expect(await run()).toEqual({ done: true, meta: { durationMs: 1 } });
+    expect(executeAttempt).toHaveBeenCalledTimes(2);
     expect(executeAttempt).toHaveBeenNthCalledWith(2, undefined, {
       timeoutMs: 47_654,
       forkCliSessionOnResume: false,
@@ -60,4 +55,18 @@ describe("cli-run-recovery retry budget", () => {
     await expect(run()).rejects.toBe(error);
     expect(executeAttempt).toHaveBeenCalledOnce();
   });
+});
+
+it("attempts one fresh session after a rejected checkpoint and does not retry its failure", async () => {
+  const { executeAttempt, run } = recovery();
+  const secondFailure = new FailoverError("fresh session also failed", {
+    reason: "session_expired",
+    provider: "claude-cli",
+    code: "cli_resume_at_unsupported",
+  });
+  executeAttempt.mockReset().mockRejectedValue(secondFailure);
+  await expect(run()).rejects.toBe(secondFailure);
+  expect(executeAttempt).toHaveBeenCalledTimes(2);
+  expect(executeAttempt.mock.calls[0]?.[0]).toBe("s1");
+  expect(executeAttempt.mock.calls[1]?.[0]).toBeUndefined();
 });

@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { expect, it } from "vitest";
+import { selectChatLayoutAction } from "../test-helpers/chat-layout-menu.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { revealChatModelOption, selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
@@ -663,9 +664,9 @@ suite.define(() => {
           await model.click();
           const menu = composer.locator(".chat-controls__model-menu");
           await expect.poll(() => menu.isVisible()).toBe(true);
-          expect(await menu.getByText(/Effort|Fast mode/).count()).toBe(0);
+          expect(await menu.getByText(/^(?:Effort|Speed)$/).count()).toBe(0);
           expect(
-            await menu.locator("[data-chat-thinking-slider], [data-chat-speed-toggle]").count(),
+            await menu.locator("[data-chat-thinking-slider], [data-chat-speed-option]").count(),
           ).toBe(0);
           await revealChatModelOption(
             menu.locator('[data-chat-model-option="openai/gpt-5.6-luna"]'),
@@ -750,7 +751,7 @@ suite.define(() => {
           .toBe(true);
         if (route === "chat") {
           await page.setViewportSize({ width: 1180, height: 900 });
-          await page.getByRole("button", { name: "Open split view" }).click();
+          await selectChatLayoutAction(page, "Open split view");
           const panes = page.locator(".chat-split-view__pane .agent-chat__input");
           await expect.poll(() => panes.count()).toBe(2);
           await expect
@@ -806,9 +807,11 @@ suite.define(() => {
             });
         } else {
           await expect.poll(() => effort.count()).toBe(1);
-          await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Standard");
+          await expect.poll(() => effort.getAttribute("aria-label")).toBe("Speed: Standard");
           await expect
-            .poll(() => composer.locator("[data-chat-speed-toggle]").getAttribute("aria-checked"))
+            .poll(() =>
+              composer.locator('[data-chat-speed-option="on"]').getAttribute("aria-checked"),
+            )
             .toBe("false");
           await model.click();
           await selectChatModelOption(composer.locator('[data-chat-model-option="example/basic"]'));
@@ -880,7 +883,7 @@ suite.define(() => {
           ).toBe(false);
           return;
         }
-        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Standard");
+        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Speed: Standard");
         const [modelBox, effortBox, actionsBox] = await Promise.all([
           model.boundingBox(),
           effort.boundingBox(),
@@ -894,12 +897,12 @@ suite.define(() => {
         expect(effortBox!.width).toBeGreaterThanOrEqual(44);
         await effort.click();
         expect(await composer.locator("[data-chat-thinking-slider]").count()).toBe(0);
-        await composer.getByRole("switch", { name: /Fast responses/ }).click();
+        await composer.getByRole("radio", { name: "Fast", exact: true }).click();
         expect((await gateway.waitForRequest("sessions.patch")).params).toMatchObject({
           key: "agent:main:main",
           fastMode: true,
         });
-        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Fast");
+        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Speed: Fast");
         await page.keyboard.press("Escape");
         await expect
           .poll(() => effort.evaluate((node) => node === document.activeElement))

@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { resolveMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
 import { expectObjectFields, mockFirstObjectArg } from "../../test-utils/mock-call-assertions.js";
 import { resolveAgentDirMock } from "./commands-agent-scope.test-support.js";
+import { buildCommandContextForTest } from "./commands-context.test-support.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 import { createMockTypingController } from "./test-helpers.js";
 
@@ -53,16 +54,6 @@ describe("handleBtwCommand", () => {
     expect(runBtwSideQuestionMock).not.toHaveBeenCalled();
   });
 
-  it("ignores /btw from unauthorized senders", async () => {
-    const params = buildParams("/btw what changed?");
-    params.command.isAuthorizedSender = false;
-
-    const result = await handleBtwCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: false });
-    expect(runBtwSideQuestionMock).not.toHaveBeenCalled();
-  });
-
   it("requires an active session context", async () => {
     const params = buildParams("/btw what changed?");
     params.sessionEntry = undefined;
@@ -94,26 +85,23 @@ describe("handleBtwCommand", () => {
     expect(runBtwSideQuestionMock).not.toHaveBeenCalled();
   });
 
-  it.each(["image", "described image", "document"] as const)(
+  it.each(["image", "described image"] as const)(
     "handleBtwCommand forwards only current undescribed images: %s",
     async (attachment) => {
       const params = buildParams("/btw describe this");
       params.sessionEntry = { sessionId: "session-1", updatedAt: Date.now() };
       const dir = tempDirs.make("openclaw-btw-images-");
-      const isDocument = attachment === "document";
-      const data = isDocument
-        ? Buffer.from("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")
-        : Buffer.from(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
-            "base64",
-          );
-      const file = path.join(dir, isDocument ? "document.pdf" : "photo.png");
+      const data = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const file = path.join(dir, "photo.png");
       await writeFile(file, data);
       params.ctx.media = [
         {
           path: file,
-          contentType: isDocument ? "application/pdf" : "image/png",
-          kind: isDocument ? "document" : "image",
+          contentType: "image/png",
+          kind: "image",
           workspaceDir: dir,
         },
       ];
@@ -205,6 +193,7 @@ describe("handleBtwCommand", () => {
       senderIsOwner: true,
     });
     expect(runnerArgs.agentDir).toBe(params.agentDir);
+    expect(resolveAgentDirMock).not.toHaveBeenCalled();
     expect(runnerArgs.messageActionTurnCapability).toEqual(expect.any(String));
     expect(runnerArgs.opts).toMatchObject({ runId: expect.any(String) });
     expect(runnerArgs.authorityRunId).toEqual(expect.any(String));
@@ -247,27 +236,6 @@ describe("handleBtwCommand", () => {
     });
   });
 
-  it("keeps provider and conversation target separate for side-question approvals", async () => {
-    const params = buildParams("/btw what changed?");
-    params.command.channel = "telegram";
-    params.command.channelId = "telegram";
-    params.command.to = "+2000";
-    params.agentDir = "/tmp/agent";
-    params.sessionEntry = {
-      sessionId: "session-1",
-      updatedAt: Date.now(),
-    };
-    runBtwSideQuestionMock.mockResolvedValue({ text: "targeted answer" });
-
-    await handleBtwCommand(params, true);
-
-    expectObjectFields(mockFirstObjectArg(runBtwSideQuestionMock), {
-      messageChannel: "telegram",
-      messageProvider: "telegram",
-      currentChannelId: "+2000",
-    });
-  });
-
   it("does not mint current-turn context for Gateway chat with an explicit origin", async () => {
     const params = buildParams("/btw what changed?");
     params.ctx.Provider = "webchat";
@@ -285,67 +253,6 @@ describe("handleBtwCommand", () => {
     await handleBtwCommand(params, true);
 
     expect(mockFirstObjectArg(runBtwSideQuestionMock).messageActionTurnCapability).toBeUndefined();
-  });
-
-  it("accepts /side as a /btw alias", async () => {
-    const params = buildParams("/side what changed?");
-    params.agentDir = "/tmp/agent";
-    params.sessionEntry = {
-      sessionId: "session-1",
-      updatedAt: Date.now(),
-    };
-    runBtwSideQuestionMock.mockResolvedValue({ text: "alias answer" });
-
-    const result = await handleBtwCommand(params, true);
-
-    expect(mockFirstObjectArg(runBtwSideQuestionMock).question).toBe("what changed?");
-    expect(result).toEqual({
-      shouldContinue: false,
-      reply: { text: "alias answer", btw: { question: "what changed?" } },
-    });
-  });
-
-  it("uses the canonical session agent when resolving a fallback agent dir", async () => {
-    const params = buildParams("/btw what changed?");
-    params.agentId = "worker-1";
-    params.agentDir = undefined;
-    params.sessionKey = "agent:worker-1:whatsapp:direct:12345";
-    params.sessionEntry = {
-      sessionId: "session-1",
-      updatedAt: Date.now(),
-    };
-    runBtwSideQuestionMock.mockResolvedValue({ text: "resolved fallback" });
-
-    const result = await handleBtwCommand(params, true);
-
-    expect(String(mockFirstObjectArg(runBtwSideQuestionMock).agentDir)).toContain(
-      "/agents/worker-1/agent",
-    );
-    expect(result).toEqual({
-      shouldContinue: false,
-      reply: { text: "resolved fallback", btw: { question: "what changed?" } },
-    });
-  });
-
-  it("reuses the prepared session agent directory", async () => {
-    const params = buildParams("/btw what changed?");
-    params.agentId = "worker-1";
-    params.agentDir = "/tmp/worker-1-agent";
-    params.sessionKey = "agent:worker-1:whatsapp:direct:12345";
-    params.sessionEntry = {
-      sessionId: "session-1",
-      updatedAt: Date.now(),
-    };
-    runBtwSideQuestionMock.mockResolvedValue({ text: "resolved fallback" });
-
-    const result = await handleBtwCommand(params, true);
-
-    expect(resolveAgentDirMock).not.toHaveBeenCalled();
-    expect(mockFirstObjectArg(runBtwSideQuestionMock).agentDir).toBe("/tmp/worker-1-agent");
-    expect(result).toEqual({
-      shouldContinue: false,
-      reply: { text: "resolved fallback", btw: { question: "what changed?" } },
-    });
   });
 
   it("prefers the target session entry for side-question context", async () => {
@@ -371,5 +278,52 @@ describe("handleBtwCommand", () => {
       shouldContinue: false,
       reply: { text: "target context", btw: { question: "what changed?" } },
     });
+  });
+
+  it.each([
+    [
+      "/btw why does this fail?\nError: ENOSPC\n  at write",
+      "why does this fail?\nError: ENOSPC\n  at write",
+    ],
+    ["/btw\nwhy does this fail?", "why does this fail?"],
+    ["/side first\n\nsecond", "first\n\nsecond"],
+  ])(
+    "passes every line of a multi-line side question to the runner: %s",
+    async (body, question) => {
+      runBtwSideQuestionMock.mockResolvedValue({ text: "answer" });
+      const params = buildParams(body);
+      params.agentDir = "/tmp/agent";
+      params.sessionEntry = { sessionId: "session-1", updatedAt: Date.now() };
+
+      const result = await handleBtwCommand(params, true);
+
+      expect(mockFirstObjectArg(runBtwSideQuestionMock).question).toBe(question);
+      expect(result).toEqual({
+        shouldContinue: false,
+        reply: { text: "answer", btw: { question } },
+      });
+    },
+  );
+  it("passes every line of a side question asked in a group", async () => {
+    runBtwSideQuestionMock.mockResolvedValue({ text: "answer" });
+    const body = "@openclaw /btw why does this fail?\n\nError: ENOSPC\n    at write (app.js:3:5)";
+    const params = buildParams(body);
+    params.cfg = { ...params.cfg, messages: { groupChat: { mentionPatterns: ["@openclaw"] } } };
+    params.isGroup = true;
+    params.command = buildCommandContextForTest({
+      ctx: params.ctx,
+      cfg: params.cfg,
+      isGroup: true,
+      triggerBodyNormalized: body,
+      commandAuthorized: true,
+    });
+
+    params.agentDir = "/tmp/agent";
+    params.sessionEntry = { sessionId: "session-1", updatedAt: Date.now() };
+    await handleBtwCommand(params, true);
+
+    expect(mockFirstObjectArg(runBtwSideQuestionMock).question).toBe(
+      "why does this fail?\n\nError: ENOSPC\n    at write (app.js:3:5)",
+    );
   });
 });

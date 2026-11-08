@@ -124,7 +124,7 @@ This page is an index. Each section below moved to a child page, and every ancho
 - <a id="authentication"></a>[Authentication](/automation/cron-jobs/webhooks#authentication)
 - <a id="post-hooks-wake"></a>[POST /hooks/wake](/automation/cron-jobs/webhooks#post-hooks-wake)
 - <a id="post-hooks-agent"></a>[POST /hooks/agent](/automation/cron-jobs/webhooks#post-hooks-agent)
-- <a id="mapped"></a>[Mapped hooks (`POST /hooks/<name>`)](/automation/cron-jobs/webhooks#mapped)
+- <a id="mapped"></a>[Mapped hooks (`POST /hooks/<name>`)](/automation/cron-jobs/webhooks#mapped-hooks-post-hooks-name)
 - <a id="verify-and-troubleshoot-hook-requests"></a>[Verify and troubleshoot hook requests](/automation/cron-jobs/webhooks#verify-and-troubleshoot-hook-requests)
 
 ### Gmail sections
@@ -161,3 +161,5 @@ This page is an index. Each section below moved to a child page, and every ancho
 - [Standing intents](/concepts/standing-intents) — event-triggered work instead of a schedule
 - [Standing orders](/automation/standing-orders) — the operating authority a scheduled run acts under
 - [Timezone](/concepts/timezone) — timezone configuration
+
+Explicitly disabling a job also cancels its active run, including a manually forced run of an already paused job. Editing its description or other display fields does not cancel that run.

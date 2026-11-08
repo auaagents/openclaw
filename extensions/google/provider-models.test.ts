@@ -96,6 +96,22 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
     });
   });
 
+  it("resolves newer Gemini 4 releases from the Gemini 4 Argon template", () => {
+    const model = resolveModel("google", "gemini-4-argon-preview-11-02", [
+      createTemplateModel("google", "gemini-4-argon", {
+        reasoning: true,
+        contextWindow: 1_048_576,
+      }),
+    ]);
+
+    expectModelFields(model, {
+      provider: "google",
+      id: "gemini-4-argon-preview-11-02",
+      reasoning: true,
+      contextWindow: 1_048_576,
+    });
+  });
+
   it("canonicalizes retired Gemini 3 Pro preview requests before cloning templates", () => {
     const model = resolveModel("google", "gemini-3-pro-preview", [
       createTemplateModel("google", "gemini-3-pro-preview"),
@@ -172,7 +188,7 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
     expectModelFields(model, {
       provider: "google",
       id: "gemini-3.1-flash-preview",
-      api: "google-gemini-cli",
+      api: "google-generative-ai",
       reasoning: true,
     });
   });
@@ -187,7 +203,7 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
     expectModelFields(model, {
       provider: "google",
       id: "gemini-3.1-flash-preview",
-      api: "google-generative-ai",
+      api: "google-interactions",
       reasoning: false,
     });
   });
@@ -203,7 +219,7 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
     expectModelFields(model, {
       provider: "google",
       id: "gemini-3-flash-preview",
-      api: "google-generative-ai",
+      api: "google-interactions",
       input: ["text", "image"],
       contextWindow: 1_048_576,
       reasoning: true,
@@ -253,7 +269,7 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
       {
         provider: "google",
         id: "gemini-flash-latest",
-        api: "google-generative-ai",
+        api: "google-interactions",
         reasoning: true,
       },
     );
@@ -265,7 +281,7 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
       {
         provider: "google",
         id: "gemini-flash-lite-latest",
-        api: "google-generative-ai",
+        api: "google-interactions",
         reasoning: true,
       },
     );
@@ -385,9 +401,10 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
     });
   });
 
-  it("treats gemini 2.5 ids as modern google models", () => {
+  it("treats current Gemini families as modern google models", () => {
     expect(isModernGoogleModel("gemini-2.5-pro")).toBe(true);
     expect(isModernGoogleModel("gemini-2.5-flash-lite")).toBe(true);
+    expect(isModernGoogleModel("gemini-4-argon")).toBe(true);
     expect(isModernGoogleModel("gemini-1.5-pro")).toBe(false);
   });
 
@@ -495,4 +512,88 @@ describe("resolveGoogleGeminiForwardCompatModel", () => {
       expect(isGoogleNativeVideoModelId(modelId), modelId).toBe(false);
     }
   });
+});
+
+describe("Flash transport default regressions", () => {
+  const google = "google",
+    cli = "google-gemini-cli",
+    vertex = "google-vertex",
+    antigravity = "google-antigravity",
+    flash = "gemini-3-flash-preview",
+    directApi = "google-generative-ai",
+    antigravityApi = "openai-completions";
+  function expectResolution(
+    provider: string,
+    id: string,
+    models: ProviderRuntimeModel[],
+    expected: Partial<ProviderRuntimeModel>,
+  ) {
+    expectModelFields(resolveModel(provider, id, models), expected);
+  }
+  it.each(["gemini-4-flash", "gemini-4.1-flash-lite-preview"])(
+    "routes forward-compatible Flash %s through Interactions",
+    (id) => {
+      expectResolution(google, id, [createTemplateModel(google, "gemini-4-argon")], {
+        api: "google-interactions",
+      });
+    },
+  );
+
+  it.each(["google-gemini-cli", "google-vertex", "google-antigravity"])(
+    "keeps %s Flash on its existing transport",
+    (provider) => {
+      const api = provider === vertex ? "google-vertex" : provider === cli ? cli : antigravityApi;
+      const id = provider === antigravity ? "gemini-3-flash" : flash;
+      expectResolution(provider, "gemini-3.9-flash", [createTemplateModel(provider, id, { api })], {
+        api,
+      });
+    },
+  );
+
+  it("does not inherit Interactions when Gemma uses a Flash template", () => {
+    expectResolution(
+      google,
+      "gemma-4-27b-it",
+      [createTemplateModel(google, flash, { api: "google-interactions" })],
+      { api: directApi },
+    );
+  });
+
+  it("keeps custom Google endpoints and CLI fallback templates on GenerateContent", () => {
+    expectResolution(
+      google,
+      "gemini-3.9-flash",
+      [
+        createTemplateModel(google, flash, {
+          api: "google-interactions",
+          baseUrl: "https://proxy.example/v1beta",
+        }),
+      ],
+      { api: directApi },
+    );
+    expectResolution(
+      cli,
+      "gemini-3.9-flash",
+      [createTemplateModel(google, flash, { api: "google-interactions" })],
+      { api: directApi },
+    );
+  });
+
+  it.each([undefined, "google-generative-ai", "google-interactions"] as const)(
+    "uses the configured endpoint and explicit API %s for forward-compatible Flash",
+    (api) => {
+      const resolved = resolveGoogleGeminiForwardCompatModel({
+        providerId: google,
+        ctx: {
+          ...createContext({
+            provider: google,
+            modelId: "gemini-3.9-flash",
+            models: [createTemplateModel(google, flash, { api: "google-interactions" })],
+          }),
+          providerConfig: { baseUrl: "https://proxy.example/v1beta", api, models: [] },
+        },
+      });
+      expect(resolved?.api).toBe(api ?? directApi);
+    },
+  );
 });

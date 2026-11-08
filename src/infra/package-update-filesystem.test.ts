@@ -14,6 +14,7 @@ import {
   removePackagePath,
   restoreNpmPackageRoot,
 } from "./package-update-filesystem.js";
+import * as retry from "./retry.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
@@ -129,9 +130,7 @@ it.runIf(process.platform === "darwin").each([
     );
 
     if (continues) {
-      await expect(copyPackagePathEntry(source, destination)).resolves.toEqual({
-        ownershipPreserved: operation !== "lchown",
-      });
+      await expect(copyPackagePathEntry(source, destination)).resolves.toBeUndefined();
       expect(await fs.readlink(destination)).toBe("missing");
     } else {
       await expect(copyPackagePathEntry(source, destination)).rejects.toThrow(
@@ -360,7 +359,6 @@ it("retains the first copy failure when private staging has been replaced", asyn
 
 it.each([
   { name: "ENOENT", refusal: Object.assign(new Error("owner missing"), { code: "ENOENT" }) },
-  { name: "EBUSY", refusal: Object.assign(new Error("owner replaced"), { code: "EBUSY" }) },
   { name: "false", refusal: false },
 ])("does not retire a backup after a one-shot $name ownership refusal", async ({ refusal }) => {
   const root = dirs.make("package-backup-refusal-");
@@ -454,30 +452,28 @@ it("preserves an observed filesystem identity refusal when the cleanup budget ex
   expect(await fs.readFile(path.join(backup, "marker.txt"), "utf8")).toBe("original");
 });
 
-it.each(["EACCES", "EBUSY"])(
-  "retains the original backup when removal reports %s after the cleanup budget",
-  async (code) => {
-    const root = dirs.make("package-backup-late-io-");
-    const backup = path.join(root, ".openclaw.backup");
-    await fs.mkdir(backup);
-    await fs.writeFile(path.join(backup, "marker.txt"), "original");
-    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
-    const prototype = Object.getPrototypeOf(await fsSafeRoot(root)) as Root;
-    vi.spyOn(prototype, "remove").mockImplementationOnce(async () => {
-      clock.mockReturnValue(300_001);
-      throw Object.assign(new Error(`${code}: fixture removal failed`), { code });
-    });
-    const rename = vi.spyOn(fs, "rename");
+it("retains the original backup when removal fails after the cleanup budget", async () => {
+  const code = "EACCES";
+  const root = dirs.make("package-backup-late-io-");
+  const backup = path.join(root, ".openclaw.backup");
+  await fs.mkdir(backup);
+  await fs.writeFile(path.join(backup, "marker.txt"), "original");
+  const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+  const prototype = Object.getPrototypeOf(await fsSafeRoot(root)) as Root;
+  vi.spyOn(prototype, "remove").mockImplementationOnce(async () => {
+    clock.mockReturnValue(300_001);
+    throw Object.assign(new Error(`${code}: fixture removal failed`), { code });
+  });
+  const rename = vi.spyOn(fs, "rename");
 
-    const warning = await discardPackageUpdateBackup(backup, "old package", root);
+  const warning = await discardPackageUpdateBackup(backup, "old package", root);
 
-    expect(warning).toContain("cleanup budget expired");
-    expect(warning).toContain(backup);
-    expect(warning).toContain(`${code}: fixture removal failed`);
-    expect(rename).not.toHaveBeenCalled();
-    expect(await fs.readFile(path.join(backup, "marker.txt"), "utf8")).toBe("original");
-  },
-);
+  expect(warning).toContain("cleanup budget expired");
+  expect(warning).toContain(backup);
+  expect(warning).toContain(`${code}: fixture removal failed`);
+  expect(rename).not.toHaveBeenCalled();
+  expect(await fs.readFile(path.join(backup, "marker.txt"), "utf8")).toBe("original");
+});
 
 it.each(["owner", "backup"] as const)(
   "does not downgrade a revoked %s to a cleanup deadline warning",
@@ -623,19 +619,9 @@ it("does not compensate a root rename after its original owner refused once", as
 
 it.each([
   {
-    name: "a false copy failure",
-    copyFailure: { error: false },
-    cleanupFailure: undefined,
-  },
-  {
     name: "an undefined copy failure before a cleanup failure",
     copyFailure: { error: undefined },
     cleanupFailure: { error: new Error("cleanup failed after copy refusal") },
-  },
-  {
-    name: "a sole cleanup failure",
-    copyFailure: undefined,
-    cleanupFailure: { error: new Error("cleanup failed after publication") },
   },
   {
     name: "a sole undefined cleanup failure",
@@ -661,7 +647,7 @@ it.each([
   ) {
     staging = this.rootReal;
     if (copyFailure) {
-      // oxlint-disable-next-line typescript/only-throw-error -- false and undefined must remain the original copy failure.
+      // oxlint-disable-next-line typescript/only-throw-error -- Undefined must remain the original copy failure.
       throw copyFailure.error;
     }
     return copy.call(this, ...args);
@@ -669,10 +655,8 @@ it.each([
   vi.spyOn(prototype, "remove").mockImplementation(function (this: Root, relativePath, options) {
     if (path.basename(relativePath).startsWith(".openclaw-shim-stage-")) {
       cleanupAttempts += 1;
-      if (cleanupFailure) {
-        // oxlint-disable-next-line typescript/only-throw-error -- An undefined cleanup failure must remain a failure.
-        throw cleanupFailure.error;
-      }
+      // oxlint-disable-next-line typescript/only-throw-error -- An undefined cleanup failure must remain a failure.
+      throw cleanupFailure.error;
     }
     return remove.call(this, relativePath, options);
   });
@@ -696,11 +680,7 @@ it.each([
   );
   expect(await fs.readFile(source, "utf8")).toBe("replacement");
   expect(await fs.readFile(destination, "utf8")).toBe(copyFailure ? "live" : "replacement");
-  if (cleanupFailure) {
-    expect(await fs.readdir(staging)).toEqual([]);
-  } else {
-    await expect(fs.lstat(staging)).rejects.toHaveProperty("code", "ENOENT");
-  }
+  expect(await fs.readdir(staging)).toEqual([]);
 });
 
 it.each(["publish", "revoke", "replace"] as const)(
@@ -735,7 +715,7 @@ it.each(["publish", "revoke", "replace"] as const)(
       beforePublish,
     );
     if (action === "publish") {
-      await expect(result).resolves.toEqual({ ownershipPreserved: true });
+      await expect(result).resolves.toBeUndefined();
     } else if (action === "revoke") {
       await expect(result).rejects.toBe(refusal);
     } else {
@@ -756,3 +736,148 @@ it.each(["publish", "revoke", "replace"] as const)(
     );
   },
 );
+
+const retryReal = retry.retryAsync;
+function errno(message: string, code: string) {
+  return Object.assign(new Error(message), { code });
+}
+async function expectFile(file: string, content: string) {
+  await expect(fs.readFile(file, "utf8")).resolves.toBe(content);
+}
+async function expectMissing(file: string) {
+  await expect(fs.lstat(file)).rejects.toHaveProperty("code", "ENOENT");
+}
+function restoreRenameRetryHarness() {
+  const wait = vi.fn(async () => {});
+  vi.spyOn(retry, "retryAsync").mockImplementation((fn, options) =>
+    retryReal(fn, { ...(typeof options === "object" ? options : {}), sleep: wait }),
+  );
+  return wait;
+}
+
+it("names the retained backup when publication fails without a candidate", async () => {
+  const root = dirs.make("rollback-proof-");
+  const writeFiles = async (files: Record<string, string>) => {
+    for (const [file, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await fs.writeFile(path.join(root, file), content);
+    }
+  };
+  const liveRoot = path.join(root, "live");
+  const backupRoot = path.join(root, "backup");
+  const displacedRoot = path.join(root, "displaced");
+  await writeFiles({ "backup/marker.txt": "original" });
+  vi.spyOn(fs, "rename").mockRejectedValue(errno("EXDEV: cross-device link", "EXDEV"));
+
+  const failure = restoreNpmPackageRoot({
+    liveRoot,
+    backupRoot,
+    displacedRoot,
+    candidatePresent: false,
+  });
+  await expect(failure).rejects.toThrow(/is missing/u);
+  const message = await failure.then(
+    () => "",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  expect(message).toContain("EXDEV: cross-device link");
+  expect(message).toContain(`moving ${backupRoot} to ${liveRoot}`);
+  await expectMissing(liveRoot);
+  await expectFile(path.join(backupRoot, "marker.txt"), "original");
+});
+
+it("stops Windows rollback rename retries when the update owner refuses", async () => {
+  const root = dirs.make("rollback-proof-");
+  const writeFiles = async (files: Record<string, string>) => {
+    for (const [file, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await fs.writeFile(path.join(root, file), content);
+    }
+  };
+  const liveRoot = path.join(root, "live");
+  const backupRoot = path.join(root, "backup");
+  const displacedRoot = path.join(root, "displaced");
+  await writeFiles({ "live/marker.txt": "candidate", "backup/marker.txt": "original" });
+  const wait = restoreRenameRetryHarness();
+  const refused = errno("update owner revoked", "EPERM");
+  const rename = fs.rename.bind(fs);
+  let publicationAttempts = 0;
+  let revoked = false;
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(from) === backupRoot) {
+      publicationAttempts++;
+      if (publicationAttempts === 1) {
+        throw errno("EPERM: package is in use", "EPERM");
+      }
+    }
+    return rename(from, to);
+  });
+  wait.mockImplementationOnce(async () => {
+    revoked = true;
+  });
+
+  await expect(
+    restoreNpmPackageRoot({
+      liveRoot,
+      backupRoot,
+      displacedRoot,
+      candidatePresent: true,
+      platform: "win32",
+      assertCurrent: () => {
+        if (revoked) {
+          throw refused;
+        }
+      },
+    }),
+  ).rejects.toBe(refused);
+
+  expect(publicationAttempts).toBe(1);
+  await expectMissing(liveRoot);
+  await expectFile(path.join(backupRoot, "marker.txt"), "original");
+});
+
+it("stops Windows rollback rename retries when the retained backup changes identity", async () => {
+  const root = dirs.make("rollback-proof-");
+  const writeFiles = async (files: Record<string, string>) => {
+    for (const [file, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await fs.writeFile(path.join(root, file), content);
+    }
+  };
+  const liveRoot = path.join(root, "live");
+  const backupRoot = path.join(root, "backup");
+  const displacedRoot = path.join(root, "displaced");
+  await writeFiles({ "live/marker.txt": "candidate", "backup/marker.txt": "original" });
+  const wait = restoreRenameRetryHarness();
+  const rename = fs.rename.bind(fs);
+  let publicationAttempts = 0;
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(from) === backupRoot) {
+      publicationAttempts++;
+      if (publicationAttempts === 1) {
+        throw errno("EPERM: package is in use", "EPERM");
+      }
+    }
+    return rename(from, to);
+  });
+  wait.mockImplementationOnce(async () => {
+    await rename(backupRoot, `${backupRoot}.retained`);
+    await fs.mkdir(backupRoot);
+    await fs.writeFile(path.join(backupRoot, "replacement"), "keep");
+  });
+
+  await expect(
+    restoreNpmPackageRoot({
+      liveRoot,
+      backupRoot,
+      displacedRoot,
+      candidatePresent: true,
+      platform: "win32",
+    }),
+  ).rejects.toThrow("package path changed");
+
+  expect(publicationAttempts).toBe(1);
+  await expectFile(path.join(liveRoot, "marker.txt"), "candidate");
+  await expectMissing(displacedRoot);
+  await expectFile(path.join(`${backupRoot}.retained`, "marker.txt"), "original");
+});

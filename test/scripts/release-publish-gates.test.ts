@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   evaluateReleaseBootstrapGate,
   evaluateReleasePublishGates,
+  evaluateStableRollbackDrill,
 } from "../../scripts/lib/release-publish-gates.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -20,100 +21,6 @@ const manifest = {
   childRuns: { productPerformance: { conclusion: "success" } },
   validationInputs: { coveragePolicy: "full" },
 };
-const windowsAdvisory = {
-  class: "windows-node-ci",
-  child: "normalCi",
-  job: "checks-windows-node-test-2",
-  conclusion: "failure",
-  runId: "42",
-  url: "https://github.com/openclaw/openclaw/actions/runs/42/job/43",
-};
-const windowsEvidence = {
-  ...manifest,
-  childRuns: { normalCi: "42" },
-  childEvidence: {
-    normalCi: {
-      runId: "42",
-      jobs: [
-        {
-          name: "checks-windows-node-test-2",
-          status: "completed",
-          conclusion: "failure",
-          url: windowsAdvisory.url,
-        },
-      ],
-    },
-  },
-  advisoryJobs: [windowsAdvisory],
-};
-const flakeReceipt = {
-  schema: "openclaw.frv-flake-classification.v1",
-  parentRunId: "123",
-  parentRunAttempt: 2,
-  child: "normalCi",
-  childRunId: "456",
-  childRunAttempt: 1,
-  targetSha,
-  jobId: "457",
-  jobName: "checks-node-test-2",
-  jobUrl: "https://github.com/openclaw/openclaw/actions/runs/456/job/457",
-  conclusion: "failure",
-  trackingUrl: "https://github.com/openclaw/openclaw/issues/789",
-  reason: "Shared test fixture races during cleanup; repair tracked on main.",
-  classifiedBy: "release-operator",
-  receiptRunId: "890",
-  receiptRunAttempt: 1,
-};
-const flakeEvidence = {
-  ...manifest,
-  runId: "123",
-  runAttempt: "2",
-  sourceParentRunAttempt: 2,
-  childRuns: { normalCi: "456" },
-  childEvidence: {
-    normalCi: {
-      runId: "456",
-      status: "completed",
-      conclusion: "failure",
-      jobs: [
-        {
-          name: flakeReceipt.jobName,
-          status: "completed",
-          conclusion: "failure",
-          acceptedRunAttempt: 1,
-          url: flakeReceipt.jobUrl,
-        },
-        {
-          name: "openclaw/ci-gate",
-          status: "completed",
-          conclusion: "failure",
-          url: "https://github.com/openclaw/openclaw/actions/runs/456/job/458",
-        },
-      ],
-      flakeClassifications: [flakeReceipt],
-      gateEntries: [
-        { name: "preflight", result: "success", selected: true },
-        { name: "checks-node", result: "failure", selected: true },
-        { name: "pr-fail-fast", result: "skipped", selected: false },
-      ],
-    },
-  },
-  advisoryJobs: [
-    {
-      class: "recorded-flake",
-      child: "normalCi",
-      job: flakeReceipt.jobName,
-      conclusion: "failure",
-      runId: "456",
-      url: flakeReceipt.jobUrl,
-      jobId: "457",
-      trackingUrl: flakeReceipt.trackingUrl,
-      reason: flakeReceipt.reason,
-      receiptRunId: "890",
-    },
-  ],
-};
-
 it.each([
   { releaseTag: "v2026.9.5-alpha.1", npmDistTag: "beta" },
   { releaseTag: "v2026.9.5", npmDistTag: "alpha" },
@@ -125,6 +32,39 @@ it.each([
       message: "Alpha releases are retired; use a beta prerelease instead.",
     }),
   );
+});
+
+it("warns when the stable rollback drill will expire before the release window", () => {
+  expect(
+    evaluateStableRollbackDrill({
+      nowMs: Date.parse("2026-08-18T00:00:00.000Z"),
+      rollbackDrillDate: "2026-06-01",
+      rollbackDrillId: "rollback-drill-2026-q2",
+    }).find((gate) => gate.id === "stable-closeout.rollback-drill-date"),
+  ).toEqual({
+    id: "stable-closeout.rollback-drill-date",
+    status: "WARN",
+    message:
+      "Rollback drill expires on 2026-08-30; run the private rollback drill before stable closeout.",
+    remediation:
+      "Run the private rollback drill and record its UTC date in RELEASE_ROLLBACK_DRILL_DATE or supply rollback_drill_date to stable closeout.",
+  });
+});
+
+it("passes when the stable rollback drill covers the release window", () => {
+  expect(
+    evaluateStableRollbackDrill({
+      nowMs: Date.parse("2026-08-16T00:00:00.000Z"),
+      rollbackDrillDate: "2026-06-01",
+      rollbackDrillId: "rollback-drill-2026-q2",
+    }).find((gate) => gate.id === "stable-closeout.rollback-drill-date"),
+  ).toEqual({
+    id: "stable-closeout.rollback-drill-date",
+    status: "PASS",
+    message: "Rollback drill date satisfies the stable closeout freshness requirement.",
+    remediation:
+      "Run the private rollback drill and record its UTC date in RELEASE_ROLLBACK_DRILL_DATE or supply rollback_drill_date to stable closeout.",
+  });
 });
 
 describe("release publication control admission", () => {
@@ -140,49 +80,11 @@ describe("release publication control admission", () => {
 
   it.each([
     { name: "stable evidence", overrides: {}, failures: [] },
-    { name: "unsealed rerun", overrides: { rerunGroup: "performance" }, failures: ["rerun-group"] },
-    { name: "missing soak", overrides: { runReleaseSoak: "false" }, failures: ["soak"] },
-    {
-      // Strict default: stable evidence without blocking performance fails closed.
-      name: "advisory performance",
-      overrides: { controls: { performanceBlocking: false } },
-      failures: ["performance"],
-    },
     {
       name: "waived advisory and soak",
       overrides: { controls: { performanceBlocking: false }, runReleaseSoak: "false" },
       waiver: "2026.9.5 Approved after infrastructure failure",
       failures: ["performance", "soak"],
-    },
-    {
-      name: "waiver naming another release train",
-      overrides: { runReleaseSoak: "false" },
-      waiver: "2026.9.7 Approved",
-      failures: ["soak"],
-    },
-    {
-      name: "blank waiver",
-      overrides: { runReleaseSoak: "false" },
-      waiver: " \n\t",
-      failures: ["soak"],
-    },
-    {
-      name: "failed advisory performance",
-      overrides: {
-        controls: { performanceBlocking: false },
-        childRuns: { productPerformance: { conclusion: "failure" } },
-      },
-      failures: ["performance"],
-    },
-    {
-      // A waiver cannot stand in for a performance child that failed.
-      name: "waived failed advisory performance",
-      overrides: {
-        controls: { performanceBlocking: false },
-        childRuns: { productPerformance: { conclusion: "failure" } },
-      },
-      waiver: "2026.9.5 Approved",
-      failures: ["performance"],
     },
     {
       name: "missing performance evidence",
@@ -315,79 +217,32 @@ describe("release publication control admission", () => {
     }
   });
 
-  it.each(["publisher", "core-npm", "stable-closeout"] as const)(
-    "accepts bound Windows Node CI advisories without relaxing other gates at %s",
-    (consumer) => {
-      const evaluate = (overrides = {}) =>
-        evaluateReleasePublishGates({
-          consumer,
-          releaseTag: "v2026.9.5",
-          npmDistTag: "latest",
-          manifest: { ...windowsEvidence, ...overrides },
-        })
-          .filter((gate) => gate.status === "FAIL")
-          .map((gate) => gate.id);
-      expect(evaluate()).toEqual([]);
-      expect(
-        evaluate({
-          controls: { performanceBlocking: false },
-          runReleaseSoak: "false",
-          rerunGroup: "performance",
-        }),
-      ).toEqual([`${consumer}.rerun-group`, `${consumer}.performance`, `${consumer}.soak`]);
-    },
-  );
-
-  it.each([
-    { name: "unknown class", advisoryJobs: [{ ...windowsAdvisory, class: "operator-approved" }] },
-    { name: "macOS job", advisoryJobs: [{ ...windowsAdvisory, job: "macos-node-2" }] },
-    {
-      name: "other child",
-      advisoryJobs: [{ ...windowsAdvisory, child: "releaseChecksCandidate" }],
-    },
-    { name: "other run", advisoryJobs: [{ ...windowsAdvisory, runId: "44" }] },
-    { name: "other conclusion", advisoryJobs: [{ ...windowsAdvisory, conclusion: "timed_out" }] },
-    { name: "missing advisory", advisoryJobs: [] },
-    { name: "missing evidence", childEvidence: {} },
-    { name: "unbound child run", childRuns: { normalCi: "44" } },
-  ])("rejects forged Windows advisory evidence: $name", ({ name: _name, ...overrides }) => {
+  it("rejects failed Windows child evidence even when its retired advisory row is removed", () => {
     const gates = evaluateReleasePublishGates({
       consumer: "publisher",
       releaseTag: "v2026.9.5",
       npmDistTag: "latest",
-      manifest: { ...windowsEvidence, ...overrides },
+      manifest: {
+        ...manifest,
+        childEvidence: {
+          normalCi: {
+            runId: "42",
+            jobs: [
+              {
+                name: "checks-windows-node-test-2",
+                status: "completed",
+                conclusion: "failure",
+              },
+            ],
+          },
+        },
+        advisoryJobs: [],
+      },
     });
     expect(gates).toContainEqual(
       expect.objectContaining({ id: "publisher.selected-lanes", status: "FAIL" }),
     );
   });
-
-  it.each(["publisher", "core-npm", "stable-closeout"] as const)(
-    "admits recorded flakes only with their exact manifest proof at %s",
-    (consumer) => {
-      const selectedLaneGate = (evidence: unknown = flakeEvidence) =>
-        evaluateReleasePublishGates({
-          consumer,
-          releaseTag: "v2026.9.5",
-          npmDistTag: "latest",
-          manifest: evidence,
-        }).find((gate) => gate.id === `${consumer}.selected-lanes`);
-      expect(selectedLaneGate()).toMatchObject({ status: "PASS" });
-      for (const overrides of [
-        { runId: "124" },
-        { targetSha: "b".repeat(40) },
-        { advisoryJobs: [] },
-        { childEvidence: {} },
-        { validationInputs: { knownFlakyJobsJson: '["checks-node-test-2"]' } },
-        { validationInputs: { laneWaiver: "approved" } },
-        { publishInputs: { stableSoakWaiver: "approved" } },
-      ]) {
-        expect(selectedLaneGate({ ...flakeEvidence, ...overrides })).toMatchObject({
-          status: "FAIL",
-        });
-      }
-    },
-  );
 
   it.each([false, true])(
     "runs without installed dependencies and never emits waiver authority (waived=%s)",

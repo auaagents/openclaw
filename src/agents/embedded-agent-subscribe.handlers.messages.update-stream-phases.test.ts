@@ -89,13 +89,13 @@ describe("assistant stream snapshots", () => {
 });
 
 describe("handleMessageUpdate text signatures", () => {
-  it("emits a commentary snapshot when Anthropic text is classified after deltas", async () => {
+  it("honors explicit commentary metadata supplied after initial deltas", async () => {
     const onAgentEvent = vi.fn();
     const context = createMessageUpdateContext({ onAgentEvent });
     const narration = "I'll check the repo first.";
     const commentaryPartial = {
       role: "assistant",
-      api: "anthropic-messages",
+      api: "openai-responses",
       content: [
         {
           type: "text",
@@ -108,13 +108,13 @@ describe("handleMessageUpdate text signatures", () => {
     await updateMessage(context, {
       message: {
         role: "assistant",
-        api: "anthropic-messages",
+        api: "openai-responses",
         content: [{ type: "text", text: narration }],
       },
       assistantMessageEvent: { type: "text_delta", delta: narration },
     });
     await updateMessage(context, {
-      message: { role: "assistant", api: "anthropic-messages", content: [] },
+      message: { role: "assistant", api: "openai-responses", content: [] },
       assistantMessageEvent: {
         type: "text_end",
         content: narration,
@@ -148,6 +148,11 @@ describe("handleMessageUpdate text signatures", () => {
         { text: "Visible\n\nDone.", delta: "\n\nDone." },
       ],
     },
+    {
+      name: "split runtime-context header",
+      chunks: ["OpenClaw runtime cont", "ext:\nprivate\nEnd OpenClaw runtime context.\nVisible"],
+      updates: [{ text: "Visible", delta: "Visible" }],
+    },
 
     {
       name: "split voice directive",
@@ -166,14 +171,6 @@ describe("handleMessageUpdate text signatures", () => {
         { text: "Hello world", delta: " world" },
       ],
       reply: { replyToId: "message-7", replyToTag: true },
-    },
-    {
-      name: "duplicate paragraph becomes distinct",
-      chunks: ["One.\n\n", "One.", " More."],
-      updates: [
-        { text: "One.", delta: "One." },
-        { text: "One.\n\nOne. More.", delta: "\n\nOne. More." },
-      ],
     },
   ])(
     "uses append events for same-item phased streams ($name)",
@@ -307,72 +304,56 @@ describe("handleMessageUpdate text signatures", () => {
     await Promise.all([startPending, deltaPending]);
   });
 
-  it("scopes item-id fallback boundaries to the matching signed block", async () => {
-    const onPartialReply = vi.fn();
-    const resetAssistantMessageState = vi.fn();
-    const context = createMessageUpdateContext({
-      onPartialReply,
-      resetAssistantMessageState,
-      state: { lastAssistantStreamItemId: "item-1" },
-    });
+  it.each([true, false])(
+    "preserves phase-aware directives with a block consumer=%s while deferring final media delivery",
+    async (hasBlockConsumer) => {
+      const ctx = createMessageUpdateContext({
+        state: {
+          blockReplyBreak: "message_end",
+        },
+      });
+      const onBlockReply = vi.fn();
+      if (hasBlockConsumer) {
+        ctx.params.onBlockReply = onBlockReply;
+      }
+      const replyText = "Done.\n\n[[reply_to_current]]\n[[audio_as_voice]]\nMEDIA:/tmp/reply.ogg";
 
-    await updateMessage(context, {
-      message: { role: "assistant", content: [] },
-      assistantMessageEvent: {
-        type: "text_delta",
-        delta: "Second block",
-        partial: twoBlockPartial(),
-      },
-    });
+      for (const type of ["text_delta", "text_end"] as const) {
+        await updateMessage(
+          ctx,
+          createTextUpdateEvent({
+            type,
+            text: replyText,
+            id: "item-final",
+            signaturePhase: "final_answer",
+            partialPhase: "final_answer",
+          }),
+        );
+      }
 
-    expect(resetAssistantMessageState).toHaveBeenCalledTimes(1);
-    expect(onPartialReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "Second block",
-        delta: "Second block",
-        phase: "final_answer",
-      }),
-    );
-    expect(onPartialReply).not.toHaveBeenCalledWith(
-      expect.objectContaining({ text: "First block\nSecond block" }),
-    );
-    expect(context.state.lastAssistantStreamContentIndex).toBeUndefined();
-    expect(context.state.lastAssistantStreamItemId).toBe("item-2");
-  });
-
-  it("preserves phase-aware voice and reply directives while deferring final media delivery", async () => {
-    const ctx = createMessageUpdateContext({
-      state: {
-        blockReplyBreak: "message_end",
-      },
-    });
-    const replyText = "Done.\n\n[[reply_to_current]]\n[[audio_as_voice]]\nMEDIA:/tmp/reply.ogg";
-
-    for (const type of ["text_delta", "text_end"] as const) {
-      await updateMessage(
-        ctx,
-        createTextUpdateEvent({
-          type,
-          text: replyText,
-          id: "item-final",
-          signaturePhase: "final_answer",
-          partialPhase: "final_answer",
-        }),
+      expect(ctx.blockChunker.bufferedText).toBe(hasBlockConsumer ? "Done.\n\n" : "");
+      expect(onBlockReply).not.toHaveBeenCalled();
+      expect(ctx.emitAssistantStreamData).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "Done." }),
+        expect.anything(),
       );
-    }
-
-    expect(ctx.blockChunker.bufferedText).toBe("Done.\n\n");
-    expect(
-      consumePendingAssistantReplyDirectivesIntoReply(ctx.state, {
+      expect(
+        consumePendingAssistantReplyDirectivesIntoReply(ctx.state, {
+          text: "Done.",
+        }),
+      ).toEqual({
         text: "Done.",
-      }),
-    ).toEqual({
-      text: "Done.",
-      audioAsVoice: true,
-      replyToId: undefined,
-      replyToTag: true,
-      replyToCurrent: true,
-    });
-    expect(ctx.state.pendingAssistantReplyDirectives).toBeUndefined();
-  });
+        audioAsVoice: true,
+        replyToId: undefined,
+        replyToTag: true,
+        replyToCurrent: true,
+      });
+      expect(ctx.state.pendingAssistantReplyDirectives).toBeUndefined();
+      expect(consumePendingAssistantReplyDirectivesIntoReply(ctx.state, { text: "Next." })).toEqual(
+        {
+          text: "Next.",
+        },
+      );
+    },
+  );
 });

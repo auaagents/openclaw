@@ -14,13 +14,11 @@ type EmbeddingQueryRetryHarness = {
     text: string,
     signal?: AbortSignal,
     provider?: EmbeddingProvider,
-    markDegraded?: boolean,
     providerRuntime?: EmbeddingProviderRuntime,
     deadlineControl?: MemorySearchDeadlineControl,
   ) => Promise<number[]>;
   markLocalEmbeddingProviderDegraded: (error: unknown) => void;
   resolveEmbeddingTimeout: () => number;
-  withProviderUse: <T>(provider: EmbeddingProvider, run: () => Promise<T>) => Promise<T>;
 };
 
 function createEmbeddingQueryRetryHarness(
@@ -40,7 +38,6 @@ function createEmbeddingQueryRetryHarness(
     provider,
     resolveEmbeddingTimeout: () => timeoutMs,
     markLocalEmbeddingProviderDegraded: vi.fn(),
-    withProviderUse: async <T>(_provider: EmbeddingProvider, run: () => Promise<T>) => await run(),
   }) as EmbeddingQueryRetryHarness;
 }
 
@@ -59,6 +56,69 @@ function createEmbeddingBatchRetryHarness(embedBatch: EmbeddingProvider["embedBa
   manager.provider.embedBatch = embedBatch;
   return manager;
 }
+
+describe("memory model input formatting", () => {
+  it.each([
+    [
+      "local",
+      "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf",
+      true,
+    ],
+    ["ollama", "embeddinggemma:latest", true],
+    ["ollama", "embeddinggemma-2:270m", true],
+    ["lmstudio", "text-embedding-embeddinggemma-300m", true],
+    ["openai-compatible", "google/embeddinggemma-300m", true],
+    ["local", "/models/EmbeddingGemma-300m.Q8_0.gguf", true],
+    ["openai-compatible", "nomic-embed-text", false],
+    ["openai-compatible", "other/embeddinggemmax", false],
+    ["gemini", "gemini-embedding-2", false],
+  ])("formats query and document inputs for %s/%s", async (id, model, prefixed) => {
+    const embed = vi.fn<EmbeddingProvider["embed"]>(async () => [1, 0]);
+    const embedBatch = vi.fn<EmbeddingProvider["embedBatch"]>(async (inputs) =>
+      inputs.map(() => [0, 1]),
+    );
+    const manager = createEmbeddingBatchRetryHarness(embedBatch);
+    Object.assign(manager.provider, { id, model, embed });
+    const document = {
+      text: "first second",
+      parts: [
+        { type: "text" as const, text: "first" },
+        { type: "text" as const, text: " second" },
+      ],
+    };
+
+    await expect(manager.embedQueryWithRetry("find this")).resolves.toEqual([1, 0]);
+    await expect(manager.embedBatchWithRetry(["remember this", document])).resolves.toEqual([
+      [0, 1],
+      [0, 1],
+    ]);
+
+    expect(embed.mock.calls[0]?.[0]).toBe(
+      prefixed ? "task: search result | query: find this" : "find this",
+    );
+    expect(embedBatch.mock.calls[0]?.[0]).toEqual(
+      prefixed
+        ? [
+            "title: none | text: remember this",
+            {
+              text: "title: none | text: first second",
+              parts: [
+                { type: "text", text: "title: none | text: first" },
+                { type: "text", text: " second" },
+              ],
+            },
+          ]
+        : ["remember this", document],
+    );
+    expect(document).toEqual({
+      text: "first second",
+      parts: [
+        { type: "text", text: "first" },
+        { type: "text", text: " second" },
+      ],
+    });
+  });
+});
 
 describe("memory embedding query retry cancellation", () => {
   afterEach(() => {
@@ -80,7 +140,6 @@ describe("memory embedding query retry cancellation", () => {
       "search terms",
       undefined,
       undefined,
-      true,
       undefined,
       control,
     );
@@ -185,13 +244,14 @@ describe("memory embedding query retry cancellation", () => {
 
   it("retries provider success that arrives after each embedding deadline", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(0);
+    let elapsedMs = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
     const operationSignals: AbortSignal[] = [];
     const embedQuery = vi.fn<EmbeddingProvider["embed"]>(async (_input, options) => {
       if (options?.signal) {
         operationSignals.push(options.signal);
       }
-      vi.setSystemTime(Date.now() + 11);
+      elapsedMs += 11;
       return [1, 0, 0, 0];
     });
     const manager = createEmbeddingQueryRetryHarness(embedQuery, 10);
@@ -251,9 +311,7 @@ describe.each(["text", "structured"])("memory embedding batch retry boundary (%s
       await expect(manager.embedBatchWithRetry(batchInputs(items))).resolves.toEqual(
         items.map((_, index) => [index]),
       );
-      expect(embedBatch.mock.calls.map(([texts]) => texts.length)).toEqual([
-        33, 17, 9, 8, 16, 8, 8,
-      ]);
+      expect(embedBatch.mock.calls.map(([texts]) => texts.length)).toEqual([33, 10, 10, 10, 3]);
       expect(manager.waitForEmbeddingRetry).not.toHaveBeenCalled();
       expect(manager.markLocalEmbeddingProviderDegraded).not.toHaveBeenCalled();
     },
@@ -278,6 +336,30 @@ describe.each(["text", "structured"])("memory embedding batch retry boundary (%s
     expect(embedBatch).toHaveBeenCalledOnce();
     expect(embedBatch.mock.calls[0]?.[0]).toHaveLength(10);
     expect(manager.waitForEmbeddingRetry).not.toHaveBeenCalled();
+  });
+
+  // #183556: Mistral rejects the whole batch by aggregate tokens, not by item count.
+  it("splits an aggregate-token rejection recursively until every batch fits", async () => {
+    const items = Array.from({ length: 33 }, (_, index) => `item-${index}`);
+    const embedBatch = vi.fn<EmbeddingProvider["embedBatch"]>(async (inputs) => {
+      const texts = inputs.map((input) => (typeof input === "string" ? input : input.text));
+      if (texts.join("").length > 60) {
+        throw new Error(
+          'openai-compatible embeddings failed: HTTP 400: {"object":"error","message":"Too many tokens overall, split into more batches.","type":"invalid_request_prompt","code":"3210"}',
+        );
+      }
+      return texts.map((text) => [Number.parseInt(text.slice(5), 10)]);
+    });
+    const manager = createEmbeddingBatchRetryHarness(embedBatch);
+
+    await expect(manager.embedBatchWithRetry(batchInputs(items))).resolves.toEqual(
+      items.map((_, index) => [index]),
+    );
+    const sizes = embedBatch.mock.calls.map(([texts]) => texts.length);
+    expect(sizes[0]).toBe(33);
+    expect(sizes.slice(1).every((size) => size < 33)).toBe(true);
+    expect(manager.waitForEmbeddingRetry).not.toHaveBeenCalled();
+    expect(manager.markLocalEmbeddingProviderDegraded).not.toHaveBeenCalled();
   });
 
   it.each([
